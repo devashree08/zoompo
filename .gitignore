@@ -2,40 +2,41 @@ import { createTheme } from "@mui/material/styles";
 
 const theme = createTheme({
   typography: {
-    fontSize: 13, // Reduce base font size for denser look
+    fontSize: 14, // Balanced for readability
   },
   components: {
     MuiTextField: {
       defaultProps: {
-        size: "small", // Default to small for all fields
+        size: "small",
         margin: "dense",
       },
     },
     MuiInputBase: {
       styleOverrides: {
         root: {
-          fontSize: 13,
-          minHeight: 32,      // Reduce the height of input boxes
+          fontSize: 14,
+          minHeight: 36,      // slightly taller for comfort
         },
         input: {
-          padding: "8.5px 10px", // Less vertical/horizontal padding
+          padding: "10px 12px", // a bit more vertical padding
         },
       },
     },
     MuiFormLabel: {
       styleOverrides: {
         root: {
-          fontSize: 13,
+          fontSize: 14,
+          transform: "translate(12px, 14px) scale(1)", // default, for proper label placement
         },
       },
     },
     MuiSelect: {
       styleOverrides: {
         select: {
-          fontSize: 13,
-          minHeight: 32,
-          paddingTop: 8.5,
-          paddingBottom: 8.5,
+          fontSize: 14,
+          minHeight: 36,
+          paddingTop: 10,
+          paddingBottom: 10,
         },
         icon: {
           fontSize: 20,
@@ -45,79 +46,40 @@ const theme = createTheme({
     MuiMenuItem: {
       styleOverrides: {
         root: {
-          fontSize: 13,
+          fontSize: 14,
           minHeight: 32,
-          paddingTop: 4,
-          paddingBottom: 4,
+          paddingTop: 6,
+          paddingBottom: 6,
         },
-      },
-    },
-    MuiList: {
-      styleOverrides: {
-        root: {
-          paddingTop: 2,
-          paddingBottom: 2,
-        },
-      },
-    },
-    MuiButton: {
-      styleOverrides: {
-        root: {
-          fontSize: 13,
-          minHeight: 32,
-          padding: "4px 14px",
-          textTransform: "none",
-        },
-      },
-      defaultProps: {
-        size: "small",
       },
     },
     MuiInputLabel: {
       styleOverrides: {
         root: {
-          fontSize: 13,
+          fontSize: 14,
         },
       },
     },
     MuiOutlinedInput: {
       styleOverrides: {
         root: {
-          minHeight: 32,
+          minHeight: 36,
         },
         input: {
-          padding: "8.5px 10px",
+          padding: "10px 12px",
         },
       },
     },
     MuiFormControl: {
       styleOverrides: {
         root: {
-          marginTop: 4,
-          marginBottom: 4,
+          marginTop: 6,
+          marginBottom: 6,
         },
       },
       defaultProps: {
         size: "small",
         margin: "dense",
-      },
-    },
-    MuiTableCell: {
-      styleOverrides: {
-        root: {
-          fontSize: 13,
-          padding: "6px 12px",
-        },
-        head: {
-          fontWeight: 700,
-        },
-      },
-    },
-    MuiSnackbarContent: {
-      styleOverrides: {
-        root: {
-          fontSize: 13,
-        },
       },
     },
   },

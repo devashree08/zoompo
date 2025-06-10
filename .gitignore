@@ -1,0 +1,31 @@
+import { createTheme, ThemeProvider } from "@mui/material/styles";
+
+const theme = createTheme({
+  components: {
+    MuiMenuItem: {
+      styleOverrides: {
+        root: {
+          fontSize: '0.92rem',  // or 13px
+          paddingTop: 4,
+          paddingBottom: 4,
+          minHeight: 30,
+        },
+      },
+    },
+    MuiList: {
+      styleOverrides: {
+        root: {
+          paddingTop: 2,
+          paddingBottom: 2,
+        },
+      },
+    },
+    MuiInputBase: {
+      styleOverrides: {
+        input: {
+          fontSize: '0.95rem', // for the field itself
+        },
+      },
+    },
+  },
+});

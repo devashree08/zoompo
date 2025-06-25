@@ -1,49 +1,62 @@
-[HttpGet("apps/stream")]
-public async Task<IActionResult> GetAllAppsStream(CancellationToken cancellationToken)
-{
-    Response.ContentType = "application/json";
+CREATE TRIGGER trg_Appview_Update
+ON [mydb].[dbo].[appview]
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;  -- Prevent extra messages
 
-    try
-    {
-        var connection = _context.Database.GetDbConnection();
-
-        await connection.OpenAsync(cancellationToken);
-
-        await using var command = connection.CreateCommand();
-        command.CommandText = "dbo.StoredProc";
-        command.CommandType = CommandType.StoredProcedure;
-
-        await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
-
-        var parser = SqlMapper.GetRowParser<AllAppsModel>(reader);
-
-        await using var writer = new StreamWriter(Response.Body);
-        await writer.WriteAsync("[");
-
-        bool isFirst = true;
-
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var item = parser(reader); // Dapper maps row to AllAppsModel
-
-            if (!isFirst)
-                await writer.WriteAsync(",");
-
-            string json = JsonSerializer.Serialize(item);
-            await writer.WriteAsync(json);
-            await writer.FlushAsync(); // stream to client
-
-            isFirst = false;
-        }
-
-        await writer.WriteAsync("]");
-        await writer.FlushAsync();
-
-        return new EmptyResult(); // response already written directly
-    }
-    catch (Exception ex)
-    {
-        // Log exception here (e.g., _logger.LogError(ex, "Streaming failed");)
-        return StatusCode(500, new { message = "An error occurred while streaming data.", error = ex.Message });
-    }
-}
+    -- Insert log entries only when a change has occurred
+    INSERT INTO [mydb].[dbo].[audit_log] (TableName, RecordID, ChangeDetails, ChangedBy)
+    SELECT 
+        'appview' AS TableName,                     -- Table Name
+        CAST(d.appID AS NVARCHAR) AS RecordID,      -- Primary Key (appID)
+        (
+            -- JSON object containing all changed fields
+            SELECT 
+                d.COLUMN_NAME AS Field,             -- Column that changed
+                d.COLUMN_VALUE AS OldValue,         -- Value before update
+                i.COLUMN_VALUE AS NewValue          -- Value after update
+            FROM
+                ( -- Get old values (before update) from DELETED table
+                    SELECT appID, 'status' AS COLUMN_NAME, CONVERT(NVARCHAR(MAX), status) AS COLUMN_VALUE FROM DELETED
+                    UNION ALL
+                    SELECT appID, 'statusdate', CONVERT(NVARCHAR(MAX), statusdate) FROM DELETED
+                    UNION ALL
+                    SELECT appID, 'remarks', CONVERT(NVARCHAR(MAX), remarks) FROM DELETED
+                    UNION ALL
+                    SELECT appID, 'otdstatus', CONVERT(NVARCHAR(MAX), otdstatus) FROM DELETED
+                    UNION ALL
+                    SELECT appID, 'otdremarks', CONVERT(NVARCHAR(MAX), otdremarks) FROM DELETED
+                ) d
+            JOIN
+                ( -- Get new values (after update) from INSERTED table
+                    SELECT appID, 'status' AS COLUMN_NAME, CONVERT(NVARCHAR(MAX), status) AS COLUMN_VALUE FROM INSERTED
+                    UNION ALL
+                    SELECT appID, 'statusdate', CONVERT(NVARCHAR(MAX), statusdate) FROM INSERTED
+                    UNION ALL
+                    SELECT appID, 'remarks', CONVERT(NVARCHAR(MAX), remarks) FROM INSERTED
+                    UNION ALL
+                    SELECT appID, 'otdstatus', CONVERT(NVARCHAR(MAX), otdstatus) FROM INSERTED
+                    UNION ALL
+                    SELECT appID, 'otdremarks', CONVERT(NVARCHAR(MAX), otdremarks) FROM INSERTED
+                ) i
+            ON d.appID = i.appID  -- Join on Primary Key
+            AND d.COLUMN_NAME = i.COLUMN_NAME  -- Match column names
+            WHERE d.COLUMN_VALUE <> i.COLUMN_VALUE  -- Only include changed values
+            FOR JSON PATH  -- Convert to JSON format
+        ) AS ChangeDetails,
+        i.Last_Updated_By AS ChangedBy  -- Use frontend user instead of SYSTEM_USER
+    FROM DELETED d
+    JOIN INSERTED i ON d.appID = i.appID
+    WHERE EXISTS (
+        -- This check ensures at least one tracked field changed
+        SELECT 1
+        FROM DELETED d
+        JOIN INSERTED i ON d.appID = i.appID
+        WHERE d.status <> i.status
+           OR d.statusdate <> i.statusdate
+           OR d.remarks <> i.remarks
+           OR d.otdstatus <> i.otdstatus
+           OR d.otdremarks <> i.otdremarks
+    );
+END;

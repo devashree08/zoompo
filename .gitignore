@@ -1,62 +1,134 @@
-CREATE TRIGGER trg_Appview_Update
-ON [mydb].[dbo].[appview]
-AFTER UPDATE
-AS
-BEGIN
-    SET NOCOUNT ON;  -- Prevent extra messages
+import requests
+import pyodbc
+import logging
+import csv
+import os
+from tenacity import retry, wait_exponential, stop_after_attempt
+from datetime import datetime
 
-    -- Insert log entries only when a change has occurred
-    INSERT INTO [mydb].[dbo].[audit_log] (TableName, RecordID, ChangeDetails, ChangedBy)
-    SELECT 
-        'appview' AS TableName,                     -- Table Name
-        CAST(d.appID AS NVARCHAR) AS RecordID,      -- Primary Key (appID)
-        (
-            -- JSON object containing all changed fields
-            SELECT 
-                d.COLUMN_NAME AS Field,             -- Column that changed
-                d.COLUMN_VALUE AS OldValue,         -- Value before update
-                i.COLUMN_VALUE AS NewValue          -- Value after update
-            FROM
-                ( -- Get old values (before update) from DELETED table
-                    SELECT appID, 'status' AS COLUMN_NAME, CONVERT(NVARCHAR(MAX), status) AS COLUMN_VALUE FROM DELETED
-                    UNION ALL
-                    SELECT appID, 'statusdate', CONVERT(NVARCHAR(MAX), statusdate) FROM DELETED
-                    UNION ALL
-                    SELECT appID, 'remarks', CONVERT(NVARCHAR(MAX), remarks) FROM DELETED
-                    UNION ALL
-                    SELECT appID, 'otdstatus', CONVERT(NVARCHAR(MAX), otdstatus) FROM DELETED
-                    UNION ALL
-                    SELECT appID, 'otdremarks', CONVERT(NVARCHAR(MAX), otdremarks) FROM DELETED
-                ) d
-            JOIN
-                ( -- Get new values (after update) from INSERTED table
-                    SELECT appID, 'status' AS COLUMN_NAME, CONVERT(NVARCHAR(MAX), status) AS COLUMN_VALUE FROM INSERTED
-                    UNION ALL
-                    SELECT appID, 'statusdate', CONVERT(NVARCHAR(MAX), statusdate) FROM INSERTED
-                    UNION ALL
-                    SELECT appID, 'remarks', CONVERT(NVARCHAR(MAX), remarks) FROM INSERTED
-                    UNION ALL
-                    SELECT appID, 'otdstatus', CONVERT(NVARCHAR(MAX), otdstatus) FROM INSERTED
-                    UNION ALL
-                    SELECT appID, 'otdremarks', CONVERT(NVARCHAR(MAX), otdremarks) FROM INSERTED
-                ) i
-            ON d.appID = i.appID  -- Join on Primary Key
-            AND d.COLUMN_NAME = i.COLUMN_NAME  -- Match column names
-            WHERE d.COLUMN_VALUE <> i.COLUMN_VALUE  -- Only include changed values
-            FOR JSON PATH  -- Convert to JSON format
-        ) AS ChangeDetails,
-        i.Last_Updated_By AS ChangedBy  -- Use frontend user instead of SYSTEM_USER
-    FROM DELETED d
-    JOIN INSERTED i ON d.appID = i.appID
-    WHERE EXISTS (
-        -- This check ensures at least one tracked field changed
-        SELECT 1
-        FROM DELETED d
-        JOIN INSERTED i ON d.appID = i.appID
-        WHERE d.status <> i.status
-           OR d.statusdate <> i.statusdate
-           OR d.remarks <> i.remarks
-           OR d.otdstatus <> i.otdstatus
-           OR d.otdremarks <> i.otdremarks
-    );
-END;
+# ----------------- CONFIGURATION -----------------
+API_KEY = "your_api_key_here"
+BASE_URL = "http://api.acme.com:8082"
+DB_CONFIG = {
+    "server": "your_sql_server",
+    "database": "your_database",
+    "username": "your_username",
+    "password": "your_password",
+    "driver": "{ODBC Driver 17 for SQL Server}"
+}
+
+CSV_DIR = "csv_dumps"
+os.makedirs(CSV_DIR, exist_ok=True)
+
+# ----------------- LOGGING -----------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s - %(message)s")
+logger = logging.getLogger("etl_script")
+
+# ----------------- DATABASE CONNECTION -----------------
+def get_db_connection():
+    conn_str = (
+        f"DRIVER={DB_CONFIG['driver']};"
+        f"SERVER={DB_CONFIG['server']};"
+        f"DATABASE={DB_CONFIG['database']};"
+        f"UID={DB_CONFIG['username']};"
+        f"PWD={DB_CONFIG['password']}"
+    )
+    return pyodbc.connect(conn_str)
+
+# ----------------- INSERT FUNCTION -----------------
+def insert_apis(cursor, apis):
+    for api in apis:
+        cursor.execute("""
+            INSERT INTO apis (
+                server_url,
+                path_count,
+                scanned,
+                verified,
+                past,
+                psad,
+                scanned_by,
+                endpoint_identifier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            api.get("server_url"),
+            api.get("path_count"),
+            api.get("scanned"),
+            api.get("verified"),
+            api.get("past"),
+            api.get("psad"),
+            api.get("scanned_by"),
+            api.get("endpoint_identifier")
+        ))
+
+# ----------------- RETRY DECORATORS -----------------
+@retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(5))
+def get_sources():
+    headers = {"X-API-KEY": API_KEY}
+    response = requests.get(f"{BASE_URL}/metadata/source", headers=headers)
+    response.raise_for_status()
+    return response.json().get("source", [])
+
+@retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(5))
+def get_api_data(source, page):
+    headers = {"X-API-KEY": API_KEY}
+    url = f"{BASE_URL}/apis"
+    params = {
+        "source": source,
+        "metric": "identifier",  # ✅ Required param
+        "page": page
+    }
+    response = requests.get(url, headers=headers, params=params)
+    response.raise_for_status()
+    return response.json()
+
+# ----------------- MAIN ETL FUNCTION -----------------
+def run_etl():
+    logger.info("🚀 Starting ETL process...")
+    sources = get_sources()
+    logger.info(f"✅ Retrieved {len(sources)} sources: {sources}")
+
+    timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    csv_file_path = os.path.join(CSV_DIR, f"apis_dump_{timestamp}.csv")
+    write_header = True  # Only write CSV header once
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    for source in sources:
+        logger.info(f"🔄 Processing source: {source}")
+        page = 1
+
+        while True:
+            data = get_api_data(source, page)
+            apis = data.get("apis", [])
+            if not apis:
+                logger.warning(f"⚠️ No data for source={source}, page={page}")
+                break
+
+            # 🔽 Write to CSV
+            with open(csv_file_path, mode='a', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=[
+                    "server_url", "path_count", "scanned", "verified",
+                    "past", "psad", "scanned_by", "endpoint_identifier"
+                ])
+                if write_header:
+                    writer.writeheader()
+                    write_header = False
+                writer.writerows(apis)
+
+            # 💾 Insert into SQL Server
+            insert_apis(cursor, apis)
+            conn.commit()
+            logger.info(f"✅ Page {page} - Inserted {len(apis)} records from source '{source}'")
+
+            if data.get("isLast", False):
+                break
+            page += 1
+
+    cursor.close()
+    conn.close()
+    logger.info(f"🎉 ETL process completed. CSV saved to: {csv_file_path}")
+
+# ----------------- ENTRY POINT -----------------
+if __name__ == "__main__":
+    run_etl()

@@ -1,134 +1,55 @@
-import requests
-import pyodbc
-import logging
-import csv
-import os
-from tenacity import retry, wait_exponential, stop_after_attempt
-from datetime import datetime
-
-# ----------------- CONFIGURATION -----------------
-API_KEY = "your_api_key_here"
-BASE_URL = "http://api.acme.com:8082"
-DB_CONFIG = {
-    "server": "your_sql_server",
-    "database": "your_database",
-    "username": "your_username",
-    "password": "your_password",
-    "driver": "{ODBC Driver 17 for SQL Server}"
-}
-
-CSV_DIR = "csv_dumps"
-os.makedirs(CSV_DIR, exist_ok=True)
-
-# ----------------- LOGGING -----------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s - %(message)s")
-logger = logging.getLogger("etl_script")
-
-# ----------------- DATABASE CONNECTION -----------------
-def get_db_connection():
-    conn_str = (
-        f"DRIVER={DB_CONFIG['driver']};"
-        f"SERVER={DB_CONFIG['server']};"
-        f"DATABASE={DB_CONFIG['database']};"
-        f"UID={DB_CONFIG['username']};"
-        f"PWD={DB_CONFIG['password']}"
-    )
-    return pyodbc.connect(conn_str)
-
-# ----------------- INSERT FUNCTION -----------------
-def insert_apis(cursor, apis):
-    for api in apis:
-        cursor.execute("""
-            INSERT INTO apis (
-                server_url,
-                path_count,
-                scanned,
-                verified,
-                past,
-                psad,
-                scanned_by,
-                endpoint_identifier
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            api.get("server_url"),
-            api.get("path_count"),
-            api.get("scanned"),
-            api.get("verified"),
-            api.get("past"),
-            api.get("psad"),
-            api.get("scanned_by"),
-            api.get("endpoint_identifier")
-        ))
-
-# ----------------- RETRY DECORATORS -----------------
-@retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(5))
-def get_sources():
-    headers = {"X-API-KEY": API_KEY}
-    response = requests.get(f"{BASE_URL}/metadata/source", headers=headers)
-    response.raise_for_status()
-    return response.json().get("source", [])
-
-@retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(5))
-def get_api_data(source, page):
-    headers = {"X-API-KEY": API_KEY}
-    url = f"{BASE_URL}/apis"
-    params = {
-        "source": source,
-        "metric": "identifier",  # ✅ Required param
-        "page": page
+// DRAFT (local) delete
+  const handleDeleteDraft = (idx) => {
+    setDraftRiskAreas(draftRiskAreas.filter((_, i) => i !== idx));
+    if (editIsDraft && editIndex === idx) {
+      setEditIndex(null);
+      setEditIsDraft(false);
     }
-    response = requests.get(url, headers=headers, params=params)
-    response.raise_for_status()
-    return response.json()
+  };
 
-# ----------------- MAIN ETL FUNCTION -----------------
-def run_etl():
-    logger.info("🚀 Starting ETL process...")
-    sources = get_sources()
-    logger.info(f"✅ Retrieved {len(sources)} sources: {sources}")
+  // DB delete logic (confirmation)
+  const handleDeleteDb = (idx) => {
+    setRowToDeleteIdx(idx);
+    setDeleteDialogOpen(true);
+  };
 
-    timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-    csv_file_path = os.path.join(CSV_DIR, f"apis_dump_{timestamp}.csv")
-    write_header = True  # Only write CSV header once
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    for source in sources:
-        logger.info(f"🔄 Processing source: {source}")
-        page = 1
-
-        while True:
-            data = get_api_data(source, page)
-            apis = data.get("apis", [])
-            if not apis:
-                logger.warning(f"⚠️ No data for source={source}, page={page}")
-                break
-
-            # 🔽 Write to CSV
-            with open(csv_file_path, mode='a', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=[
-                    "server_url", "path_count", "scanned", "verified",
-                    "past", "psad", "scanned_by", "endpoint_identifier"
-                ])
-                if write_header:
-                    writer.writeheader()
-                    write_header = False
-                writer.writerows(apis)
-
-            # 💾 Insert into SQL Server
-            insert_apis(cursor, apis)
-            conn.commit()
-            logger.info(f"✅ Page {page} - Inserted {len(apis)} records from source '{source}'")
-
-            if data.get("isLast", False):
-                break
-            page += 1
-
-    cursor.close()
-    conn.close()
-    logger.info(f"🎉 ETL process completed. CSV saved to: {csv_file_path}")
-
-# ----------------- ENTRY POINT -----------------
-if __name__ == "__main__":
-    run_etl()
+  const handleConfirmDeleteDb = async () => {
+    setDeleteDialogOpen(false);
+    if (rowToDeleteIdx == null) return;
+    const row = databaseRiskAreas[rowToDeleteIdx];
+    try {
+      await axios.post("/DeleteRiskArea", {
+        vendor: selectedVendor,
+        pcmid: selectedPCM,
+        riskArea: row.riskArea,
+      });
+      setSnackbar({ open: true, message: "Risk area deleted.", severity: "success" });
+      // Refresh database
+      axios.get("/GetData", {
+        params: { vendor: selectedVendor, pcmid: selectedPCM }
+      }).then(res => {
+        if (res.data && Array.isArray(res.data)) {
+          setDatabaseRiskAreas(res.data.map(row => ({
+            riskArea: row.risk_Area,
+            riskInsight: row.risk_Insights,
+            mitigations: {
+              A: row.risk_Mitigation_a || "",
+              B: row.risk_Mitigation_b || "",
+              C: row.risk_Mitigation_c || "",
+              D: row.risk_Mitigation_d || "",
+              E: row.risk_Mitigation_e || "",
+            }
+          })));
+        } else {
+          setDatabaseRiskAreas([]);
+        }
+      });
+    } catch {
+      setSnackbar({ open: true, message: "Delete failed. Try again.", severity: "error" });
+    }
+    setRowToDeleteIdx(null);
+  };
+  const handleCancelDeleteDb = () => {
+    setDeleteDialogOpen(false);
+    setRowToDeleteIdx(null);
+  };

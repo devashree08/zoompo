@@ -1,55 +1,23 @@
-// DRAFT (local) delete
-  const handleDeleteDraft = (idx) => {
-    setDraftRiskAreas(draftRiskAreas.filter((_, i) => i !== idx));
-    if (editIsDraft && editIndex === idx) {
-      setEditIndex(null);
-      setEditIsDraft(false);
-    }
-  };
+public interface IAuthorizationService
+{
+    Task<bool> CanEditBusinessUnitAsync(string employeeId, string businessUnit);
+}
 
-  // DB delete logic (confirmation)
-  const handleDeleteDb = (idx) => {
-    setRowToDeleteIdx(idx);
-    setDeleteDialogOpen(true);
-  };
+public class AuthorizationService : IAuthorizationService
+{
+    private readonly IRoleRepository _repo;
+    private const string AdminRole = "admins";
 
-  const handleConfirmDeleteDb = async () => {
-    setDeleteDialogOpen(false);
-    if (rowToDeleteIdx == null) return;
-    const row = databaseRiskAreas[rowToDeleteIdx];
-    try {
-      await axios.post("/DeleteRiskArea", {
-        vendor: selectedVendor,
-        pcmid: selectedPCM,
-        riskArea: row.riskArea,
-      });
-      setSnackbar({ open: true, message: "Risk area deleted.", severity: "success" });
-      // Refresh database
-      axios.get("/GetData", {
-        params: { vendor: selectedVendor, pcmid: selectedPCM }
-      }).then(res => {
-        if (res.data && Array.isArray(res.data)) {
-          setDatabaseRiskAreas(res.data.map(row => ({
-            riskArea: row.risk_Area,
-            riskInsight: row.risk_Insights,
-            mitigations: {
-              A: row.risk_Mitigation_a || "",
-              B: row.risk_Mitigation_b || "",
-              C: row.risk_Mitigation_c || "",
-              D: row.risk_Mitigation_d || "",
-              E: row.risk_Mitigation_e || "",
-            }
-          })));
-        } else {
-          setDatabaseRiskAreas([]);
-        }
-      });
-    } catch {
-      setSnackbar({ open: true, message: "Delete failed. Try again.", severity: "error" });
+    public AuthorizationService(IRoleRepository repo)
+    {
+        _repo = repo;
     }
-    setRowToDeleteIdx(null);
-  };
-  const handleCancelDeleteDb = () => {
-    setDeleteDialogOpen(false);
-    setRowToDeleteIdx(null);
-  };
+
+    public async Task<bool> CanEditBusinessUnitAsync(string employeeId, string businessUnit)
+    {
+        var roles = await _repo.GetUserRolesAsync(employeeId);
+        return roles.Any(r =>
+            r.Equals(AdminRole, StringComparison.OrdinalIgnoreCase) ||
+            r.Equals(businessUnit, StringComparison.OrdinalIgnoreCase));
+    }
+}

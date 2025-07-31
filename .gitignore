@@ -1,42 +1,11 @@
-namespace YourNamespace.Data
-{
-    public interface IRoleRepository
-    {
-        Task<List<string>> GetUserRolesAsync(string employeeId);
-    }
-}
+var employeeId = Request.Headers["X-EMPLOYEEID"].ToString();
 
+            if (string.IsNullOrWhiteSpace(employeeId))
+                return Unauthorized("Missing employee ID");
 
-using Dapper;
-using System.Data;
-using YourNamespace.Models;
+            if (string.IsNullOrWhiteSpace(model.BusinnessUnit))
+                return BadRequest("Missing BusinnessUnit");
 
-namespace YourNamespace.Data
-{
-    public class RoleRepository : IRoleRepository
-    {
-        private readonly MappingDbContext _context;
-
-        public RoleRepository(MappingDbContext context)
-        {
-            _context = context;
-        }
-
-        public async Task<List<string>> GetUserRolesAsync(string employeeId)
-        {
-            using var conn = _context.Database.GetDbConnection();
-            if (conn.State != ConnectionState.Open)
-                await conn.OpenAsync();
-
-            var result = await conn.QueryAsync<string>(
-                "dbo.usp_GetUserRolesByEmployeeId",
-                new { EmployeeId = employeeId },
-                commandType: CommandType.StoredProcedure);
-
-            return result
-                .Where(r => !string.IsNullOrWhiteSpace(r))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-    }
-}
+            var authorized = await _authService.CanEditBusinessUnitAsync(employeeId, model.BusinnessUnit);
+            if (!authorized)
+                return Forbid("You are not authorized to edit this business unit");

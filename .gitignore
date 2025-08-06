@@ -1,41 +1,37 @@
 ;WITH Summaries AS (
   SELECT
-    [CSF 2.0 Identifier]    AS NewID,
-    COUNT(*)                AS OldCount,
+    [CSF 2.0 Identifier]                         AS NewID,
+    COUNT(*)                                     AS OldCount,
     STRING_AGG(
-      [CSF 1.1 Identifier],
-      ', '
-    )                        AS OldIDs,
-    -- Build a bullet for each predecessor, preserving its ID in the text
+      [CSF 1.1 Identifier], ', '
+    )                                             AS OldIDs,
     STRING_AGG(
       CONCAT(
-        '• **', 
+        '• **',
         [CSF 1.1 Identifier],
         '**: ',
         REPLACE([Noteworthy Modifications], CHAR(10), ' ')
       ),
-      CHAR(13) + CHAR(10)      -- newline between bullets
-      ORDER BY [CSF 1.1 Identifier]
-    )                        AS ModBullets
+      CHAR(13) + CHAR(10)
+    ) WITHIN GROUP (ORDER BY [CSF 1.1 Identifier]) AS ModBullets
   FROM stg.CSF_Transition
   GROUP BY [CSF 2.0 Identifier]
 )
 
 UPDATE r
   SET ChangeSummary = CONCAT(
-       -- Bold lead: either “Evolution” or “Consolidation”
-       '**',
-       CASE WHEN s.OldCount > 1 
-         THEN 'Consolidation of ' 
-         ELSE 'Evolution of ' 
-       END,
-       s.OldIDs,
-       ' → ',
-       r.subcatid,
-       ':**',
-       CHAR(13) + CHAR(10),     -- newline before bullets
-       s.ModBullets
-     )
+    '**',
+    CASE 
+      WHEN s.OldCount > 1 THEN 'Consolidation of ' 
+      ELSE 'Evolution of ' 
+    END,
+    s.OldIDs,
+    ' → ',
+    r.subcatid,
+    ':**',
+    CHAR(13) + CHAR(10),
+    s.ModBullets
+  )
 FROM ref.tabl1 AS r
 JOIN Summaries AS s
   ON r.subcatid = s.NewID;

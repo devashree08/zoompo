@@ -1,162 +1,97 @@
-[
-  {
-    "OrgID": 1,
-    "OrgName": "FSI",
+Overall layout & navigation
 
-    "FunctionID": 1,
-    "FunctionName": "Identity (ID)",
-    "FunctionLanguage": "Identify organizational context, assets, etc.",
+Org selector (tabs or dropdown). Default = single org.
 
-    "CategoryID": 100,
-    "CategoryName": "Asset Management (ID.AM)",
-    "CategoryLanguage": "Identify and manage assets.",
+Tiered accordion: Function → Category → Subcategory.
 
-    "CSF2SubcategoryID": 1001,
-    "CSF2SubcategoryName": "ID.AM-01",
-    "CSF2SubcategoryLanguage": "An inventory of hardware, software, data, and systems is maintained.",
-    "ChangeSummary": "Direct evolution of ID.AM-1",
-    "ImplementationExamples": "Maintain centralized inventory incl. cloud/SaaS.",
+Expand a subcategory to see its attribute table.
 
-    "CSF1SubcategoryID": 5001,
-    "CSF1SubcategoryName": "ID.AM-1",
-    "CSF1SubcategoryLanguage": "Physical devices and systems within the organization are inventoried.",
+Filters (cross-functional)
 
-    "Ent_Subcat_Attr": "E=FSI~S=ID.AM-1~ML=3~A=1",
-    "MaturityLevel": 3,
-    "AttributeNum": 1,
-    "AttributeDefinition": "Asset inventory exists covering on-prem endpoints",
-    "AssessScore2024": 3,
+Filter bar with: Org, Function, Category, Subcategory, Owner, Custodian.
 
-    "SelectionStatus": "Keep",
-    "SelectionAttestation": "Meet",
+Filters can be combined; update results without page reload.
 
-    "CustomAttributeNum": null,
-    "CustomAttributeDefinition": null,
-    "CustomAttributeAttestation": null,
+(Optional) free-text search over attribute definitions.
 
-    "Owner": "Alex Rivera",
-    "Custodian": "Ops Team",
+Data shown in each subcategory panel
 
-    "Ent_Subcat_Attr_CSF2": "E=FSI~S=ID.AM-01~ML=3~A=1"
-  },
-  {
-    "OrgID": 1,
-    "OrgName": "FSI",
+Header shows: Subcategory code/name, description, Change Summary, Implementation Examples, Owner(s), Custodian(s).
 
-    "FunctionID": 1,
-    "FunctionName": "Identity (ID)",
-    "FunctionLanguage": "Identify organizational context, assets, etc.",
+Attribute table (rows):
 
-    "CategoryID": 100,
-    "CategoryName": "Asset Management (ID.AM)",
-    "CategoryLanguage": "Identify and manage assets.",
+Maturity Level, Attribute #, Attribute Definition (baseline), 2024 Score (ro),
 
-    "CSF2SubcategoryID": 1001,
-    "CSF2SubcategoryName": "ID.AM-01",
-    "CSF2SubcategoryLanguage": "An inventory of hardware, software, data, and systems is maintained.",
-    "ChangeSummary": "Direct evolution of ID.AM-1",
-    "ImplementationExamples": "Maintain centralized inventory incl. cloud/SaaS.",
+Status (Keep/Remove/Partial) — baseline rows only,
 
-    "CSF1SubcategoryID": 5001,
-    "CSF1SubcategoryName": "ID.AM-1",
-    "CSF1SubcategoryLanguage": "Physical devices and systems within the organization are inventoried.",
+2025 Attestation (Meet/DoesNotMeet/Partial),
 
-    "Ent_Subcat_Attr": "E=FSI~S=ID.AM-1~ML=3~A=2",
-    "MaturityLevel": 3,
-    "AttributeNum": 2,
-    "AttributeDefinition": "Inventory includes ownership and location metadata",
-    "AssessScore2024": 2,
+For custom rows: Custom Attribute #, Custom Definition, Custom Attestation.
 
-    "SelectionStatus": "Remove",
-    "SelectionAttestation": "DoesNotMeet",
+Hidden but available for deep links/exports: CSF2 key (Ent_Subcat_Attr_CSF2) and CSF1 link (code + desc).
 
-    "CustomAttributeNum": null,
-    "CustomAttributeDefinition": null,
-    "CustomAttributeAttestation": null,
+Owners/Custodians UI
 
-    "Owner": "Alex Rivera",
-    "Custodian": "Ops Team",
+Support multiple values; render as chips (e.g., “Alex Rivera”, “Ops Team”).
 
-    "Ent_Subcat_Attr_CSF2": "E=FSI~S=ID.AM-01~ML=3~A=2"
-  },
-  {
-    "OrgID": 1,
-    "OrgName": "FSI",
+If many, show first few + “+N more” popover.
 
-    "FunctionID": 1,
-    "FunctionName": "Identity (ID)",
-    "FunctionLanguage": "Identify organizational context, assets, etc.",
+User actions
 
-    "CategoryID": 100,
-    "CategoryName": "Asset Management (ID.AM)",
-    "CategoryLanguage": "Identify and manage assets.",
+Inline edit Status and Attestation on baseline rows.
 
-    "CSF2SubcategoryID": 1001,
-    "CSF2SubcategoryName": "ID.AM-01",
-    "CSF2SubcategoryLanguage": "An inventory of hardware, software, data, and systems is maintained.",
-    "ChangeSummary": "Direct evolution of ID.AM-1",
-    "ImplementationExamples": "Maintain centralized inventory incl. cloud/SaaS.",
+Add Attribute button per subcategory:
 
-    "CSF1SubcategoryID": null,
-    "CSF1SubcategoryName": null,
-    "CSF1SubcategoryLanguage": null,
+Form fields: Maturity Level (3/4), Attribute # (pre-filled placeholder e.g., 10, 20…), Definition, Attestation.
 
-    "Ent_Subcat_Attr": null,
-    "MaturityLevel": 3,
-    "AttributeNum": 30,
-    "AttributeDefinition": null,
-    "AssessScore2024": null,
+Submit adds a custom row at once.
 
-    "SelectionStatus": null,
-    "SelectionAttestation": null,
+(Optional later) edit owners/custodians via a small manager UI.
 
-    "CustomAttributeNum": 30,
-    "CustomAttributeDefinition": "Inventory includes SaaS resources and cloud identities",
-    "CustomAttributeAttestation": "Partial",
+Immediate feedback
 
-    "Owner": "Alex Rivera",
-    "Custodian": "Ops Team",
+On save (status/attestation) or add custom:
 
-    "Ent_Subcat_Attr_CSF2": "E=FSI~S=ID.AM-01~ML=3~A=30"
-  },
-  {
-    "OrgID": 1,
-    "OrgName": "FSI",
+Call write API → backend refreshes the single subcategory slice → UI refetches that subcategory → updated row appears immediately.
 
-    "FunctionID": 1,
-    "FunctionName": "Identity (ID)",
-    "FunctionLanguage": "Identify organizational context, assets, etc.",
+Show optimistic UI (spinner/check) and error toasts on failure.
 
-    "CategoryID": 100,
-    "CategoryName": "Asset Management (ID.AM)",
-    "CategoryLanguage": "Identify and manage assets.",
+“Final attribute view”
 
-    "CSF2SubcategoryID": 1001,
-    "CSF2SubcategoryName": "ID.AM-01",
-    "CSF2SubcategoryLanguage": "An inventory of hardware, software, data, and systems is maintained.",
-    "ChangeSummary": "Direct evolution of ID.AM-1",
-    "ImplementationExamples": "Maintain centralized inventory incl. cloud/SaaS.",
+Toggle/view mode to show the final CSF-2 set (e.g., hide Status = Remove, include customs).
 
-    "CSF1SubcategoryID": 5001,
-    "CSF1SubcategoryName": "ID.AM-1",
-    "CSF1SubcategoryLanguage": "Physical devices and systems within the organization are inventoried.",
+Expose CSF2 key for export/deep links (not shown in grid by default).
 
-    "Ent_Subcat_Attr": "E=FSI~S=ID.AM-1~ML=4~A=1",
-    "MaturityLevel": 4,
-    "AttributeNum": 1,
-    "AttributeDefinition": "Automated discovery reconciles inventory with CMDB and network scans",
-    "AssessScore2024": 2,
+Performance
 
-    "SelectionStatus": "Keep",
-    "SelectionAttestation": "Partial",
+Lazy-load attributes only when a subcategory expands (fast initial render).
 
-    "CustomAttributeNum": null,
-    "CustomAttributeDefinition": null,
-    "CustomAttributeAttestation": null,
+Virtualized rows if a subcategory has lots of attributes.
 
-    "Owner": "Alex Rivera",
-    "Custodian": "Ops Team",
+Pagination not required if virtualization is used.
 
-    "Ent_Subcat_Attr_CSF2": "E=FSI~S=ID.AM-01~ML=4~A=1"
-  }
-]
+Usability & polish
+
+Tooltips/info icons for Function/Category/Subcategory descriptions, Change Summary, Implementation Examples.
+
+Read-only styling for 2024 Score and baseline/custom columns as appropriate.
+
+Row badges: “Baseline” vs “Custom”.
+
+Highlight newly added/edited rows briefly.
+
+Validation & rules
+
+Attestation required when adding a custom attribute.
+
+Status applies only to baseline rows (not customs).
+
+Prevent duplicate (ML + Attribute #) within the same org/subcategory on the client.
+
+Accessibility & UX
+
+Keyboard-navigable table and dropdowns.
+
+Clear empty states (“No attributes match your filters”).
+
+Loading states per panel.

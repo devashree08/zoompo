@@ -1,57 +1,62 @@
 CREATE TABLE dbo.UI_CsfAttributeFeed
 (
-  -- Organizational context
-  OrgID                  INT           NOT NULL,
-  OrgCode                NVARCHAR(20)  NOT NULL,    -- same as OrgName
+  /*— Organizational context —*/
+  OrgID                     INT           NOT NULL,
+  OrgName                   NVARCHAR(20)  NOT NULL,   -- e.g. “FSI”
 
-  -- CSF-2 hierarchy
-  FunctionID             INT           NOT NULL,
-  CSF2FunctionCode       NVARCHAR(20)  NOT NULL,
-  CSF2FunctionTitle      NVARCHAR(100) NOT NULL,
+  /*— CSF-2 Function —*/
+  FunctionID                INT           NOT NULL,
+  FunctionName              NVARCHAR(100) NOT NULL,   -- e.g. “Identity (ID)”
+  FunctionLanguage          NVARCHAR(500) NULL,       -- description
 
-  CategoryID             INT           NOT NULL,
-  CSF2CategoryCode       NVARCHAR(20)  NOT NULL,
-  CSF2CategoryTitle      NVARCHAR(100) NOT NULL,
+  /*— CSF-2 Category —*/
+  CategoryID                INT           NOT NULL,
+  CategoryName              NVARCHAR(200) NOT NULL,   -- “Asset Management (ID.AM)”
+  CategoryLanguage          NVARCHAR(500) NULL,       -- description
 
-  SubcategoryID          INT           NOT NULL,
-  CSF2SubcatCode         NVARCHAR(20)  NOT NULL,
-  CSF2SubcatTitle        NVARCHAR(200) NOT NULL,
-  ChangeSummary          NVARCHAR(500) NULL,
-  ImplementationExample  NVARCHAR(500) NULL,
+  /*— CSF-2 Subcategory —*/
+  CSF2SubcategoryID         INT           NOT NULL,
+  CSF2SubcategoryName       NVARCHAR(200) NOT NULL,   -- “ID.AM-01”
+  CSF2SubcategoryLanguage   NVARCHAR(500) NULL,       -- description
+  ChangeSummary             NVARCHAR(500) NULL,
+  ImplementationExamples    NVARCHAR(500) NULL,
 
-  -- Attribute data
-  MaturityLevel          TINYINT       NOT NULL,
-  AttributeOrder         INT           NOT NULL,
-  Ent_Subcat_Attr        NVARCHAR(100) NULL,    -- CSF-1 key
-  BaselineDefinition     NVARCHAR(500) NULL,
-  SelectionStatus        VARCHAR(20)   NULL,
-  SelectionAttestation   VARCHAR(20)   NULL,
-  CustomDefinition       NVARCHAR(500) NULL,
-  CustomAttestation      VARCHAR(20)   NULL,
-  AssessScore2024        INT           NULL,
+  /*— Associated CSF-1 Subcategory —*/
+  CSF1SubcategoryID         INT           NULL,
+  CSF1SubcategoryName       NVARCHAR(200) NULL,
+  CSF1SubcategoryLanguage   NVARCHAR(500) NULL,
 
-  -- Contacts aggregated
-  OwnerList              NVARCHAR(500) NULL,
-  CustodianList          NVARCHAR(500) NULL,
+  /*— Attribute‐level data —*/
+  MaturityLevel             TINYINT       NOT NULL,   -- 3 or 4
+  AttributeNum              INT           NOT NULL,
+  AttributeDefinition       NVARCHAR(500) NULL,       -- CSF-1 text
+  AssessScore2024           INT           NULL,       -- view-only
 
-  -- Computed CSF-2 key
-  Ent_Subcat_Attr_CSF2   AS (
-    'E=' + OrgCode
-    + '~S=' + CSF2SubcatCode
-    + '~ML=' + CAST(MaturityLevel  AS NVARCHAR(3))
-    + '~A=' + CAST(AttributeOrder  AS NVARCHAR(5))
-  ) PERSISTED,
+  /*— User “keep/remove” + attestation —*/
+  SelectionStatus           VARCHAR(20)   NULL,       -- Keep/Remove/Partial
+  SelectionAttestation      VARCHAR(20)   NULL,       -- Meet/DoesNotMeet/Partial
 
+  /*— Custom attributes —*/
+  CustomAttributeNum        INT           NULL,
+  CustomAttributeDefinition NVARCHAR(500) NULL,
+  CustomAttributeAttestation VARCHAR(20)  NULL,
+
+  /*— Contacts —*/
+  Owner                     NVARCHAR(200) NULL,
+  Custodian                 NVARCHAR(200) NULL,
+
+  /*— Primary key —*/
   CONSTRAINT PK_UI_CsfAttributeFeed
     PRIMARY KEY CLUSTERED
-    (OrgID, CSF2SubcatCode, MaturityLevel, AttributeOrder)
+    (OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum)
 );
+
 
 
 
 ------------
 
-CREATE PROCEDURE dbo.sp_RefreshCsfFeed
+CREATE PROCEDURE dbo.sp_RefreshCsfAttributeFeed
   @OrgID INT
 AS
 BEGIN
@@ -60,159 +65,193 @@ BEGIN
   MERGE dbo.UI_CsfAttributeFeed AS T
   USING
   (
-    ---------------------------------------------------
-    -- 1) Baseline attributes with selections & contacts
+    ----------------------------------------------------------------
+    -- A) Baseline CSF-1 attributes mapped into CSF-2 subcategories
     SELECT
       b.OrgID,
-      o.OrgName       AS OrgCode,
+      o.OrgName,
 
       f.FunctionID,
-      f.Code          AS CSF2FunctionCode,
-      f.Title         AS CSF2FunctionTitle,
+      f.Title              AS FunctionName,
+      f.Description        AS FunctionLanguage,
 
       c.CategoryID,
-      c.Code          AS CSF2CategoryCode,
-      c.Title         AS CSF2CategoryTitle,
+      c.Title              AS CategoryName,
+      c.Description        AS CategoryLanguage,
 
-      sc.SubcategoryID,
-      sc.Code         AS CSF2SubcatCode,
-      sc.Title        AS CSF2SubcatTitle,
+      sc.SubcategoryID     AS CSF2SubcategoryID,
+      sc.Code              AS CSF2SubcategoryName,
+      sc.Description       AS CSF2SubcategoryLanguage,
       sc.ChangeSummary,
       sc.ImplementationExample,
 
+      m.CSF1SubcatID       AS CSF1SubcategoryID,
+      s1.Code              AS CSF1SubcategoryName,
+      s1.Description       AS CSF1SubcategoryLanguage,
+
       b.MaturityLevel,
-      b.AttributeNum    AS AttributeOrder,
-      b.Ent_Subcat_Attr,
-      b.Definition      AS BaselineDefinition,
-      sel.Status        AS SelectionStatus,
-      sel.Attestation2025 AS SelectionAttestation,
-      NULL              AS CustomDefinition,
-      NULL              AS CustomAttestation,
+      b.AttributeNum,
+      b.Definition         AS AttributeDefinition,
       b.AssessScore2024,
 
-      -- Owners list
-      OwnerList = STUFF((
-        SELECT ','+oc.ContactName
+      sel.Status           AS SelectionStatus,
+      sel.Attestation2025  AS SelectionAttestation,
+
+      NULL                 AS CustomAttributeNum,
+      NULL                 AS CustomAttributeDefinition,
+      NULL                 AS CustomAttributeAttestation,
+
+      /* aggregate contacts */
+      Owner = STUFF((
+        SELECT ',' + oc.ContactName
           FROM dbo.Org_SubcategoryContact oc
-         WHERE oc.OrgID        = b.OrgID
-           AND oc.CSF2SubcatID = sc.SubcategoryID
-           AND oc.ContactRole  = 'Owner'
+         WHERE oc.OrgID          = b.OrgID
+           AND oc.CSF2SubcatID   = sc.SubcategoryID
+           AND oc.ContactRole    = 'Owner'
          FOR XML PATH('')),1,1,''),
 
-      -- Custodians list
-      CustodianList = STUFF((
-        SELECT ','+oc.ContactName
+      Custodian = STUFF((
+        SELECT ',' + oc.ContactName
           FROM dbo.Org_SubcategoryContact oc
-         WHERE oc.OrgID        = b.OrgID
-           AND oc.CSF2SubcatID = sc.SubcategoryID
-           AND oc.ContactRole  = 'Custodian'
+         WHERE oc.OrgID          = b.OrgID
+           AND oc.CSF2SubcatID   = sc.SubcategoryID
+           AND oc.ContactRole    = 'Custodian'
          FOR XML PATH('')),1,1,'')
-    FROM stg.Org_CSF1_AttrBaseline b
-    JOIN dbo.Org o              ON o.OrgID    = b.OrgID
-    JOIN ref.CSF1_to_CSF2_SubcategoryMap m 
-      ON m.CSF1SubcatID = b.CSF1SubcatID
-    JOIN ref.CSF2_Subcategory sc
-      ON sc.SubcategoryID = m.CSF2SubcatID
-    JOIN ref.CSF2_Category c 
-      ON c.CategoryID = sc.CategoryID
-    JOIN ref.CSF2_Function f 
-      ON f.FunctionID = c.FunctionID
+
+    FROM stg.Org_CSF1_AttrBaseline AS b
+    JOIN dbo.Org                       AS o ON o.OrgID          = b.OrgID
+    JOIN ref.CSF1_to_CSF2_SubcategoryMap AS m ON m.CSF1SubcatID = b.CSF1SubcatID
+    JOIN ref.CSF2_Subcategory         AS sc ON sc.SubcategoryID  = m.CSF2SubcatID
+    JOIN ref.CSF2_Category            AS c  ON c.CategoryID     = sc.CategoryID
+    JOIN ref.CSF2_Function            AS f  ON f.FunctionID     = c.FunctionID
+    JOIN ref.CSF1_Subcategory         AS s1 ON s1.CSF1SubcatID  = m.CSF1SubcatID
     LEFT JOIN dbo.Org_AttributeSelection sel
-      ON sel.OrgID = b.OrgID
+      ON sel.OrgID        = b.OrgID
      AND sel.Ent_Subcat_Attr = b.Ent_Subcat_Attr
      AND sel.CSF2SubcatID = sc.SubcategoryID
 
+    WHERE b.OrgID = @OrgID
+
     UNION ALL
 
-    ---------------------------------------------------
-    -- 2) Custom attributes with attestations & contacts
+    ----------------------------------------------------------------
+    -- B) Org-added custom CSF-2 attributes
     SELECT
       cust.OrgID,
-      o.OrgName       AS OrgCode,
+      o.OrgName,
 
       f.FunctionID,
-      f.Code          AS CSF2FunctionCode,
-      f.Title         AS CSF2FunctionTitle,
+      f.Title              AS FunctionName,
+      f.Description        AS FunctionLanguage,
 
       c.CategoryID,
-      c.Code          AS CSF2CategoryCode,
-      c.Title         AS CSF2CategoryTitle,
+      c.Title              AS CategoryName,
+      c.Description        AS CategoryLanguage,
 
-      sc.SubcategoryID,
-      sc.Code         AS CSF2SubcatCode,
-      sc.Title        AS CSF2SubcatTitle,
+      sc.SubcategoryID     AS CSF2SubcategoryID,
+      sc.Code              AS CSF2SubcategoryName,
+      sc.Description       AS CSF2SubcategoryLanguage,
       sc.ChangeSummary,
       sc.ImplementationExample,
 
-      cust.MaturityLevel,
-      cust.AttributeNum AS AttributeOrder,
-      NULL             AS Ent_Subcat_Attr,
-      NULL             AS BaselineDefinition,
-      NULL             AS SelectionStatus,
-      NULL             AS SelectionAttestation,
-      cust.Definition  AS CustomDefinition,
-      cust.Attestation2025 AS CustomAttestation,
-      NULL             AS AssessScore2024,
+      NULL                 AS CSF1SubcategoryID,
+      NULL                 AS CSF1SubcategoryName,
+      NULL                 AS CSF1SubcategoryLanguage,
 
-      -- same Owner/Custodian aggregation
-      OwnerList = STUFF((
-        SELECT ','+oc.ContactName
+      cust.MaturityLevel,
+      cust.AttributeNum    AS AttributeNum,
+      NULL                 AS AttributeDefinition,
+      NULL                 AS AssessScore2024,
+
+      NULL                 AS SelectionStatus,
+      NULL                 AS SelectionAttestation,
+
+      cust.AttributeNum    AS CustomAttributeNum,
+      cust.Definition      AS CustomAttributeDefinition,
+      cust.Attestation2025 AS CustomAttributeAttestation,
+
+      /* same contact aggregation */
+      Owner = STUFF((
+        SELECT ',' + oc.ContactName
           FROM dbo.Org_SubcategoryContact oc
-         WHERE oc.OrgID        = cust.OrgID
-           AND oc.CSF2SubcatID = sc.SubcategoryID
-           AND oc.ContactRole  = 'Owner'
+         WHERE oc.OrgID          = cust.OrgID
+           AND oc.CSF2SubcatID   = sc.SubcategoryID
+           AND oc.ContactRole    = 'Owner'
          FOR XML PATH('')),1,1,''),
 
-      CustodianList = STUFF((
-        SELECT ','+oc.ContactName
+      Custodian = STUFF((
+        SELECT ',' + oc.ContactName
           FROM dbo.Org_SubcategoryContact oc
-         WHERE oc.OrgID        = cust.OrgID
-           AND oc.CSF2SubcatID = sc.SubcategoryID
-           AND oc.ContactRole  = 'Custodian'
+         WHERE oc.OrgID          = cust.OrgID
+           AND oc.CSF2SubcatID   = sc.SubcategoryID
+           AND oc.ContactRole    = 'Custodian'
          FOR XML PATH('')),1,1,'')
-    FROM dbo.Org_CustomCsf2Attribute cust
-    JOIN dbo.Org o              ON o.OrgID    = cust.OrgID
-    JOIN ref.CSF2_Subcategory sc
-      ON sc.SubcategoryID = cust.CSF2SubcatID
-    JOIN ref.CSF2_Category c 
-      ON c.CategoryID = sc.CategoryID
-    JOIN ref.CSF2_Function f 
-      ON f.FunctionID = c.FunctionID
+
+    FROM dbo.Org_CustomCsf2Attribute AS cust
+    JOIN dbo.Org                       AS o  ON o.OrgID          = cust.OrgID
+    JOIN ref.CSF2_Subcategory         AS sc ON sc.SubcategoryID  = cust.CSF2SubcatID
+    JOIN ref.CSF2_Category            AS c  ON c.CategoryID     = sc.CategoryID
+    JOIN ref.CSF2_Function            AS f  ON f.FunctionID     = c.FunctionID
+
+    WHERE cust.OrgID = @OrgID
   ) AS S
-  ON T.OrgID            = S.OrgID
- AND T.CSF2SubcatCode   = S.CSF2SubcatCode
- AND T.MaturityLevel    = S.MaturityLevel
- AND T.AttributeOrder   = S.AttributeOrder
+  ON  T.OrgID              = S.OrgID
+  AND T.CSF2SubcategoryID  = S.CSF2SubcategoryID
+  AND T.MaturityLevel      = S.MaturityLevel
+  AND T.AttributeNum       = S.AttributeNum
 
   WHEN MATCHED THEN
     UPDATE SET
-      OrgCode               = S.OrgCode,
-      FunctionID            = S.FunctionID,
-      CSF2FunctionCode      = S.CSF2FunctionCode,
-      CSF2FunctionTitle     = S.CSF2FunctionTitle,
-      CategoryID            = S.CategoryID,
-      CSF2CategoryCode      = S.CSF2CategoryCode,
-      CSF2CategoryTitle     = S.CSF2CategoryTitle,
-      SubcategoryID         = S.SubcategoryID,
-      CSF2SubcatTitle       = S.CSF2SubcatTitle,
-      ChangeSummary         = S.ChangeSummary,
-      ImplementationExample = S.ImplementationExample,
-      BaselineDefinition    = S.BaselineDefinition,
-      SelectionStatus       = S.SelectionStatus,
-      SelectionAttestation  = S.SelectionAttestation,
-      CustomDefinition      = S.CustomDefinition,
-      CustomAttestation     = S.CustomAttestation,
-      AssessScore2024       = S.AssessScore2024,
-      OwnerList             = S.OwnerList,
-      CustodianList         = S.CustodianList
+      OrgName                   = S.OrgName,
+      FunctionID                = S.FunctionID,
+      FunctionName              = S.FunctionName,
+      FunctionLanguage          = S.FunctionLanguage,
+      CategoryID                = S.CategoryID,
+      CategoryName              = S.CategoryName,
+      CategoryLanguage          = S.CategoryLanguage,
+      ChangeSummary             = S.ChangeSummary,
+      ImplementationExamples    = S.ImplementationExamples,
+      CSF1SubcategoryID         = S.CSF1SubcategoryID,
+      CSF1SubcategoryName       = S.CSF1SubcategoryName,
+      CSF1SubcategoryLanguage   = S.CSF1SubcategoryLanguage,
+      AttributeDefinition       = S.AttributeDefinition,
+      AssessScore2024           = S.AssessScore2024,
+      SelectionStatus           = S.SelectionStatus,
+      SelectionAttestation      = S.SelectionAttestation,
+      CustomAttributeNum        = S.CustomAttributeNum,
+      CustomAttributeDefinition = S.CustomAttributeDefinition,
+      CustomAttributeAttestation= S.CustomAttributeAttestation,
+      Owner                     = S.Owner,
+      Custodian                 = S.Custodian
 
   WHEN NOT MATCHED BY TARGET THEN
-    INSERT (*)
-    VALUES (S.*)
+    INSERT (
+      OrgID,OrgName,
+      FunctionID,FunctionName,FunctionLanguage,
+      CategoryID,CategoryName,CategoryLanguage,
+      CSF2SubcategoryID,CSF2SubcategoryName,CSF2SubcategoryLanguage,
+      ChangeSummary,ImplementationExamples,
+      CSF1SubcategoryID,CSF1SubcategoryName,CSF1SubcategoryLanguage,
+      MaturityLevel,AttributeNum,AttributeDefinition,AssessScore2024,
+      SelectionStatus,SelectionAttestation,
+      CustomAttributeNum,CustomAttributeDefinition,CustomAttributeAttestation,
+      Owner,Custodian
+    )
+    VALUES (
+      S.OrgID,S.OrgName,
+      S.FunctionID,S.FunctionName,S.FunctionLanguage,
+      S.CategoryID,S.CategoryName,S.CategoryLanguage,
+      S.CSF2SubcategoryID,S.CSF2SubcategoryName,S.CSF2SubcategoryLanguage,
+      S.ChangeSummary,S.ImplementationExamples,
+      S.CSF1SubcategoryID,S.CSF1SubcategoryName,S.CSF1SubcategoryLanguage,
+      S.MaturityLevel,S.AttributeNum,S.AttributeDefinition,S.AssessScore2024,
+      S.SelectionStatus,S.SelectionAttestation,
+      S.CustomAttributeNum,S.CustomAttributeDefinition,S.CustomAttributeAttestation,
+      S.Owner,S.Custodian
+    )
 
   WHEN NOT MATCHED BY SOURCE THEN
     DELETE;
-
 END
 GO
 
@@ -220,25 +259,25 @@ GO
 
 ----------
 
--- clustered primary key already in place
+-- Already have clustered PK on OrgID + CSF2SubcategoryID + MaturityLevel + AttributeNum
 
--- support Org filter
 CREATE NONCLUSTERED INDEX IX_UI_ByOrg
   ON dbo.UI_CsfAttributeFeed(OrgID);
 
--- support Function/Category/Subcategory filters
 CREATE NONCLUSTERED INDEX IX_UI_ByFunction
-  ON dbo.UI_CsfAttributeFeed(FunctionID, CSF2FunctionCode);
-CREATE NONCLUSTERED INDEX IX_UI_ByCategory
-  ON dbo.UI_CsfAttributeFeed(CategoryID, CSF2CategoryCode);
-CREATE NONCLUSTERED INDEX IX_UI_BySubcategory
-  ON dbo.UI_CsfAttributeFeed(SubcategoryID, CSF2SubcatCode);
+  ON dbo.UI_CsfAttributeFeed(FunctionID);
 
--- support Owner/Custodian filters
+CREATE NONCLUSTERED INDEX IX_UI_ByCategory
+  ON dbo.UI_CsfAttributeFeed(CategoryID);
+
+CREATE NONCLUSTERED INDEX IX_UI_BySubcategory
+  ON dbo.UI_CsfAttributeFeed(CSF2SubcategoryID);
+
 CREATE NONCLUSTERED INDEX IX_UI_ByOwner
-  ON dbo.UI_CsfAttributeFeed(OwnerList);
+  ON dbo.UI_CsfAttributeFeed(Owner);
+
 CREATE NONCLUSTERED INDEX IX_UI_ByCustodian
-  ON dbo.UI_CsfAttributeFeed(CustodianList);
+  ON dbo.UI_CsfAttributeFeed(Custodian);
 
 
 -------

@@ -96,3 +96,219 @@ CREATE NONCLUSTERED INDEX IX_UI_ByCustodian
 GO
 
 
+
+-----
+
+
+CREATE OR ALTER PROCEDURE dbo.sp_RefreshCsfFeed_Subcat
+  @OrgID INT,
+  @CSF2SubcategoryID INT
+AS
+BEGIN
+  SET NOCOUNT ON;
+  SET XACT_ABORT ON;
+
+  BEGIN TRAN;
+
+  /* Preload CSF2 hierarchy once for this subcategory */
+  ;WITH Csf2 AS (
+    SELECT
+      sc.SubcategoryID       AS CSF2SubcategoryID,
+      sc.SubcategoryName     AS CSF2SubcategoryName,
+      sc.SubcategoryLanguage AS CSF2SubcategoryLanguage,
+      sc.ChangeSummary,
+      sc.ImplementationExample,
+      c.CategoryID,
+      c.CategoryName,
+      c.CategoryLanguage,
+      f.FunctionID,
+      f.FunctionName,
+      f.FunctionLanguage
+    FROM ref.CSF2_Subcategory sc
+    JOIN ref.CSF2_Category   c ON c.CategoryID = sc.CategoryID
+    JOIN ref.CSF2_Function   f ON f.FunctionID = c.FunctionID
+    WHERE sc.SubcategoryID = @CSF2SubcategoryID
+  ),
+  /* Aggregated contacts for this Org × Subcat (owner/custodian) */
+  OC AS (
+    SELECT
+      Owner = STUFF((
+          SELECT ',' + oc.ContactName
+            FROM dbo.Org_SubcategoryContact oc
+           WHERE oc.OrgID = @OrgID
+             AND oc.CSF2SubcatID = @CSF2SubcategoryID
+             AND oc.ContactRole = 'Owner'
+           FOR XML PATH(''), TYPE).value('.','nvarchar(max)'),1,1,''),
+      Custodian = STUFF((
+          SELECT ',' + oc.ContactName
+            FROM dbo.Org_SubcategoryContact oc
+           WHERE oc.OrgID = @OrgID
+             AND oc.CSF2SubcatID = @CSF2SubcategoryID
+             AND oc.ContactRole = 'Custodian'
+           FOR XML PATH(''), TYPE).value('.','nvarchar(max)'),1,1,'')
+  ),
+  /* Baseline (CSF 1.1) attributes mapped into this CSF2 subcategory */
+  BaselineSrc AS (
+    SELECT
+      b.OrgID,
+      o.OrgName,
+
+      cf.FunctionID,  cf.FunctionName,  cf.FunctionLanguage,
+      cf.CategoryID,  cf.CategoryName,  cf.CategoryLanguage,
+      cf.CSF2SubcategoryID,
+      cf.CSF2SubcategoryName,
+      cf.CSF2SubcategoryLanguage,
+      cf.ChangeSummary,
+      cf.ImplementationExample  AS ImplementationExamples,
+
+      m.CSF1SubcatID            AS CSF1SubcategoryID,
+      s1.SubcategoryName        AS CSF1SubcategoryName,
+      s1.SubcategoryLanguage    AS CSF1SubcategoryLanguage,
+
+      b.Ent_Subcat_Attr,
+      b.MaturityLevel,
+      b.AttributeNum,
+      b.Definition              AS AttributeDefinition,
+      b.AssessScore2024,
+
+      sel.Status                AS SelectionStatus,
+      sel.Attestation2025       AS SelectionAttestation,
+
+      CAST(NULL AS INT)         AS CustomAttributeNum,
+      CAST(NULL AS NVARCHAR(500)) AS CustomAttributeDefinition,
+      CAST(NULL AS VARCHAR(20)) AS CustomAttributeAttestation
+    FROM stg.Org_CSF1_AttrBaseline b
+    JOIN dbo.Org o                     ON o.OrgID = b.OrgID
+    JOIN ref.CSF1_to_CSF2_SubcategoryMap m
+                                      ON m.CSF1SubcatID = b.CSF1SubcatID
+    JOIN Csf2 cf                      ON cf.CSF2SubcategoryID = m.CSF2SubcatID  -- restrict to this subcat
+    JOIN ref.CSF1_Subcategory s1      ON s1.CSF1SubcatID = m.CSF1SubcatID
+    LEFT JOIN dbo.Org_AttributeSelection sel
+                                      ON sel.OrgID = b.OrgID
+                                     AND sel.Ent_Subcat_Attr = b.Ent_Subcat_Attr
+                                     AND sel.CSF2SubcatID = @CSF2SubcategoryID
+    WHERE b.OrgID = @OrgID
+  ),
+  /* Org-added CSF2 attributes for this subcategory */
+  CustomSrc AS (
+    SELECT
+      cust.OrgID,
+      o.OrgName,
+
+      cf.FunctionID,  cf.FunctionName,  cf.FunctionLanguage,
+      cf.CategoryID,  cf.CategoryName,  cf.CategoryLanguage,
+      cf.CSF2SubcategoryID,
+      cf.CSF2SubcategoryName,
+      cf.CSF2SubcategoryLanguage,
+      cf.ChangeSummary,
+      cf.ImplementationExample  AS ImplementationExamples,
+
+      CAST(NULL AS INT)           AS CSF1SubcategoryID,
+      CAST(NULL AS NVARCHAR(200)) AS CSF1SubcategoryName,
+      CAST(NULL AS NVARCHAR(500)) AS CSF1SubcategoryLanguage,
+
+      CAST(NULL AS NVARCHAR(100)) AS Ent_Subcat_Attr,
+      cust.MaturityLevel,
+      cust.AttributeNum,
+      CAST(NULL AS NVARCHAR(500)) AS AttributeDefinition,
+      CAST(NULL AS INT)           AS AssessScore2024,
+
+      CAST(NULL AS VARCHAR(20))   AS SelectionStatus,
+      CAST(NULL AS VARCHAR(20))   AS SelectionAttestation,
+
+      cust.AttributeNum           AS CustomAttributeNum,
+      cust.Definition             AS CustomAttributeDefinition,
+      cust.Attestation2025        AS CustomAttributeAttestation
+    FROM dbo.Org_CustomCsf2Attribute cust
+    JOIN dbo.Org o           ON o.OrgID = cust.OrgID
+    JOIN Csf2 cf             ON cf.CSF2SubcategoryID = cust.CSF2SubcatID
+    WHERE cust.OrgID = @OrgID
+      AND cust.CSF2SubcatID = @CSF2SubcategoryID
+      -- If you later add IsApproved, uncomment:
+      -- AND cust.IsApproved = 1
+  ),
+  SourceSet AS (
+    SELECT * FROM BaselineSrc
+    UNION ALL
+    SELECT * FROM CustomSrc
+  ),
+  SourceWithContacts AS (
+    SELECT s.*,
+           oc.Owner, oc.Custodian
+    FROM SourceSet s
+    CROSS JOIN OC oc
+  )
+
+  MERGE dbo.UI_CsfAttributeFeed AS T
+  USING SourceWithContacts AS S
+     ON T.OrgID             = S.OrgID
+    AND T.CSF2SubcategoryID = S.CSF2SubcategoryID
+    AND T.MaturityLevel     = S.MaturityLevel
+    AND T.AttributeNum      = S.AttributeNum
+
+  WHEN MATCHED THEN
+    UPDATE SET
+      T.OrgName                   = S.OrgName,
+      T.FunctionID                = S.FunctionID,
+      T.FunctionName              = S.FunctionName,
+      T.FunctionLanguage          = S.FunctionLanguage,
+      T.CategoryID                = S.CategoryID,
+      T.CategoryName              = S.CategoryName,
+      T.CategoryLanguage          = S.CategoryLanguage,
+      T.CSF2SubcategoryName       = S.CSF2SubcategoryName,
+      T.CSF2SubcategoryLanguage   = S.CSF2SubcategoryLanguage,
+      T.ChangeSummary             = S.ChangeSummary,
+      T.ImplementationExamples    = S.ImplementationExamples,
+      T.CSF1SubcategoryID         = S.CSF1SubcategoryID,
+      T.CSF1SubcategoryName       = S.CSF1SubcategoryName,
+      T.CSF1SubcategoryLanguage   = S.CSF1SubcategoryLanguage,
+      T.Ent_Subcat_Attr           = S.Ent_Subcat_Attr,
+      T.MaturityLevel             = S.MaturityLevel,
+      T.AttributeNum              = S.AttributeNum,
+      T.AttributeDefinition       = S.AttributeDefinition,
+      T.AssessScore2024           = S.AssessScore2024,
+      T.SelectionStatus           = S.SelectionStatus,
+      T.SelectionAttestation      = S.SelectionAttestation,
+      T.CustomAttributeNum        = S.CustomAttributeNum,
+      T.CustomAttributeDefinition = S.CustomAttributeDefinition,
+      T.CustomAttributeAttestation= S.CustomAttributeAttestation,
+      T.Owner                     = S.Owner,
+      T.Custodian                 = S.Custodian
+
+  WHEN NOT MATCHED BY TARGET THEN
+    INSERT (
+      OrgID, OrgName,
+      FunctionID, FunctionName, FunctionLanguage,
+      CategoryID, CategoryName, CategoryLanguage,
+      CSF2SubcategoryID, CSF2SubcategoryName, CSF2SubcategoryLanguage,
+      ChangeSummary, ImplementationExamples,
+      CSF1SubcategoryID, CSF1SubcategoryName, CSF1SubcategoryLanguage,
+      Ent_Subcat_Attr, MaturityLevel, AttributeNum, AttributeDefinition, AssessScore2024,
+      SelectionStatus, SelectionAttestation,
+      CustomAttributeNum, CustomAttributeDefinition, CustomAttributeAttestation,
+      Owner, Custodian
+    )
+    VALUES (
+      S.OrgID, S.OrgName,
+      S.FunctionID, S.FunctionName, S.FunctionLanguage,
+      S.CategoryID, S.CategoryName, S.CategoryLanguage,
+      S.CSF2SubcategoryID, S.CSF2SubcategoryName, S.CSF2SubcategoryLanguage,
+      S.ChangeSummary, S.ImplementationExamples,
+      S.CSF1SubcategoryID, S.CSF1SubcategoryName, S.CSF1SubcategoryLanguage,
+      S.Ent_Subcat_Attr, S.MaturityLevel, S.AttributeNum, S.AttributeDefinition, S.AssessScore2024,
+      S.SelectionStatus, S.SelectionAttestation,
+      S.CustomAttributeNum, S.CustomAttributeDefinition, S.CustomAttributeAttestation,
+      S.Owner, S.Custodian
+    )
+
+  WHEN NOT MATCHED BY SOURCE
+       AND T.OrgID = @OrgID
+       AND T.CSF2SubcategoryID = @CSF2SubcategoryID
+  THEN DELETE;
+
+  COMMIT;
+END
+GO
+
+
+

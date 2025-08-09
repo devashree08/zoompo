@@ -1,34 +1,160 @@
-CREATE OR ALTER PROCEDURE dbo.sp_RefreshCsfFeed_Org
-  @OrgID INT
+CREATE OR ALTER PROCEDURE dbo.sp_GetCsfAttributeFeed
+  @OrgID              INT           = NULL,   -- NULL => all orgs
+  @FunctionID         INT           = NULL,
+  @CategoryID         INT           = NULL,
+  @CSF2SubcategoryID  INT           = NULL,   -- if provided, Result B returns rows for that subcat (one or all orgs)
+  @OwnerName          NVARCHAR(200) = NULL,
+  @CustodianName      NVARCHAR(200) = NULL,
+  @FinalOnly          BIT           = 0       -- hide baseline rows with Status='Remove'
 AS
 BEGIN
   SET NOCOUNT ON;
 
-  ;WITH MapSubcats AS (
-    SELECT DISTINCT m.CSF2SubcatID
-    FROM stg.Org_CSF1_AttrBaseline b
-    JOIN ref.CSF1_to_CSF2_SubcategoryMap m
-      ON m.CSF1SubcatID = b.CSF1SubcatID
-    WHERE b.OrgID = @OrgID
+  /* ================
+     Result A: Headers (accordion)
+     - Always includes brand-new CSF 2.0 subcats (from ref.*)
+     - One row per Org × CSF2 subcategory (Org set = selected or all)
+     ================ */
+  ;WITH OrgList AS (
+    SELECT OrgID, OrgName
+    FROM dbo.Org
+    WHERE @OrgID IS NULL OR OrgID = @OrgID
   ),
-  CustomSubcats AS (
-    SELECT DISTINCT c.CSF2SubcatID
-    FROM dbo.Org_CustomCsf2Attribute c
-    WHERE c.OrgID = @OrgID
+  Csf2Tree AS (
+    SELECT
+      f.FunctionID, f.FunctionName, f.FunctionLanguage,
+      c.CategoryID, c.CategoryName, c.CategoryLanguage,
+      s.SubcategoryID           AS CSF2SubcategoryID,
+      s.SubcategoryName         AS CSF2SubcategoryName,
+      s.SubcategoryLanguage     AS CSF2SubcategoryLanguage,
+      s.ChangeSummary,
+      s.ImplementationExample   AS ImplementationExamples
+    FROM ref.CSF2_Function  f
+    JOIN ref.CSF2_Category  c ON c.FunctionID  = f.FunctionID
+    JOIN ref.CSF2_Subcategory s ON s.CategoryID = c.CategoryID
+    WHERE (@FunctionID        IS NULL OR f.FunctionID     = @FunctionID)
+      AND (@CategoryID        IS NULL OR c.CategoryID     = @CategoryID)
+      AND (@CSF2SubcategoryID IS NULL OR s.SubcategoryID  = @CSF2SubcategoryID)
   ),
-  AllSubcats AS (
-    SELECT CSF2SubcatID FROM MapSubcats
-    UNION
-    SELECT CSF2SubcatID FROM CustomSubcats
+  Counts AS (
+    SELECT
+      OrgID,
+      CSF2SubcategoryID,
+      KeptCount    = SUM(CASE WHEN CSF1SubcategoryID <> 0 AND SelectionStatus = 'Keep'   THEN 1 ELSE 0 END),
+      RemovedCount = SUM(CASE WHEN CSF1SubcategoryID <> 0 AND SelectionStatus = 'Remove' THEN 1 ELSE 0 END),
+      CustomCount  = SUM(CASE WHEN CSF1SubcategoryID = 0 THEN 1 ELSE 0 END)
+    FROM dbo.UI_CsfAttributeFeed
+    WHERE (@OrgID IS NULL OR OrgID = @OrgID)
+    GROUP BY OrgID, CSF2SubcategoryID
   )
-  SELECT CSF2SubcatID INTO #Todo FROM AllSubcats;
+  SELECT
+    o.OrgID, o.OrgName,
+    t.FunctionID, t.FunctionName, t.FunctionLanguage,
+    t.CategoryID, t.CategoryName, t.CategoryLanguage,
+    t.CSF2SubcategoryID, t.CSF2SubcategoryName, t.CSF2SubcategoryLanguage,
+    t.ChangeSummary, t.ImplementationExamples,
+    -- aggregated per Org × Subcat (may be NULL)
+    Owner = STUFF((
+              SELECT ',' + oc.ContactName
+              FROM dbo.Org_SubcategoryContact oc
+              WHERE oc.OrgID        = o.OrgID
+                AND oc.CSF2SubcatID = t.CSF2SubcategoryID
+                AND oc.ContactRole  = 'Owner'
+              ORDER BY oc.ContactName
+              FOR XML PATH(''), TYPE).value('.','nvarchar(max)'),1,1,''),
+    Custodian = STUFF((
+              SELECT ',' + oc.ContactName
+              FROM dbo.Org_SubcategoryContact oc
+              WHERE oc.OrgID        = o.OrgID
+                AND oc.CSF2SubcatID = t.CSF2SubcategoryID
+                AND oc.ContactRole  = 'Custodian'
+              ORDER BY oc.ContactName
+              FOR XML PATH(''), TYPE).value('.','nvarchar(max)'),1,1,''),
+    ISNULL(c.KeptCount,0)    AS KeptCount,
+    ISNULL(c.RemovedCount,0) AS RemovedCount,
+    ISNULL(c.CustomCount,0)  AS CustomCount
+  FROM OrgList o
+  CROSS JOIN Csf2Tree t
+  LEFT JOIN Counts c
+    ON c.OrgID = o.OrgID
+   AND c.CSF2SubcategoryID = t.CSF2SubcategoryID
+  WHERE
+    (@OwnerName IS NULL OR EXISTS (
+      SELECT 1 FROM dbo.Org_SubcategoryContact oc
+      WHERE oc.OrgID        = o.OrgID
+        AND oc.CSF2SubcatID = t.CSF2SubcategoryID
+        AND oc.ContactRole  = 'Owner'
+        AND oc.ContactName  = @OwnerName))
+    AND (@CustodianName IS NULL OR EXISTS (
+      SELECT 1 FROM dbo.Org_SubcategoryContact oc
+      WHERE oc.OrgID        = o.OrgID
+        AND oc.CSF2SubcatID = t.CSF2SubcategoryID
+        AND oc.ContactRole  = 'Custodian'
+        AND oc.ContactName  = @CustodianName))
+  ORDER BY o.OrgID, t.FunctionID, t.CategoryID, t.CSF2SubcategoryID;
 
-  DECLARE @sid INT;
-  WHILE EXISTS (SELECT 1 FROM #Todo)
+  /* ================
+     Result B: Rows (attribute table)
+     - If @CSF2SubcategoryID is NULL: return empty set (fast initial load)
+     - If @OrgID is NULL: return rows for ALL orgs for this subcat (compare mode)
+     ================ */
+  IF @CSF2SubcategoryID IS NULL
   BEGIN
-    SELECT TOP (1) @sid = CSF2SubcatID FROM #Todo ORDER BY CSF2SubcatID;
-    EXEC dbo.sp_RefreshCsfFeed_Subcat @OrgID = @OrgID, @CSF2SubcategoryID = @sid;
-    DELETE FROM #Todo WHERE CSF2SubcatID = @sid;
+    SELECT TOP (0)
+      OrgID, OrgName,
+      FunctionID, FunctionName, FunctionLanguage,
+      CategoryID, CategoryName, CategoryLanguage,
+      CSF2SubcategoryID, CSF2SubcategoryName, CSF2SubcategoryLanguage,
+      ChangeSummary, ImplementationExamples,
+      CSF1SubcategoryID, CSF1SubcategoryName, CSF1SubcategoryLanguage,
+      Ent_Subcat_Attr,
+      MaturityLevel, AttributeNum,
+      AttributeDefinition, AssessScore2024,
+      SelectionStatus, SelectionAttestation,
+      CustomAttributeNum, CustomAttributeDefinition, CustomAttributeAttestation,
+      Owner, Custodian,
+      Ent_Subcat_Attr_CSF2
+    FROM dbo.UI_CsfAttributeFeed
+    WHERE 1 = 2;
+    RETURN;
   END
+
+  SELECT
+    v.OrgID, v.OrgName,
+    v.FunctionID, v.FunctionName, v.FunctionLanguage,
+    v.CategoryID, v.CategoryName, v.CategoryLanguage,
+    v.CSF2SubcategoryID, v.CSF2SubcategoryName, v.CSF2SubcategoryLanguage,
+    v.ChangeSummary, v.ImplementationExamples,
+    v.CSF1SubcategoryID, v.CSF1SubcategoryName, v.CSF1SubcategoryLanguage,
+    v.Ent_Subcat_Attr,
+    v.MaturityLevel, v.AttributeNum,
+    v.AttributeDefinition, v.AssessScore2024,
+    v.SelectionStatus, v.SelectionAttestation,
+    v.CustomAttributeNum, v.CustomAttributeDefinition, v.CustomAttributeAttestation,
+    v.Owner, v.Custodian,
+    v.Ent_Subcat_Attr_CSF2
+  FROM dbo.UI_CsfAttributeFeed v
+  WHERE v.CSF2SubcategoryID = @CSF2SubcategoryID
+    AND (@OrgID IS NULL OR v.OrgID = @OrgID)           -- all orgs when NULL
+    AND (@FunctionID  IS NULL OR v.FunctionID  = @FunctionID)
+    AND (@CategoryID  IS NULL OR v.CategoryID  = @CategoryID)
+    AND (@OwnerName   IS NULL OR EXISTS (
+          SELECT 1 FROM dbo.Org_SubcategoryContact oc
+          WHERE oc.OrgID        = v.OrgID
+            AND oc.CSF2SubcatID = v.CSF2SubcategoryID
+            AND oc.ContactRole  = 'Owner'
+            AND oc.ContactName  = @OwnerName))
+    AND (@CustodianName IS NULL OR EXISTS (
+          SELECT 1 FROM dbo.Org_SubcategoryContact oc
+          WHERE oc.OrgID        = v.OrgID
+            AND oc.CSF2SubcatID = v.CSF2SubcategoryID
+            AND oc.ContactRole  = 'Custodian'
+            AND oc.ContactName  = @CustodianName))
+    AND (
+          @FinalOnly = 0
+          OR (v.CSF1SubcategoryID = 0  -- always include customs
+              OR ISNULL(v.SelectionStatus,'') <> 'Remove')
+        )
+  ORDER BY v.OrgID, v.MaturityLevel, v.AttributeNum;
 END
 GO

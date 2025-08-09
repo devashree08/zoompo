@@ -1,97 +1,34 @@
-Overall layout & navigation
+CREATE OR ALTER PROCEDURE dbo.sp_RefreshCsfFeed_Org
+  @OrgID INT
+AS
+BEGIN
+  SET NOCOUNT ON;
 
-Org selector (tabs or dropdown). Default = single org.
+  ;WITH MapSubcats AS (
+    SELECT DISTINCT m.CSF2SubcatID
+    FROM stg.Org_CSF1_AttrBaseline b
+    JOIN ref.CSF1_to_CSF2_SubcategoryMap m
+      ON m.CSF1SubcatID = b.CSF1SubcatID
+    WHERE b.OrgID = @OrgID
+  ),
+  CustomSubcats AS (
+    SELECT DISTINCT c.CSF2SubcatID
+    FROM dbo.Org_CustomCsf2Attribute c
+    WHERE c.OrgID = @OrgID
+  ),
+  AllSubcats AS (
+    SELECT CSF2SubcatID FROM MapSubcats
+    UNION
+    SELECT CSF2SubcatID FROM CustomSubcats
+  )
+  SELECT CSF2SubcatID INTO #Todo FROM AllSubcats;
 
-Tiered accordion: Function → Category → Subcategory.
-
-Expand a subcategory to see its attribute table.
-
-Filters (cross-functional)
-
-Filter bar with: Org, Function, Category, Subcategory, Owner, Custodian.
-
-Filters can be combined; update results without page reload.
-
-(Optional) free-text search over attribute definitions.
-
-Data shown in each subcategory panel
-
-Header shows: Subcategory code/name, description, Change Summary, Implementation Examples, Owner(s), Custodian(s).
-
-Attribute table (rows):
-
-Maturity Level, Attribute #, Attribute Definition (baseline), 2024 Score (ro),
-
-Status (Keep/Remove/Partial) — baseline rows only,
-
-2025 Attestation (Meet/DoesNotMeet/Partial),
-
-For custom rows: Custom Attribute #, Custom Definition, Custom Attestation.
-
-Hidden but available for deep links/exports: CSF2 key (Ent_Subcat_Attr_CSF2) and CSF1 link (code + desc).
-
-Owners/Custodians UI
-
-Support multiple values; render as chips (e.g., “Alex Rivera”, “Ops Team”).
-
-If many, show first few + “+N more” popover.
-
-User actions
-
-Inline edit Status and Attestation on baseline rows.
-
-Add Attribute button per subcategory:
-
-Form fields: Maturity Level (3/4), Attribute # (pre-filled placeholder e.g., 10, 20…), Definition, Attestation.
-
-Submit adds a custom row at once.
-
-(Optional later) edit owners/custodians via a small manager UI.
-
-Immediate feedback
-
-On save (status/attestation) or add custom:
-
-Call write API → backend refreshes the single subcategory slice → UI refetches that subcategory → updated row appears immediately.
-
-Show optimistic UI (spinner/check) and error toasts on failure.
-
-“Final attribute view”
-
-Toggle/view mode to show the final CSF-2 set (e.g., hide Status = Remove, include customs).
-
-Expose CSF2 key for export/deep links (not shown in grid by default).
-
-Performance
-
-Lazy-load attributes only when a subcategory expands (fast initial render).
-
-Virtualized rows if a subcategory has lots of attributes.
-
-Pagination not required if virtualization is used.
-
-Usability & polish
-
-Tooltips/info icons for Function/Category/Subcategory descriptions, Change Summary, Implementation Examples.
-
-Read-only styling for 2024 Score and baseline/custom columns as appropriate.
-
-Row badges: “Baseline” vs “Custom”.
-
-Highlight newly added/edited rows briefly.
-
-Validation & rules
-
-Attestation required when adding a custom attribute.
-
-Status applies only to baseline rows (not customs).
-
-Prevent duplicate (ML + Attribute #) within the same org/subcategory on the client.
-
-Accessibility & UX
-
-Keyboard-navigable table and dropdowns.
-
-Clear empty states (“No attributes match your filters”).
-
-Loading states per panel.
+  DECLARE @sid INT;
+  WHILE EXISTS (SELECT 1 FROM #Todo)
+  BEGIN
+    SELECT TOP (1) @sid = CSF2SubcatID FROM #Todo ORDER BY CSF2SubcatID;
+    EXEC dbo.sp_RefreshCsfFeed_Subcat @OrgID = @OrgID, @CSF2SubcategoryID = @sid;
+    DELETE FROM #Todo WHERE CSF2SubcatID = @sid;
+  END
+END
+GO

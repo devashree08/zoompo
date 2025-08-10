@@ -1,146 +1,102 @@
-SET NOCOUNT ON;
-
---------------------------------------------------------------------------------
--- 0) Config: portal user performing the change
---------------------------------------------------------------------------------
-DECLARE @UserID NVARCHAR(128) = N'alice@corp.test';
-DECLARE @ML TINYINT = 3;  -- test maturity level (3 or 4)
-
---------------------------------------------------------------------------------
--- 1) Preconditions: required objects
---------------------------------------------------------------------------------
-IF OBJECT_ID('dbo.Org_CustomCsf2Attribute','U') IS NULL
-  RAISERROR('Missing table dbo.Org_CustomCsf2Attribute.',16,1);
-IF OBJECT_ID('dbo.sp_SaveCustomAttribute','P') IS NULL
-  RAISERROR('Missing proc dbo.sp_SaveCustomAttribute.',16,1);
-
--- No-op stub for refresh if you haven't created the real one yet
-IF OBJECT_ID('dbo.sp_RefreshCsfFeed_Subcat','P') IS NULL
-  EXEC('CREATE PROCEDURE dbo.sp_RefreshCsfFeed_Subcat @OrgID INT, @CSF2SubcategoryID INT AS BEGIN SET NOCOUNT ON; END');
-
---------------------------------------------------------------------------------
--- 2) Pick an existing Org and CSF2 Subcategory (READ-ONLY from ref/dbo)
---    If you want specific IDs, set @OrgID and @CSF2SubcategoryID manually.
---------------------------------------------------------------------------------
-DECLARE @OrgID INT, @CSF2SubcategoryID INT;
-
--- Prefer an org that already has any CSF2 feed rows; else just TOP 1 org
-SELECT TOP (1) @OrgID = OrgID FROM dbo.Org ORDER BY OrgID;
-
-IF @OrgID IS NULL
+CREATE OR ALTER PROCEDURE dbo.sp_GetCsfFilterLookups
+  @OrgIDsCsv            NVARCHAR(MAX) = NULL,
+  @FunctionIDsCsv       NVARCHAR(MAX) = NULL,
+  @CategoryIDsCsv       NVARCHAR(MAX) = NULL,
+  @SubcategoryIDsCsv    NVARCHAR(MAX) = NULL,
+  @OwnerNamesCsv        NVARCHAR(MAX) = NULL,
+  @CustodianNamesCsv    NVARCHAR(MAX) = NULL
+AS
 BEGIN
-  RAISERROR('No orgs found in dbo.Org. Seed Org table before running this test.',16,1);
-  RETURN;
+  SET NOCOUNT ON;
+
+  /* Parse CSVs into inline sets */
+  WITH SelOrg    AS (SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT) AS id FROM STRING_SPLIT(ISNULL(@OrgIDsCsv,''), ',') WHERE LTRIM(RTRIM(value))<>'' ),
+       SelFunc   AS (SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT) AS id FROM STRING_SPLIT(ISNULL(@FunctionIDsCsv,''), ',') WHERE LTRIM(RTRIM(value))<>'' ),
+       SelCat    AS (SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT) AS id FROM STRING_SPLIT(ISNULL(@CategoryIDsCsv,''), ',') WHERE LTRIM(RTRIM(value))<>'' ),
+       SelSub    AS (SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT) AS id FROM STRING_SPLIT(ISNULL(@SubcategoryIDsCsv,''), ',') WHERE LTRIM(RTRIM(value))<>'' ),
+       SelOwner  AS (SELECT LTRIM(RTRIM(value)) AS name          FROM STRING_SPLIT(ISNULL(@OwnerNamesCsv,''), ',')    WHERE LTRIM(RTRIM(value))<>'' ),
+       SelCust   AS (SELECT LTRIM(RTRIM(value)) AS name          FROM STRING_SPLIT(ISNULL(@CustodianNamesCsv,''), ',') WHERE LTRIM(RTRIM(value))<>'' ),
+
+  /* Effective contacts */
+  EffContacts AS (
+    SELECT oc.OrgID, oc.CSF2SubcatID AS CSF2SubcategoryID, oc.FullName, oc.ContactRole
+    FROM dbo.Org_SubcategoryContact oc
+    WHERE oc.Status='Active'
+      AND oc.Eff_Dt <= CAST(GETUTCDATE() AS DATE)
+      AND (oc.Exp_Dt IS NULL OR oc.Exp_Dt >= CAST(GETUTCDATE() AS DATE))
+  ),
+
+  /* Base working set from the denormalized feed */
+  Base AS (
+    SELECT DISTINCT v.OrgID, v.FunctionID, v.CategoryID, v.CSF2SubcategoryID
+    FROM dbo.UI_CsfAttributeFeed v
+  ),
+
+  /* Apply cross filters — each list acts as “any-of” if provided */
+  Filtered AS (
+    SELECT b.*
+    FROM Base b
+    WHERE (NOT EXISTS(SELECT 1 FROM SelOrg)  OR b.OrgID            IN (SELECT id FROM SelOrg))
+      AND (NOT EXISTS(SELECT 1 FROM SelFunc) OR b.FunctionID       IN (SELECT id FROM SelFunc))
+      AND (NOT EXISTS(SELECT 1 FROM SelCat)  OR b.CategoryID       IN (SELECT id FROM SelCat))
+      AND (NOT EXISTS(SELECT 1 FROM SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM SelSub))
+      AND (
+           NOT EXISTS(SELECT 1 FROM SelOwner)
+           OR EXISTS (
+             SELECT 1 FROM EffContacts e
+             WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
+               AND e.ContactRole='Owner'
+               AND e.FullName IN (SELECT name FROM SelOwner)
+           )
+      )
+      AND (
+           NOT EXISTS(SELECT 1 FROM SelCust)
+           OR EXISTS (
+             SELECT 1 FROM EffContacts e
+             WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
+               AND e.ContactRole='Custodian'
+               AND e.FullName IN (SELECT name FROM SelCust)
+           )
+      )
+  )
+  -- 1) Orgs
+  SELECT DISTINCT o.OrgID, o.OrgCode, o.OrgName
+  FROM Filtered f JOIN dbo.Org o ON o.OrgID=f.OrgID
+  ORDER BY o.OrgCode;
+
+  -- 2) Functions
+  SELECT DISTINCT fn.FunctionID, fn.FunctionName
+  FROM Filtered f
+  JOIN ref.CSF2_Category c ON c.CategoryID=f.CategoryID
+  JOIN ref.CSF2_Function fn ON fn.FunctionID=c.FunctionID
+  ORDER BY fn.FunctionID;
+
+  -- 3) Categories
+  SELECT DISTINCT c.CategoryID, c.CategoryName, c.FunctionID
+  FROM Filtered f
+  JOIN ref.CSF2_Category c ON c.CategoryID=f.CategoryID
+  ORDER BY c.CategoryID;
+
+  -- 4) Subcategories
+  SELECT DISTINCT s.SubcategoryID, s.SubcategoryName, s.CategoryID
+  FROM Filtered f
+  JOIN ref.CSF2_Subcategory s ON s.SubcategoryID=f.CSF2SubcategoryID
+  ORDER BY s.SubcategoryID;
+
+  -- 5) Owners (effective) in filtered scope
+  SELECT DISTINCT e.OrgID, e.CSF2SubcategoryID, e.FullName
+  FROM Filtered f
+  JOIN EffContacts e
+    ON e.OrgID=f.OrgID AND e.CSF2SubcategoryID=f.CSF2SubcategoryID
+  WHERE e.ContactRole='Owner'
+  ORDER BY e.OrgID, e.CSF2SubcategoryID, e.FullName;
+
+  -- 6) Custodians (effective) in filtered scope
+  SELECT DISTINCT e.OrgID, e.CSF2SubcategoryID, e.FullName
+  FROM Filtered f
+  JOIN EffContacts e
+    ON e.OrgID=f.OrgID AND e.CSF2SubcategoryID=f.CSF2SubcategoryID
+  WHERE e.ContactRole='Custodian'
+  ORDER BY e.OrgID, e.CSF2SubcategoryID, e.FullName;
 END
-
-SELECT TOP (1) @CSF2SubcategoryID = SubcategoryID
-FROM ref.CSF2_Subcategory
-ORDER BY SubcategoryID;
-
-IF @CSF2SubcategoryID IS NULL
-BEGIN
-  RAISERROR('No CSF2 subcategories found in ref.CSF2_Subcategory. Load refs before running this test.',16,1);
-  RETURN;
-END
-
-PRINT CONCAT('== Using OrgID=', @OrgID, ' CSF2SubcategoryID=', @CSF2SubcategoryID, ' ML=', @ML);
-
---------------------------------------------------------------------------------
--- 3) Snapshot before
---------------------------------------------------------------------------------
-PRINT '== BEFORE: existing custom attributes for this scope ==';
-SELECT OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum, Definition, Attestation, IsActive, ModifiedAt
-FROM dbo.Org_CustomCsf2Attribute
-WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
-ORDER BY AttributeNum;
-
---------------------------------------------------------------------------------
--- 4) ADD a custom attribute (auto-numbered >= 15)
---------------------------------------------------------------------------------
-DECLARE @NewAttrNum INT = NULL;
-
-EXEC dbo.sp_SaveCustomAttribute
-  @Action='ADD',
-  @OrgID=@OrgID,
-  @CSF2SubcategoryID=@CSF2SubcategoryID,
-  @MaturityLevel=@ML,
-  @AttributeNum=@NewAttrNum OUTPUT,
-  @Definition=N'Quarterly reconciliation of asset inventory to CMDB.',
-  @Attestation='Meet',
-  @UserID=@UserID;
-
-PRINT CONCAT('ADD assigned AttributeNum = ', CONVERT(VARCHAR(10), @NewAttrNum));
-
-PRINT '== AFTER ADD ==';
-SELECT OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum, Definition, Attestation, IsActive, ModifiedAt
-FROM dbo.Org_CustomCsf2Attribute
-WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
-ORDER BY AttributeNum;
-
---------------------------------------------------------------------------------
--- 5) UPDATE that attribute (change text + attestation)
---------------------------------------------------------------------------------
-EXEC dbo.sp_SaveCustomAttribute
-  @Action='UPDATE',
-  @OrgID=@OrgID,
-  @CSF2SubcategoryID=@CSF2SubcategoryID,
-  @MaturityLevel=@ML,
-  @AttributeNum=@NewAttrNum OUTPUT,
-  @Definition=N'Quarterly reconciliation of asset inventory to authoritative CMDB.',
-  @Attestation='Partial Meet',
-  @UserID=@UserID;
-
-PRINT '== AFTER UPDATE ==';
-SELECT OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum, Definition, Attestation, IsActive, ModifiedAt
-FROM dbo.Org_CustomCsf2Attribute
-WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
-ORDER BY AttributeNum;
-
---------------------------------------------------------------------------------
--- 6) DELETE (soft) the attribute
---------------------------------------------------------------------------------
-EXEC dbo.sp_SaveCustomAttribute
-  @Action='DELETE',
-  @OrgID=@OrgID,
-  @CSF2SubcategoryID=@CSF2SubcategoryID,
-  @MaturityLevel=@ML,
-  @AttributeNum=@NewAttrNum OUTPUT,
-  @UserID=@UserID;
-
-PRINT '== AFTER SOFT DELETE ==';
-SELECT OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum, Definition, Attestation, IsActive, ModifiedAt
-FROM dbo.Org_CustomCsf2Attribute
-WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
-ORDER BY AttributeNum;
-
---------------------------------------------------------------------------------
--- 7) ADD again to verify numbering is monotonic (should be previous MAX+1)
---------------------------------------------------------------------------------
-DECLARE @AnotherAttrNum INT = NULL;
-
-EXEC dbo.sp_SaveCustomAttribute
-  @Action='ADD',
-  @OrgID=@OrgID,
-  @CSF2SubcategoryID=@CSF2SubcategoryID,
-  @MaturityLevel=@ML,
-  @AttributeNum=@AnotherAttrNum OUTPUT,
-  @Definition=N'Monthly variance analysis between discovery tool and CMDB.',
-  @Attestation='Does Not Meet',
-  @UserID=@UserID;
-
-PRINT CONCAT('Second ADD assigned AttributeNum = ', CONVERT(VARCHAR(10), @AnotherAttrNum));
-
-PRINT '== AFTER SECOND ADD ==';
-SELECT OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum, Definition, Attestation, IsActive, ModifiedAt
-FROM dbo.Org_CustomCsf2Attribute
-WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
-ORDER BY AttributeNum;
-
---------------------------------------------------------------------------------
--- 8) Audit trail (most recent first)
---------------------------------------------------------------------------------
-PRINT '== AUDIT TOP 20 ==';
-SELECT TOP (20) *
-FROM dbo.Org_CustomCsf2Attribute_Audit
-WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
-ORDER BY AuditID DESC;
+GO

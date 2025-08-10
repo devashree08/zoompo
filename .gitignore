@@ -1,151 +1,56 @@
-SET NOCOUNT ON;
+-- dbo.Org_CustomCsf2Attribute
+-- PURPOSE: Org-specific **custom** attributes at CSF 2.0 subcategory level.
+-- NOTE: AttributeNum is backend-assigned (>=15) per (OrgID, CSF2SubcategoryID, MaturityLevel).
+--       Attestation enums: 'Meet' | 'Partial Meet' | 'Does Not Meet'
+--       Soft delete via IsActive.
 
---------------------------------------------------------------------------------
--- Config: who is making the change (from your portal header)
---------------------------------------------------------------------------------
-DECLARE @UserID NVARCHAR(128) = N'alice@corp.test';
+IF OBJECT_ID('dbo.Org_CustomCsf2Attribute','U') IS NULL
+CREATE TABLE dbo.Org_CustomCsf2Attribute
+(
+  OrgID               INT            NOT NULL,
+  CSF2SubcategoryID   INT            NOT NULL,
+  MaturityLevel       TINYINT        NOT NULL,        -- 3 or 4
+  AttributeNum        INT            NOT NULL,        -- auto-assigned (>=15)
 
---------------------------------------------------------------------------------
--- 1) Find an existing baseline row WITH a CSF1→CSF2 mapping (no writes)
---    Review the result and/or let the script pick TOP(1) automatically.
---------------------------------------------------------------------------------
-PRINT '== Candidate baseline rows with CSF1→CSF2 mapping (TOP 10) ==';
-SELECT TOP (10)
-  b.OrgID,
-  o.OrgCode,
-  b.CSF1SubcatID,
-  s1.SubcategoryName AS CSF1SubcatName,
-  m.CSF2SubcatID     AS CSF2SubcategoryID,
-  s2.SubcategoryName AS CSF2SubcatName,
-  b.MaturityLevel,
-  b.AttributeNum,
-  b.Ent_Subcat_Attr
-FROM stg.Org_CSF1_AttrBaseline b
-JOIN dbo.Org o
-  ON o.OrgID = b.OrgID
-JOIN ref.CSF1_to_CSF2_SubcategoryMap m
-  ON m.CSF1SubcatID = b.CSF1SubcatID
-JOIN ref.CSF2_Subcategory s2
-  ON s2.SubcategoryID = m.CSF2SubcatID
-JOIN ref.CSF1_Subcategory s1
-  ON s1.CSF1SubcatID = b.CSF1SubcatID
-WHERE b.MaturityLevel IN (3,4)
-ORDER BY b.OrgID, m.CSF2SubcatID, b.CSF1SubcatID, b.MaturityLevel, b.AttributeNum;
+  Definition          NVARCHAR(500)  NOT NULL,
+  Attestation         VARCHAR(20)    NOT NULL,        -- Meet | Partial Meet | Does Not Meet
 
---------------------------------------------------------------------------------
--- 2) Auto-pick ONE candidate for the test (uses the first row from the query above)
---    If you want a specific row, just SET these variables yourself.
---------------------------------------------------------------------------------
-DECLARE
-  @OrgID INT,
-  @CSF1SubcategoryID INT,
-  @CSF2SubcategoryID INT,
-  @MaturityLevel TINYINT,
-  @AttributeNum INT;
+  /* Optional governance (enable later if needed)
+  IsApproved          BIT            NOT NULL CONSTRAINT DF_Custom_IsApproved DEFAULT (0),
+  */
 
-;WITH C AS (
-  SELECT TOP (1)
-         b.OrgID,
-         b.CSF1SubcatID      AS CSF1SubcategoryID,
-         m.CSF2SubcatID      AS CSF2SubcategoryID,
-         b.MaturityLevel,
-         b.AttributeNum
-  FROM stg.Org_CSF1_AttrBaseline b
-  JOIN ref.CSF1_to_CSF2_SubcategoryMap m
-    ON m.CSF1SubcatID = b.CSF1SubcatID
-  WHERE b.MaturityLevel IN (3,4)
-  ORDER BY b.OrgID, m.CSF2SubcatID, b.CSF1SubcatID, b.MaturityLevel, b.AttributeNum
-)
-SELECT
-  @OrgID = OrgID,
-  @CSF1SubcategoryID = CSF1SubcategoryID,
-  @CSF2SubcategoryID = CSF2SubcategoryID,
-  @MaturityLevel = MaturityLevel,
-  @AttributeNum = AttributeNum
-FROM C;
+  IsActive            BIT            NOT NULL CONSTRAINT DF_Custom_IsActive   DEFAULT (1),
 
-IF @OrgID IS NULL
-BEGIN
-  RAISERROR('No candidate baseline rows found. Check that stg baseline + mapping are populated.',16,1);
-  RETURN;
-END
+  CreatedBy           NVARCHAR(128)  NOT NULL,
+  CreatedAt           DATETIME2(3)   NOT NULL CONSTRAINT DF_Custom_CreatedAt  DEFAULT SYSUTCDATETIME(),
+  ModifiedBy          NVARCHAR(128)  NOT NULL,
+  ModifiedAt          DATETIME2(3)   NOT NULL CONSTRAINT DF_Custom_ModifiedAt DEFAULT SYSUTCDATETIME(),
 
-PRINT '== Using candidate ==';
-SELECT @OrgID AS OrgID, @CSF1SubcategoryID AS CSF1SubcategoryID, @CSF2SubcategoryID AS CSF2SubcategoryID,
-       @MaturityLevel AS MaturityLevel, @AttributeNum AS AttributeNum;
+  CONSTRAINT PK_Org_CustomCsf2Attribute
+    PRIMARY KEY CLUSTERED (OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum),
 
---------------------------------------------------------------------------------
--- 3) Exercise the save proc (writes only to dbo tables)
---------------------------------------------------------------------------------
-PRINT '== INSERT: Keep / Meet ==';
-EXEC dbo.sp_SaveAttributeSelection
-     @OrgID=@OrgID,
-     @CSF2SubcategoryID=@CSF2SubcategoryID,
-     @CSF1SubcategoryID=@CSF1SubcategoryID,
-     @MaturityLevel=@MaturityLevel,
-     @AttributeNum=@AttributeNum,
-     @SelectionStatus='Keep',
-     @SelectionAttestation='Meet',
-     @UserID=@UserID;
+  CONSTRAINT FK_CustomAttr_Org
+    FOREIGN KEY (OrgID)             REFERENCES dbo.Org(OrgID),
+  CONSTRAINT FK_CustomAttr_CSF2Subcat
+    FOREIGN KEY (CSF2SubcategoryID) REFERENCES ref.CSF2_Subcategory(SubcategoryID),
 
-PRINT '== UPDATE: Keep / Partial Meet ==';
-EXEC dbo.sp_SaveAttributeSelection
-     @OrgID=@OrgID,
-     @CSF2SubcategoryID=@CSF2SubcategoryID,
-     @CSF1SubcategoryID=@CSF1SubcategoryID,
-     @MaturityLevel=@MaturityLevel,
-     @AttributeNum=@AttributeNum,
-     @SelectionStatus='Keep',
-     @SelectionAttestation='Partial Meet',
-     @UserID=@UserID;
+  CONSTRAINT CK_Custom_ML        CHECK (MaturityLevel IN (3,4)),
+  CONSTRAINT CK_Custom_Att       CHECK (Attestation IN ('Meet','Partial Meet','Does Not Meet')),
+  CONSTRAINT CK_Custom_AttrNum   CHECK (AttributeNum >= 15)
+);
+GO
 
-PRINT '== UPDATE: Remove (proc will null Attestation) ==';
-EXEC dbo.sp_SaveAttributeSelection
-     @OrgID=@OrgID,
-     @CSF2SubcategoryID=@CSF2SubcategoryID,
-     @CSF1SubcategoryID=@CSF1SubcategoryID,
-     @MaturityLevel=@MaturityLevel,
-     @AttributeNum=@AttributeNum,
-     @SelectionStatus='Remove',
-     @SelectionAttestation='Meet',   -- will be nulled by proc
-     @UserID=@UserID;
+-- Read-path index: hot filters by Org/Subcat; includes columns the UI needs quickly
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Custom_Org_Subcat' AND object_id=OBJECT_ID('dbo.Org_CustomCsf2Attribute'))
+CREATE NONCLUSTERED INDEX IX_Custom_Org_Subcat
+  ON dbo.Org_CustomCsf2Attribute (OrgID, CSF2SubcategoryID)
+  INCLUDE (MaturityLevel, AttributeNum, Definition, Attestation, /*IsApproved,*/ IsActive, ModifiedAt);
+GO
 
---------------------------------------------------------------------------------
--- 4) Verify results (dbo tables only)
---------------------------------------------------------------------------------
-PRINT '== Current selection row ==';
-SELECT *
-FROM dbo.Org_AttributeSelection
-WHERE OrgID=@OrgID
-  AND CSF2SubcategoryID=@CSF2SubcategoryID
-  AND CSF1SubcategoryID=@CSF1SubcategoryID
-  AND MaturityLevel=@MaturityLevel
-  AND AttributeNum=@AttributeNum;
-
-PRINT '== Audit trail (most recent first) ==';
-SELECT TOP (20) *
-FROM dbo.Org_AttributeSelection_Audit
-WHERE OrgID=@OrgID
-  AND CSF2SubcategoryID=@CSF2SubcategoryID
-  AND CSF1SubcategoryID=@CSF1SubcategoryID
-  AND MaturityLevel=@MaturityLevel
-  AND AttributeNum=@AttributeNum
-ORDER BY AuditID DESC;
-
---------------------------------------------------------------------------------
--- 5) (Optional) Cleanup: remove the test selection and its audit rows
---    Uncomment if you want to roll back the test write.
---------------------------------------------------------------------------------
---DELETE dbo.Org_AttributeSelection
---WHERE OrgID=@OrgID
---  AND CSF2SubcategoryID=@CSF2SubcategoryID
---  AND CSF1SubcategoryID=@CSF1SubcategoryID
---  AND MaturityLevel=@MaturityLevel
---  AND AttributeNum=@AttributeNum;
---
---DELETE dbo.Org_AttributeSelection_Audit
---WHERE OrgID=@OrgID
---  AND CSF2SubcategoryID=@CSF2SubcategoryID
---  AND CSF1SubcategoryID=@CSF1SubcategoryID
---  AND MaturityLevel=@MaturityLevel
---  AND AttributeNum=@AttributeNum;
+-- Optional: filtered index to speed common reads for only active rows
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Custom_Active' AND object_id=OBJECT_ID('dbo.Org_CustomCsf2Attribute'))
+CREATE NONCLUSTERED INDEX IX_Custom_Active
+  ON dbo.Org_CustomCsf2Attribute (OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum)
+  INCLUDE (Definition, Attestation, ModifiedAt)
+  WHERE IsActive = 1;
+GO

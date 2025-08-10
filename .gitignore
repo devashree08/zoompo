@@ -1,79 +1,184 @@
-IF OBJECT_ID('dbo.Org_AttributeSelection_Audit','U') IS NULL
-CREATE TABLE dbo.Org_AttributeSelection_Audit
-(
-  AuditID                   BIGINT        IDENTITY(1,1) PRIMARY KEY,
-  Operation                 CHAR(1)       NOT NULL,   -- I/U/D
-  ChangedAt                 DATETIME2(3)  NOT NULL,
-  ChangedBy                 SYSNAME       NOT NULL,
+SET NOCOUNT ON;
 
-  OrgID                     INT           NOT NULL,
-  CSF2SubcategoryID         INT           NOT NULL,
-  CSF1SubcategoryID         INT           NOT NULL,
-  MaturityLevel             TINYINT       NOT NULL,
-  AttributeNum              INT           NOT NULL,
+--------------------------------------------------------------------------------
+-- 0) Test harness config
+--------------------------------------------------------------------------------
+DECLARE @OrgCode        NVARCHAR(50)  = N'FSI';
+DECLARE @OrgName        NVARCHAR(100) = N'FinServ Inc';
+DECLARE @UserID         NVARCHAR(128) = N'alice@corp.test';
 
-  Old_Ent_Subcat_Attr       NVARCHAR(100) NULL,
-  New_Ent_Subcat_Attr       NVARCHAR(100) NULL,
-  Old_SelectionStatus       VARCHAR(20)   NULL,
-  New_SelectionStatus       VARCHAR(20)   NULL,
-  Old_SelectionAttestation  VARCHAR(20)   NULL,
-  New_SelectionAttestation  VARCHAR(20)   NULL
-);
-GO
+DECLARE @FuncName       NVARCHAR(100) = N'IDENTIFY';
+DECLARE @CatName        NVARCHAR(100) = N'ID.AM';
+DECLARE @Sub2_Name      NVARCHAR(200) = N'ID.AM-01';  -- CSF 2.0
+DECLARE @Sub2_Lang      NVARCHAR(500) = N'Physical devices and systems are inventoried';
 
+DECLARE @Sub1_Name      NVARCHAR(50)  = N'ID.AM-1';   -- CSF 1.1
+DECLARE @Sub1_Lang      NVARCHAR(500) = N'Physical devices and systems within the organization are inventoried';
 
-IF OBJECT_ID('dbo.trg_Org_AttributeSelection_Audit','TR') IS NOT NULL
-  DROP TRIGGER dbo.trg_Org_AttributeSelection_Audit;
-GO
-CREATE TRIGGER dbo.trg_Org_AttributeSelection_Audit
-ON dbo.Org_AttributeSelection
-AFTER INSERT, UPDATE, DELETE
-AS
+DECLARE @ML TINYINT = 3;      -- maturity level
+DECLARE @AttrNum INT = 1;     -- baseline attribute #
+DECLARE @Def NVARCHAR(500) = N'Hardware inventory is maintained and reviewed quarterly.';
+DECLARE @Assess INT = 3;      -- example prev score (optional)
+
+-- Canonical Ent key that should be present in baseline
+DECLARE @EntKey NVARCHAR(100) = CONCAT(N'E=', @OrgCode, N'~S=', @Sub1_Name, N'~ML=', @ML, N'~A=', @AttrNum);
+
+--------------------------------------------------------------------------------
+-- 1) Make sure we have a stub for feed refresh (no-op) if not already present
+--------------------------------------------------------------------------------
+IF OBJECT_ID('dbo.sp_RefreshCsfFeed_Subcat','P') IS NULL
+  EXEC('CREATE PROCEDURE dbo.sp_RefreshCsfFeed_Subcat @OrgID INT, @CSF2SubcategoryID INT AS BEGIN SET NOCOUNT ON; END');
+
+--------------------------------------------------------------------------------
+-- 2) Seed Org
+--------------------------------------------------------------------------------
+IF OBJECT_ID('dbo.Org','U') IS NULL
 BEGIN
-  SET NOCOUNT ON;
-  DECLARE @now DATETIME2(3) = SYSUTCDATETIME();
-
-  -- INSERTS
-  INSERT dbo.Org_AttributeSelection_Audit
-    (Operation, ChangedAt, ChangedBy, OrgID, CSF2SubcategoryID, CSF1SubcategoryID, MaturityLevel, AttributeNum,
-     Old_Ent_Subcat_Attr, New_Ent_Subcat_Attr, Old_SelectionStatus, New_SelectionStatus,
-     Old_SelectionAttestation, New_SelectionAttestation)
-  SELECT 'I', @now, COALESCE(i.ModifiedBy, i.CreatedBy, SUSER_SNAME()),
-         i.OrgID, i.CSF2SubcategoryID, i.CSF1SubcategoryID, i.MaturityLevel, i.AttributeNum,
-         NULL, i.Ent_Subcat_Attr, NULL, i.SelectionStatus, NULL, i.SelectionAttestation
-  FROM inserted i
-  LEFT JOIN deleted d
-    ON d.OrgID=i.OrgID AND d.CSF2SubcategoryID=i.CSF2SubcategoryID
-   AND d.CSF1SubcategoryID=i.CSF1SubcategoryID AND d.MaturityLevel=i.MaturityLevel AND d.AttributeNum=i.AttributeNum
-  WHERE d.OrgID IS NULL;
-
-  -- UPDATES
-  INSERT dbo.Org_AttributeSelection_Audit
-    (Operation, ChangedAt, ChangedBy, OrgID, CSF2SubcategoryID, CSF1SubcategoryID, MaturityLevel, AttributeNum,
-     Old_Ent_Subcat_Attr, New_Ent_Subcat_Attr, Old_SelectionStatus, New_SelectionStatus,
-     Old_SelectionAttestation, New_SelectionAttestation)
-  SELECT 'U', @now, COALESCE(i.ModifiedBy, d.ModifiedBy, SUSER_SNAME()),
-         i.OrgID, i.CSF2SubcategoryID, i.CSF1SubcategoryID, i.MaturityLevel, i.AttributeNum,
-         d.Ent_Subcat_Attr, i.Ent_Subcat_Attr,
-         d.SelectionStatus, i.SelectionStatus,
-         d.SelectionAttestation, i.SelectionAttestation
-  FROM inserted i
-  INNER JOIN deleted d
-    ON d.OrgID=i.OrgID AND d.CSF2SubcategoryID=i.CSF2SubcategoryID
-   AND d.CSF1SubcategoryID=i.CSF1SubcategoryID AND d.MaturityLevel=i.MaturityLevel AND d.AttributeNum=i.AttributeNum;
-
-  -- DELETES
-  INSERT dbo.Org_AttributeSelection_Audit
-    (Operation, ChangedAt, ChangedBy, OrgID, CSF2SubcategoryID, CSF1SubcategoryID, MaturityLevel, AttributeNum,
-     Old_Ent_Subcat_Attr, New_Ent_Subcat_Attr, Old_SelectionStatus, New_SelectionStatus,
-     Old_SelectionAttestation, New_SelectionAttestation)
-  SELECT 'D', @now, COALESCE(d.ModifiedBy, d.CreatedBy, SUSER_SNAME()),
-         d.OrgID, d.CSF2SubcategoryID, d.CSF1SubcategoryID, d.MaturityLevel, d.AttributeNum,
-         d.Ent_Subcat_Attr, NULL, d.SelectionStatus, NULL, d.SelectionAttestation, NULL
-  FROM deleted d
-  LEFT JOIN inserted i
-    ON i.OrgID=d.OrgID AND i.CSF2SubcategoryID=d.CSF2SubcategoryID
-   AND i.CSF1SubcategoryID=d.CSF1SubcategoryID AND i.MaturityLevel=d.MaturityLevel AND i.AttributeNum=d.AttributeNum
-  WHERE i.OrgID IS NULL;
+  RAISERROR('dbo.Org table is required for this test.', 16, 1);
+  RETURN;
 END
-GO
+
+DECLARE @OrgID INT;
+SELECT @OrgID = OrgID FROM dbo.Org WHERE OrgCode = @OrgCode;
+IF @OrgID IS NULL
+BEGIN
+  INSERT dbo.Org(OrgCode, OrgName) VALUES (@OrgCode, @OrgName);
+  SET @OrgID = SCOPE_IDENTITY();
+END
+
+--------------------------------------------------------------------------------
+-- 3) Seed CSF2 Function/Category/Subcategory
+--------------------------------------------------------------------------------
+DECLARE @FunctionID INT, @CategoryID INT, @CSF2SubcategoryID INT;
+
+SELECT @FunctionID = FunctionID FROM ref.CSF2_Function WHERE FunctionName = @FuncName;
+IF @FunctionID IS NULL
+BEGIN
+  INSERT ref.CSF2_Function(FunctionName, FunctionLanguage) VALUES (@FuncName, N'');
+  SET @FunctionID = SCOPE_IDENTITY();
+END
+
+SELECT @CategoryID = CategoryID FROM ref.CSF2_Category WHERE CategoryName = @CatName;
+IF @CategoryID IS NULL
+BEGIN
+  INSERT ref.CSF2_Category(FunctionID, CategoryName, CategoryLanguage)
+  VALUES (@FunctionID, @CatName, N'Asset Management');
+  SET @CategoryID = SCOPE_IDENTITY();
+END
+
+SELECT @CSF2SubcategoryID = SubcategoryID FROM ref.CSF2_Subcategory WHERE SubcategoryName = @Sub2_Name;
+IF @CSF2SubcategoryID IS NULL
+BEGIN
+  INSERT ref.CSF2_Subcategory(CategoryID, SubcategoryName, SubcategoryLanguage, ChangeSummary, ImplementationExample)
+  VALUES (@CategoryID, @Sub2_Name, @Sub2_Lang, N'Direct evolution of ID.AM-1', N'Example: automated discovery tools');
+  SET @CSF2SubcategoryID = SCOPE_IDENTITY();
+END
+
+--------------------------------------------------------------------------------
+-- 4) Seed CSF1 Subcategory (1.1)
+--------------------------------------------------------------------------------
+DECLARE @CSF1SubcategoryID INT;
+
+SELECT @CSF1SubcategoryID = CSF1SubcatID FROM ref.CSF1_Subcategory WHERE SubcategoryName = @Sub1_Name;
+IF @CSF1SubcategoryID IS NULL
+BEGIN
+  INSERT ref.CSF1_Subcategory(FunctionName, FunctionLanguage, CategoryName, CategoryLanguage, SubcategoryName, SubcategoryLanguage)
+  VALUES (N'IDENTIFY (ID)', N'', @CatName, N'', @Sub1_Name, @Sub1_Lang);
+  SET @CSF1SubcategoryID = SCOPE_IDENTITY();
+END
+
+--------------------------------------------------------------------------------
+-- 5) Seed CSF1 -> CSF2 mapping
+--------------------------------------------------------------------------------
+IF NOT EXISTS (
+  SELECT 1
+  FROM ref.CSF1_to_CSF2_SubcategoryMap
+  WHERE CSF1SubcatID = @CSF1SubcategoryID AND CSF2SubcatID = @CSF2SubcategoryID
+)
+BEGIN
+  INSERT ref.CSF1_to_CSF2_SubcategoryMap(CSF1SubcatID, CSF1SubcatName, CSF2SubcatID, CSF2SubcatName)
+  VALUES (@CSF1SubcategoryID, @Sub1_Name, @CSF2SubcategoryID, @Sub2_Name);
+END
+
+--------------------------------------------------------------------------------
+-- 6) Seed baseline row in stg.Org_CSF1_AttrBaseline (must exist for proc to pass)
+--------------------------------------------------------------------------------
+IF OBJECT_ID('stg.Org_CSF1_AttrBaseline','U') IS NULL
+BEGIN
+  RAISERROR('stg.Org_CSF1_AttrBaseline table is required for this test.', 16, 1);
+  RETURN;
+END
+
+IF NOT EXISTS (
+  SELECT 1
+  FROM stg.Org_CSF1_AttrBaseline
+  WHERE OrgID=@OrgID AND CSF1SubcatID=@CSF1SubcategoryID AND MaturityLevel=@ML AND AttributeNum=@AttrNum
+)
+BEGIN
+  INSERT stg.Org_CSF1_AttrBaseline
+    (Ent_Subcat_Attr, OrgName, OrgID, CSF1SubcatID, CSF1SubcatName, MaturityLevel, AttributeNum, Definition, AssessScore2024)
+  VALUES
+    (@EntKey, @OrgCode, @OrgID, @CSF1SubcategoryID, @Sub1_Name, @ML, @AttrNum, @Def, @Assess);
+END
+
+--------------------------------------------------------------------------------
+-- 7) Clean prior selection rows for a fair test run (optional)
+--------------------------------------------------------------------------------
+DELETE dbo.Org_AttributeSelection
+WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID
+  AND CSF1SubcategoryID=@CSF1SubcategoryID AND MaturityLevel=@ML AND AttributeNum=@AttrNum;
+
+--------------------------------------------------------------------------------
+-- 8) TEST CALLS
+--------------------------------------------------------------------------------
+PRINT '== INSERT: Keep / Meet ==';
+EXEC dbo.sp_SaveAttributeSelection
+     @OrgID=@OrgID,
+     @CSF2SubcategoryID=@CSF2SubcategoryID,
+     @CSF1SubcategoryID=@CSF1SubcategoryID,
+     @MaturityLevel=@ML,
+     @AttributeNum=@AttrNum,
+     @SelectionStatus='Keep',
+     @SelectionAttestation='Meet',
+     @UserID=@UserID;
+
+PRINT '== UPDATE: Keep / Partial Meet ==';
+EXEC dbo.sp_SaveAttributeSelection
+     @OrgID=@OrgID,
+     @CSF2SubcategoryID=@CSF2SubcategoryID,
+     @CSF1SubcategoryID=@CSF1SubcategoryID,
+     @MaturityLevel=@ML,
+     @AttributeNum=@AttrNum,
+     @SelectionStatus='Keep',
+     @SelectionAttestation='Partial Meet',
+     @UserID=@UserID;
+
+PRINT '== UPDATE: Remove (Attestation should become NULL by proc) ==';
+EXEC dbo.sp_SaveAttributeSelection
+     @OrgID=@OrgID,
+     @CSF2SubcategoryID=@CSF2SubcategoryID,
+     @CSF1SubcategoryID=@CSF1SubcategoryID,
+     @MaturityLevel=@ML,
+     @AttributeNum=@AttrNum,
+     @SelectionStatus='Remove',
+     @SelectionAttestation='Meet',   -- will be nulled by proc
+     @UserID=@UserID;
+
+--------------------------------------------------------------------------------
+-- 9) Results
+--------------------------------------------------------------------------------
+PRINT '== Current selection row ==';
+SELECT *
+FROM dbo.Org_AttributeSelection
+WHERE OrgID=@OrgID
+  AND CSF2SubcategoryID=@CSF2SubcategoryID
+  AND CSF1SubcategoryID=@CSF1SubcategoryID
+  AND MaturityLevel=@ML
+  AND AttributeNum=@AttrNum;
+
+PRINT '== Audit trail (most recent first) ==';
+SELECT TOP (20) *
+FROM dbo.Org_AttributeSelection_Audit
+WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID
+  AND CSF1SubcategoryID=@CSF1SubcategoryID AND MaturityLevel=@ML AND AttributeNum=@AttrNum
+ORDER BY AuditID DESC;

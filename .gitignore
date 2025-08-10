@@ -1,206 +1,146 @@
-CREATE OR ALTER PROCEDURE dbo.sp_SaveCustomAttribute
-  @Action               VARCHAR(10),          -- 'ADD' | 'UPDATE' | 'DELETE'
-  @OrgID                INT,
-  @CSF2SubcategoryID    INT,
-  @MaturityLevel        TINYINT,              -- 3 or 4
-  @AttributeNum         INT = NULL OUTPUT,    -- NULL on ADD; required on UPDATE/DELETE; always returned
-  @Definition           NVARCHAR(500) = NULL, -- required on ADD; optional on UPDATE; ignored on DELETE
-  @Attestation          VARCHAR(20) = NULL,   -- required on ADD; optional on UPDATE; ignored on DELETE
-  @UserID               NVARCHAR(128)         -- from portal header
-AS
+SET NOCOUNT ON;
+
+--------------------------------------------------------------------------------
+-- 0) Config: portal user performing the change
+--------------------------------------------------------------------------------
+DECLARE @UserID NVARCHAR(128) = N'alice@corp.test';
+DECLARE @ML TINYINT = 3;  -- test maturity level (3 or 4)
+
+--------------------------------------------------------------------------------
+-- 1) Preconditions: required objects
+--------------------------------------------------------------------------------
+IF OBJECT_ID('dbo.Org_CustomCsf2Attribute','U') IS NULL
+  RAISERROR('Missing table dbo.Org_CustomCsf2Attribute.',16,1);
+IF OBJECT_ID('dbo.sp_SaveCustomAttribute','P') IS NULL
+  RAISERROR('Missing proc dbo.sp_SaveCustomAttribute.',16,1);
+
+-- No-op stub for refresh if you haven't created the real one yet
+IF OBJECT_ID('dbo.sp_RefreshCsfFeed_Subcat','P') IS NULL
+  EXEC('CREATE PROCEDURE dbo.sp_RefreshCsfFeed_Subcat @OrgID INT, @CSF2SubcategoryID INT AS BEGIN SET NOCOUNT ON; END');
+
+--------------------------------------------------------------------------------
+-- 2) Pick an existing Org and CSF2 Subcategory (READ-ONLY from ref/dbo)
+--    If you want specific IDs, set @OrgID and @CSF2SubcategoryID manually.
+--------------------------------------------------------------------------------
+DECLARE @OrgID INT, @CSF2SubcategoryID INT;
+
+-- Prefer an org that already has any CSF2 feed rows; else just TOP 1 org
+SELECT TOP (1) @OrgID = OrgID FROM dbo.Org ORDER BY OrgID;
+
+IF @OrgID IS NULL
 BEGIN
-  SET NOCOUNT ON;
-  SET XACT_ABORT ON;
-
-  DECLARE @act VARCHAR(10) = UPPER(@Action);
-
-  IF @act NOT IN ('ADD','UPDATE','DELETE')
-    BEGIN RAISERROR('Action must be ADD | UPDATE | DELETE.',16,1); RETURN; END;
-
-  IF @MaturityLevel NOT IN (3,4)
-    BEGIN RAISERROR('MaturityLevel must be 3 or 4.',16,1); RETURN; END;
-
-  IF @act='ADD'
-  BEGIN
-    IF @Definition IS NULL OR LTRIM(RTRIM(@Definition))=''
-      BEGIN RAISERROR('Definition is required for ADD.',16,1); RETURN; END;
-    IF @Attestation NOT IN ('Meet','Partial Meet','Does Not Meet')
-      BEGIN RAISERROR('Attestation must be Meet | Partial Meet | Does Not Meet for ADD.',16,1); RETURN; END;
-
-    BEGIN TRY
-      BEGIN TRAN;
-
-      -- race-safe auto-numbering within Org×Subcat×ML, skipping soft-deleted
-      SELECT @AttributeNum = ISNULL(MAX(AttributeNum), 14) + 1
-      FROM dbo.Org_CustomCsf2Attribute WITH (UPDLOCK, HOLDLOCK)
-      WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID
-        AND MaturityLevel=@MaturityLevel AND IsActive=1;
-
-      IF @AttributeNum < 15 SET @AttributeNum = 15;
-
-      INSERT dbo.Org_CustomCsf2Attribute
-        (OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum,
-         Definition, Attestation, IsActive,
-         CreatedBy, CreatedAt, ModifiedBy, ModifiedAt)
-      VALUES
-        (@OrgID, @CSF2SubcategoryID, @MaturityLevel, @AttributeNum,
-         @Definition, @Attestation, 1,
-         @UserID, SYSUTCDATETIME(), @UserID, SYSUTCDATETIME());
-
-      COMMIT TRAN;
-
-      IF OBJECT_ID('dbo.sp_RefreshCsfFeed_Subcat','P') IS NOT NULL
-        EXEC dbo.sp_RefreshCsfFeed_Subcat @OrgID=@OrgID, @CSF2SubcategoryID=@CSF2SubcategoryID;
-
-      SELECT @AttributeNum AS AttributeNum; -- convenience
-    END TRY
-    BEGIN CATCH
-      IF XACT_STATE()<>0 ROLLBACK TRAN; THROW;
-    END CATCH
-  END
-  ELSE IF @act='UPDATE'
-  BEGIN
-    IF @AttributeNum IS NULL
-      BEGIN RAISERROR('AttributeNum is required for UPDATE.',16,1); RETURN; END;
-    IF @Attestation IS NOT NULL AND @Attestation NOT IN ('Meet','Partial Meet','Does Not Meet')
-      BEGIN RAISERROR('Attestation must be Meet | Partial Meet | Does Not Meet.',16,1); RETURN; END;
-
-    BEGIN TRY
-      BEGIN TRAN;
-
-      ;WITH T AS (
-        SELECT *
-        FROM dbo.Org_CustomCsf2Attribute WITH (UPDLOCK)
-        WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID
-          AND MaturityLevel=@MaturityLevel AND AttributeNum=@AttributeNum
-          AND IsActive=1
-      )
-      UPDATE T
-         SET Definition  = COALESCE(@Definition, Definition),
-             Attestation = COALESCE(@Attestation, Attestation),
-             ModifiedBy  = @UserID,
-             ModifiedAt  = SYSUTCDATETIME();
-
-      IF @@ROWCOUNT = 0
-      BEGIN RAISERROR('Custom attribute not found or inactive for UPDATE.',16,1); ROLLBACK TRAN; RETURN; END;
-
-      COMMIT TRAN;
-
-      IF OBJECT_ID('dbo.sp_RefreshCsfFeed_Subcat','P') IS NOT NULL
-        EXEC dbo.sp_RefreshCsfFeed_Subcat @OrgID=@OrgID, @CSF2SubcategoryID=@CSF2SubcategoryID;
-    END TRY
-    BEGIN CATCH
-      IF XACT_STATE()<>0 ROLLBACK TRAN; THROW;
-    END CATCH
-  END
-  ELSE -- DELETE (soft)
-  BEGIN
-    IF @AttributeNum IS NULL
-      BEGIN RAISERROR('AttributeNum is required for DELETE.',16,1); RETURN; END;
-
-    BEGIN TRY
-      BEGIN TRAN;
-
-      UPDATE dbo.Org_CustomCsf2Attribute
-         SET IsActive  = 0,
-             ModifiedBy = @UserID,
-             ModifiedAt = SYSUTCDATETIME()
-       WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID
-         AND MaturityLevel=@MaturityLevel AND AttributeNum=@AttributeNum
-         AND IsActive=1;
-
-      IF @@ROWCOUNT = 0
-      BEGIN RAISERROR('Custom attribute not found or already inactive for DELETE.',16,1); ROLLBACK TRAN; RETURN; END;
-
-      COMMIT TRAN;
-
-      IF OBJECT_ID('dbo.sp_RefreshCsfFeed_Subcat','P') IS NOT NULL
-        EXEC dbo.sp_RefreshCsfFeed_Subcat @OrgID=@OrgID, @CSF2SubcategoryID=@CSF2SubcategoryID;
-    END TRY
-    BEGIN CATCH
-      IF XACT_STATE()<>0 ROLLBACK TRAN; THROW;
-    END CATCH
-  END
+  RAISERROR('No orgs found in dbo.Org. Seed Org table before running this test.',16,1);
+  RETURN;
 END
-GO
 
+SELECT TOP (1) @CSF2SubcategoryID = SubcategoryID
+FROM ref.CSF2_Subcategory
+ORDER BY SubcategoryID;
 
-
-IF OBJECT_ID('dbo.Org_CustomCsf2Attribute_Audit','U') IS NULL
-CREATE TABLE dbo.Org_CustomCsf2Attribute_Audit
-(
-  AuditID             BIGINT        IDENTITY(1,1) PRIMARY KEY,
-  Operation           CHAR(1)       NOT NULL,       -- I/U/D
-  ChangedAt           DATETIME2(3)  NOT NULL,
-  ChangedBy           NVARCHAR(128) NOT NULL,
-
-  OrgID               INT           NOT NULL,
-  CSF2SubcategoryID   INT           NOT NULL,
-  MaturityLevel       TINYINT       NOT NULL,
-  AttributeNum        INT           NOT NULL,
-
-  Old_Definition      NVARCHAR(500) NULL,
-  New_Definition      NVARCHAR(500) NULL,
-  Old_Attestation     VARCHAR(20)   NULL,
-  New_Attestation     VARCHAR(20)   NULL,
-  Old_IsActive        BIT           NULL,
-  New_IsActive        BIT           NULL
-);
-GO
-
-
-
-IF OBJECT_ID('dbo.trg_Org_CustomCsf2Attribute_Audit','TR') IS NOT NULL
-  DROP TRIGGER dbo.trg_Org_CustomCsf2Attribute_Audit;
-GO
-CREATE TRIGGER dbo.trg_Org_CustomCsf2Attribute_Audit
-ON dbo.Org_CustomCsf2Attribute
-AFTER INSERT, UPDATE, DELETE
-AS
+IF @CSF2SubcategoryID IS NULL
 BEGIN
-  SET NOCOUNT ON;
-  DECLARE @now DATETIME2(3) = SYSUTCDATETIME();
-
-  -- INSERTS
-  INSERT dbo.Org_CustomCsf2Attribute_Audit
-    (Operation, ChangedAt, ChangedBy, OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum,
-     Old_Definition, New_Definition, Old_Attestation, New_Attestation, Old_IsActive, New_IsActive)
-  SELECT 'I', @now, i.CreatedBy,
-         i.OrgID, i.CSF2SubcategoryID, i.MaturityLevel, i.AttributeNum,
-         NULL, i.Definition, NULL, i.Attestation, NULL, i.IsActive
-  FROM inserted i
-  LEFT JOIN deleted d
-    ON d.OrgID=i.OrgID AND d.CSF2SubcategoryID=i.CSF2SubcategoryID
-   AND d.MaturityLevel=i.MaturityLevel AND d.AttributeNum=i.AttributeNum
-  WHERE d.OrgID IS NULL;
-
-  -- UPDATES
-  INSERT dbo.Org_CustomCsf2Attribute_Audit
-    (Operation, ChangedAt, ChangedBy, OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum,
-     Old_Definition, New_Definition, Old_Attestation, New_Attestation, Old_IsActive, New_IsActive)
-  SELECT 'U', @now, i.ModifiedBy,
-         i.OrgID, i.CSF2SubcategoryID, i.MaturityLevel, i.AttributeNum,
-         d.Definition, i.Definition,
-         d.Attestation, i.Attestation,
-         d.IsActive, i.IsActive
-  FROM inserted i
-  INNER JOIN deleted d
-    ON d.OrgID=i.OrgID AND d.CSF2SubcategoryID=i.CSF2SubcategoryID
-   AND d.MaturityLevel=i.MaturityLevel AND d.AttributeNum=i.AttributeNum;
-
-  -- DELETES
-  INSERT dbo.Org_CustomCsf2Attribute_Audit
-    (Operation, ChangedAt, ChangedBy, OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum,
-     Old_Definition, New_Definition, Old_Attestation, New_Attestation, Old_IsActive, New_IsActive)
-  SELECT 'D', @now, d.ModifiedBy,
-         d.OrgID, d.CSF2SubcategoryID, d.MaturityLevel, d.AttributeNum,
-         d.Definition, NULL,
-         d.Attestation, NULL,
-         d.IsActive, NULL
-  FROM deleted d
-  LEFT JOIN inserted i
-    ON i.OrgID=d.OrgID AND i.CSF2SubcategoryID=d.CSF2SubcategoryID
-   AND i.MaturityLevel=d.MaturityLevel AND i.AttributeNum=d.AttributeNum
-  WHERE i.OrgID IS NULL;
+  RAISERROR('No CSF2 subcategories found in ref.CSF2_Subcategory. Load refs before running this test.',16,1);
+  RETURN;
 END
-GO
+
+PRINT CONCAT('== Using OrgID=', @OrgID, ' CSF2SubcategoryID=', @CSF2SubcategoryID, ' ML=', @ML);
+
+--------------------------------------------------------------------------------
+-- 3) Snapshot before
+--------------------------------------------------------------------------------
+PRINT '== BEFORE: existing custom attributes for this scope ==';
+SELECT OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum, Definition, Attestation, IsActive, ModifiedAt
+FROM dbo.Org_CustomCsf2Attribute
+WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
+ORDER BY AttributeNum;
+
+--------------------------------------------------------------------------------
+-- 4) ADD a custom attribute (auto-numbered >= 15)
+--------------------------------------------------------------------------------
+DECLARE @NewAttrNum INT = NULL;
+
+EXEC dbo.sp_SaveCustomAttribute
+  @Action='ADD',
+  @OrgID=@OrgID,
+  @CSF2SubcategoryID=@CSF2SubcategoryID,
+  @MaturityLevel=@ML,
+  @AttributeNum=@NewAttrNum OUTPUT,
+  @Definition=N'Quarterly reconciliation of asset inventory to CMDB.',
+  @Attestation='Meet',
+  @UserID=@UserID;
+
+PRINT CONCAT('ADD assigned AttributeNum = ', CONVERT(VARCHAR(10), @NewAttrNum));
+
+PRINT '== AFTER ADD ==';
+SELECT OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum, Definition, Attestation, IsActive, ModifiedAt
+FROM dbo.Org_CustomCsf2Attribute
+WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
+ORDER BY AttributeNum;
+
+--------------------------------------------------------------------------------
+-- 5) UPDATE that attribute (change text + attestation)
+--------------------------------------------------------------------------------
+EXEC dbo.sp_SaveCustomAttribute
+  @Action='UPDATE',
+  @OrgID=@OrgID,
+  @CSF2SubcategoryID=@CSF2SubcategoryID,
+  @MaturityLevel=@ML,
+  @AttributeNum=@NewAttrNum OUTPUT,
+  @Definition=N'Quarterly reconciliation of asset inventory to authoritative CMDB.',
+  @Attestation='Partial Meet',
+  @UserID=@UserID;
+
+PRINT '== AFTER UPDATE ==';
+SELECT OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum, Definition, Attestation, IsActive, ModifiedAt
+FROM dbo.Org_CustomCsf2Attribute
+WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
+ORDER BY AttributeNum;
+
+--------------------------------------------------------------------------------
+-- 6) DELETE (soft) the attribute
+--------------------------------------------------------------------------------
+EXEC dbo.sp_SaveCustomAttribute
+  @Action='DELETE',
+  @OrgID=@OrgID,
+  @CSF2SubcategoryID=@CSF2SubcategoryID,
+  @MaturityLevel=@ML,
+  @AttributeNum=@NewAttrNum OUTPUT,
+  @UserID=@UserID;
+
+PRINT '== AFTER SOFT DELETE ==';
+SELECT OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum, Definition, Attestation, IsActive, ModifiedAt
+FROM dbo.Org_CustomCsf2Attribute
+WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
+ORDER BY AttributeNum;
+
+--------------------------------------------------------------------------------
+-- 7) ADD again to verify numbering is monotonic (should be previous MAX+1)
+--------------------------------------------------------------------------------
+DECLARE @AnotherAttrNum INT = NULL;
+
+EXEC dbo.sp_SaveCustomAttribute
+  @Action='ADD',
+  @OrgID=@OrgID,
+  @CSF2SubcategoryID=@CSF2SubcategoryID,
+  @MaturityLevel=@ML,
+  @AttributeNum=@AnotherAttrNum OUTPUT,
+  @Definition=N'Monthly variance analysis between discovery tool and CMDB.',
+  @Attestation='Does Not Meet',
+  @UserID=@UserID;
+
+PRINT CONCAT('Second ADD assigned AttributeNum = ', CONVERT(VARCHAR(10), @AnotherAttrNum));
+
+PRINT '== AFTER SECOND ADD ==';
+SELECT OrgID, CSF2SubcategoryID, MaturityLevel, AttributeNum, Definition, Attestation, IsActive, ModifiedAt
+FROM dbo.Org_CustomCsf2Attribute
+WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
+ORDER BY AttributeNum;
+
+--------------------------------------------------------------------------------
+-- 8) Audit trail (most recent first)
+--------------------------------------------------------------------------------
+PRINT '== AUDIT TOP 20 ==';
+SELECT TOP (20) *
+FROM dbo.Org_CustomCsf2Attribute_Audit
+WHERE OrgID=@OrgID AND CSF2SubcategoryID=@CSF2SubcategoryID AND MaturityLevel=@ML
+ORDER BY AuditID DESC;

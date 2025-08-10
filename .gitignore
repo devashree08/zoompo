@@ -1,3 +1,8 @@
+Upsert user selection for a baseline (CSF 1.1–derived) attribute.
+-- WHEN: User changes Status/Attestation on a baseline row in UI.
+-- SIDE EFFECT: Calls sp_RefreshCsfFeed_Subcat to update UI feed slice.
+
+
 -- TABLE: dbo.Org_AttributeSelection (HYBRID)
 IF OBJECT_ID('dbo.Org_AttributeSelection','U') IS NOT NULL
   DROP TABLE dbo.Org_AttributeSelection;

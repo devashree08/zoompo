@@ -1,124 +1,355 @@
-CREATE OR ALTER PROCEDURE dbo.sp_GetCsfFilterLookups
-  @OrgIDsCsv            NVARCHAR(MAX) = NULL,
-  @FunctionIDsCsv       NVARCHAR(MAX) = NULL,
-  @CategoryIDsCsv       NVARCHAR(MAX) = NULL,
-  @SubcategoryIDsCsv    NVARCHAR(MAX) = NULL,
-  @OwnerNamesCsv        NVARCHAR(MAX) = NULL,
-  @CustodianNamesCsv    NVARCHAR(MAX) = NULL
-AS
-BEGIN
-  SET NOCOUNT ON;
+using System;
+using System.Collections.Generic;
 
-  /* Parse CSVs into temp tables (only fill when non-empty) */
-  CREATE TABLE #SelOrg  (id  INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@OrgIDsCsv)),'') <> ''
-    INSERT #SelOrg SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@OrgIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+namespace YourApp.Namespace.Models
+{
+    // ---------- Feed: result set A (headers / accordion) ----------
+    public sealed class CsfFeedHeader
+    {
+        public int OrgID { get; set; }
+        public string OrgName { get; set; } = "";
+        public int FunctionID { get; set; }
+        public string FunctionName { get; set; } = "";
+        public string? FunctionLanguage { get; set; }
+        public int CategoryID { get; set; }
+        public string CategoryName { get; set; } = "";
+        public string? CategoryLanguage { get; set; }
+        public int CSF2SubcategoryID { get; set; }
+        public string CSF2SubcategoryName { get; set; } = "";
+        public string? CSF2SubcategoryLanguage { get; set; }
+        public string? ChangeSummary { get; set; }
+        public string? ImplementationExamples { get; set; }
+        public string? Owner { get; set; }         // CSV of names (per Org × Subcat)
+        public string? Custodian { get; set; }     // CSV of names
+        public int KeptCount { get; set; }
+        public int RemovedCount { get; set; }
+        public int CustomCount { get; set; }
+    }
 
-  CREATE TABLE #SelFunc (id  INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@FunctionIDsCsv)),'') <> ''
-    INSERT #SelFunc SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@FunctionIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+    // ---------- Feed: result set B (attribute rows) ----------
+    public sealed class CsfFeedRow
+    {
+        public int OrgID { get; set; }
+        public string OrgName { get; set; } = "";
 
-  CREATE TABLE #SelCat  (id  INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@CategoryIDsCsv)),'') <> ''
-    INSERT #SelCat SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@CategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+        public int FunctionID { get; set; }
+        public string FunctionName { get; set; } = "";
+        public string? FunctionLanguage { get; set; }
 
-  CREATE TABLE #SelSub  (id  INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@SubcategoryIDsCsv)),'') <> ''
-    INSERT #SelSub SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@SubcategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+        public int CategoryID { get; set; }
+        public string CategoryName { get; set; } = "";
+        public string? CategoryLanguage { get; set; }
 
-  CREATE TABLE #SelOwner(name NVARCHAR(200) PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@OwnerNamesCsv)),'') <> ''
-    INSERT #SelOwner SELECT LTRIM(RTRIM(value))
-    FROM STRING_SPLIT(@OwnerNamesCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+        public int CSF2SubcategoryID { get; set; }
+        public string CSF2SubcategoryName { get; set; } = "";
+        public string? CSF2SubcategoryLanguage { get; set; }
+        public string? ChangeSummary { get; set; }
+        public string? ImplementationExamples { get; set; }
 
-  CREATE TABLE #SelCust (name NVARCHAR(200) PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@CustodianNamesCsv)),'') <> ''
-    INSERT #SelCust SELECT LTRIM(RTRIM(value))
-    FROM STRING_SPLIT(@CustodianNamesCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+        public int CSF1SubcategoryID { get; set; }   // 0 for customs
+        public string? CSF1SubcategoryName { get; set; }
+        public string? CSF1SubcategoryLanguage { get; set; }
 
-  /* Effective contacts (active + in window) */
-  SELECT oc.OrgID, oc.CSF2SubcatID AS CSF2SubcategoryID, oc.FullName, oc.ContactRole
-  INTO #EffContacts
-  FROM dbo.Org_SubcategoryContact oc
-  WHERE oc.Status='Active'
-    AND oc.Eff_Dt <= CAST(GETUTCDATE() AS DATE)
-    AND (oc.Exp_Dt IS NULL OR oc.Exp_Dt >= CAST(GETUTCDATE() AS DATE));
+        public string? Ent_Subcat_Attr { get; set; } // CSF 1.1 key when baseline row
+        public byte MaturityLevel { get; set; }      // 3 or 4
+        public int AttributeNum { get; set; }        // baseline ATTR # or custom #
+        public string? AttributeDefinition { get; set; } // baseline text when baseline row
+        public int? AssessScore2024 { get; set; }
 
-  /* Base working set from the denormalized feed */
-  SELECT DISTINCT v.OrgID, v.FunctionID, v.CategoryID, v.CSF2SubcategoryID
-  INTO #Base
-  FROM dbo.UI_CsfAttributeFeed v;
+        public string? SelectionStatus { get; set; }       // Keep/Remove (baseline rows)
+        public string? SelectionAttestation { get; set; }  // Meet/Partial Meet/Does Not Meet
 
-  /* Apply cross filters */
-  SELECT b.*
-  INTO #Filtered
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)  OR b.OrgID            IN (SELECT id FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID       IN (SELECT id FROM #SelFunc))
-    AND (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID       IN (SELECT id FROM #SelCat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Owner'
-                AND e.FullName IN (SELECT name FROM #SelOwner)
-         )
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Custodian'
-                AND e.FullName IN (SELECT name FROM #SelCust)
-         )
-    );
+        public int?    CustomAttributeNum { get; set; }          // present for customs
+        public string? CustomAttributeDefinition { get; set; }   // present for customs
+        public string? CustomAttributeAttestation { get; set; }  // present for customs
 
-  /* Lookups (6 result sets), all scoped to #Filtered */
-  -- 1) Orgs
-  SELECT DISTINCT o.OrgID, o.OrgCode, o.OrgName
-  FROM #Filtered f JOIN dbo.Org o ON o.OrgID=f.OrgID
-  ORDER BY o.OrgCode;
+        public string? Owner { get; set; }       // CSV
+        public string? Custodian { get; set; }   // CSV
 
-  -- 2) Functions
-  SELECT DISTINCT fn.FunctionID, fn.FunctionName
-  FROM #Filtered f
-  JOIN ref.CSF2_Category c ON c.CategoryID=f.CategoryID
-  JOIN ref.CSF2_Function fn ON fn.FunctionID=c.FunctionID
-  ORDER BY fn.FunctionID;
+        public string? Ent_Subcat_Attr_CSF2 { get; set; } // future finalization key (Phase 8)
+    }
 
-  -- 3) Categories
-  SELECT DISTINCT c.CategoryID, c.CategoryName, c.FunctionID
-  FROM #Filtered f
-  JOIN ref.CSF2_Category c ON c.CategoryID=f.CategoryID
-  ORDER BY c.CategoryID;
+    // ---------- Filters payload ----------
+    public sealed class OrgLookup
+    {
+        public int OrgID { get; set; }
+        public string OrgCode { get; set; } = "";
+        public string OrgName { get; set; } = "";
+    }
+    public sealed class FunctionLookup
+    {
+        public int FunctionID { get; set; }
+        public string FunctionName { get; set; } = "";
+    }
+    public sealed class CategoryLookup
+    {
+        public int CategoryID { get; set; }
+        public string CategoryName { get; set; } = "";
+        public int FunctionID { get; set; }
+    }
+    public sealed class SubcategoryLookup
+    {
+        public int SubcategoryID { get; set; }
+        public string SubcategoryName { get; set; } = "";
+        public int CategoryID { get; set; }
+    }
+    public sealed class ContactLookup
+    {
+        public int OrgID { get; set; }
+        public int CSF2SubcategoryID { get; set; }
+        public string FullName { get; set; } = "";
+    }
 
-  -- 4) Subcategories
-  SELECT DISTINCT s.SubcategoryID, s.SubcategoryName, s.CategoryID
-  FROM #Filtered f
-  JOIN ref.CSF2_Subcategory s ON s.SubcategoryID=f.CSF2SubcategoryID
-  ORDER BY s.SubcategoryID;
+    // ---------- API DTOs (requests/responses) ----------
+    public sealed class FeedQuery
+    {
+        // CSV multi-selects; send "" or null for "all"
+        public string? OrgIds { get; set; }
+        public string? FunctionIds { get; set; }
+        public string? CategoryIds { get; set; }
+        public string? Csf2SubcatIds { get; set; }
+        public string? OwnerNames { get; set; }
+        public string? CustodianNames { get; set; }
+        public bool FinalOnly { get; set; } = false;
+    }
 
-  -- 5) Owners
-  SELECT DISTINCT e.OrgID, e.CSF2SubcategoryID, e.FullName
-  FROM #Filtered f
-  JOIN #EffContacts e
-    ON e.OrgID=f.OrgID AND e.CSF2SubcategoryID=f.CSF2SubcategoryID
-  WHERE e.ContactRole='Owner'
-  ORDER BY e.OrgID, e.CSF2SubcategoryID, e.FullName;
+    public sealed class CsfFeedResponse
+    {
+        public List<CsfFeedHeader> Headers { get; set; } = new();
+        public List<CsfFeedRow> Rows { get; set; } = new();
+    }
 
-  -- 6) Custodians
-  SELECT DISTINCT e.OrgID, e.CSF2SubcategoryID, e.FullName
-  FROM #Filtered f
-  JOIN #EffContacts e
-    ON e.OrgID=f.OrgID AND e.CSF2SubcategoryID=f.CSF2SubcategoryID
-  WHERE e.ContactRole='Custodian'
-  ORDER BY e.OrgID, e.CSF2SubcategoryID, e.FullName;
-END
-GO
+    public sealed class SaveSelectionRequest
+    {
+        public int OrgId { get; set; }
+        public int Csf2SubcategoryId { get; set; }
+        public int Csf1SubcategoryId { get; set; }
+        public byte MaturityLevel { get; set; }     // 3 or 4
+        public int AttributeNum { get; set; }
+        public string? SelectionStatus { get; set; }      // Keep | Remove | null
+        public string? SelectionAttestation { get; set; } // Meet | Partial Meet | Does Not Meet | null
+    }
+
+    public sealed class SaveCustomRequest
+    {
+        public string Action { get; set; } = ""; // ADD | UPDATE | DELETE
+        public int OrgId { get; set; }
+        public int Csf2SubcategoryId { get; set; }
+        public byte MaturityLevel { get; set; } // 3 or 4
+        public int? AttributeNum { get; set; }  // required for UPDATE/DELETE, output for ADD
+        public string? Definition { get; set; } // required for ADD
+        public string? Attestation { get; set; } // ADD/UPDATE
+    }
+
+    public sealed class FilterQuery
+    {
+        public string? OrgIds { get; set; }
+        public string? FunctionIds { get; set; }
+        public string? CategoryIds { get; set; }
+        public string? SubcategoryIds { get; set; }
+        public string? OwnerNames { get; set; }
+        public string? CustodianNames { get; set; }
+    }
+
+    public sealed class FiltersResponse
+    {
+        public List<OrgLookup> Orgs { get; set; } = new();
+        public List<FunctionLookup> Functions { get; set; } = new();
+        public List<CategoryLookup> Categories { get; set; } = new();
+        public List<SubcategoryLookup> Subcategories { get; set; } = new();
+        public List<ContactLookup> Owners { get; set; } = new();
+        public List<ContactLookup> Custodians { get; set; } = new();
+
+        // enums can be hard-coded here for UI convenience
+        public List<byte> MaturityLevels { get; set; } = new() { 3, 4 };
+        public List<string> Statuses { get; set; } = new() { "Keep", "Remove" };
+        public List<string> Attestations { get; set; } = new() { "Meet", "Partial Meet", "Does Not Meet" };
+    }
+
+    // ---------- Small helpers ----------
+    public static class Csv
+    {
+        public static string? Join(IEnumerable<int>? items) =>
+            items == null ? null : string.Join(",", items);
+        public static string? Join(IEnumerable<string>? items) =>
+            items == null ? null : string.Join(",", items);
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+-----------
+
+using System;
+using System.Data;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using Dapper;
+using Microsoft.AspNetCore.Mvc;
+using YourApp.Namespace.Models;
+
+namespace YourApp.Namespace.Controllers
+{
+    [Route("api/va/[controller]")]
+    [ApiController]
+    public class CSFAttributeMapController : ControllerBase
+    {
+        private readonly CSFMappingDbContext _db;
+
+        public CSFAttributeMapController(CSFMappingDbContext dbContext)
+        {
+            _db = dbContext;
+        }
+
+        private string GetUserId() =>
+            HttpContext?.Request?.Headers["X-User-Id"].ToString()
+            ?? User?.Identity?.Name
+            ?? "unknown";
+
+        // ----------------- GET: Feed (headers + rows) -----------------
+        [HttpGet("feed")]
+        public async Task<IActionResult> GetFeed([FromQuery] FeedQuery q)
+        {
+            try
+            {
+                await using var conn = _db.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open) await conn.OpenAsync();
+
+                var p = new DynamicParameters();
+                p.Add("@OrgIDsCsv",         string.IsNullOrWhiteSpace(q.OrgIds) ? null : q.OrgIds);
+                p.Add("@FunctionIDsCsv",    string.IsNullOrWhiteSpace(q.FunctionIds) ? null : q.FunctionIds);
+                p.Add("@CategoryIDsCsv",    string.IsNullOrWhiteSpace(q.CategoryIds) ? null : q.CategoryIds);
+                p.Add("@CSF2SubcatIDsCsv",  string.IsNullOrWhiteSpace(q.Csf2SubcatIds) ? null : q.Csf2SubcatIds);
+                p.Add("@OwnerNamesCsv",     string.IsNullOrWhiteSpace(q.OwnerNames) ? null : q.OwnerNames);
+                p.Add("@CustodianNamesCsv", string.IsNullOrWhiteSpace(q.CustodianNames) ? null : q.CustodianNames);
+                p.Add("@FinalOnly",         q.FinalOnly, DbType.Boolean);
+
+                using var multi = await conn.QueryMultipleAsync(
+                    "dbo.sp_GetCsfAttributeFeed", p, commandType: CommandType.StoredProcedure);
+
+                var headers = (await multi.ReadAsync<CsfFeedHeader>()).AsList();
+                var rows    = (await multi.ReadAsync<CsfFeedRow>()).AsList();
+
+                return Ok(new CsfFeedResponse { Headers = headers, Rows = rows });
+            }
+            catch (Exception ex)
+            {
+                // map SQL errors to 400 if needed; keep simple here
+                return Problem(ex.Message);
+            }
+        }
+
+        // ----------------- GET: Filter lookups (cross-filtered, CSV) -----------------
+        [HttpGet("filters")]
+        public async Task<IActionResult> GetFilters([FromQuery] FilterQuery q)
+        {
+            try
+            {
+                await using var conn = _db.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open) await conn.OpenAsync();
+
+                var p = new DynamicParameters();
+                p.Add("@OrgIDsCsv",            string.IsNullOrWhiteSpace(q.OrgIds) ? null : q.OrgIds);
+                p.Add("@FunctionIDsCsv",       string.IsNullOrWhiteSpace(q.FunctionIds) ? null : q.FunctionIds);
+                p.Add("@CategoryIDsCsv",       string.IsNullOrWhiteSpace(q.CategoryIds) ? null : q.CategoryIds);
+                p.Add("@SubcategoryIDsCsv",    string.IsNullOrWhiteSpace(q.SubcategoryIds) ? null : q.SubcategoryIds);
+                p.Add("@OwnerNamesCsv",        string.IsNullOrWhiteSpace(q.OwnerNames) ? null : q.OwnerNames);
+                p.Add("@CustodianNamesCsv",    string.IsNullOrWhiteSpace(q.CustodianNames) ? null : q.CustodianNames);
+
+                using var multi = await conn.QueryMultipleAsync(
+                    "dbo.sp_GetCsfFilterLookups", p, commandType: CommandType.StoredProcedure);
+
+                var resp = new FiltersResponse
+                {
+                    Orgs          = (await multi.ReadAsync<OrgLookup>()).AsList(),
+                    Functions     = (await multi.ReadAsync<FunctionLookup>()).AsList(),
+                    Categories    = (await multi.ReadAsync<CategoryLookup>()).AsList(),
+                    Subcategories = (await multi.ReadAsync<SubcategoryLookup>()).AsList(),
+                    Owners        = (await multi.ReadAsync<ContactLookup>()).AsList(),
+                    Custodians    = (await multi.ReadAsync<ContactLookup>()).AsList()
+                };
+
+                // enums are already pre-populated in FiltersResponse ctor; override here if you want to
+                return Ok(resp);
+            }
+            catch (Exception ex)
+            {
+                return Problem(ex.Message);
+            }
+        }
+
+        // ----------------- POST: Save selection (Keep/Remove + Attestation) -----------------
+        [HttpPost("selection")]
+        public async Task<IActionResult> SaveSelection([FromBody] SaveSelectionRequest r)
+        {
+            var userId = GetUserId();
+            try
+            {
+                await using var conn = _db.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open) await conn.OpenAsync();
+
+                var p = new DynamicParameters();
+                p.Add("@OrgID",              r.OrgId);
+                p.Add("@CSF2SubcategoryID",  r.Csf2SubcategoryId);
+                p.Add("@CSF1SubcategoryID",  r.Csf1SubcategoryId);
+                p.Add("@MaturityLevel",      r.MaturityLevel);
+                p.Add("@AttributeNum",       r.AttributeNum);
+                p.Add("@SelectionStatus",    r.SelectionStatus);
+                p.Add("@SelectionAttestation", r.SelectionAttestation);
+                p.Add("@UserID",             userId);
+
+                await conn.ExecuteAsync("dbo.sp_SaveAttributeSelection", p, commandType: CommandType.StoredProcedure);
+
+                // 204 is fine; the client will re-GET the current subcat slice
+                return NoContent();
+            }
+            catch (Exception ex)
+            {
+                return Problem(ex.Message);
+            }
+        }
+
+        // ----------------- POST: Save custom attribute (ADD/UPDATE/DELETE) -----------------
+        [HttpPost("custom")]
+        public async Task<IActionResult> SaveCustom([FromBody] SaveCustomRequest r)
+        {
+            var userId = GetUserId();
+            try
+            {
+                await using var conn = _db.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open) await conn.OpenAsync();
+
+                var p = new DynamicParameters();
+                p.Add("@Action",              r.Action);
+                p.Add("@OrgID",               r.OrgId);
+                p.Add("@CSF2SubcategoryID",   r.Csf2SubcategoryId);
+                p.Add("@MaturityLevel",       r.MaturityLevel);
+                p.Add("@AttributeNum",        r.AttributeNum, direction: ParameterDirection.InputOutput);
+                p.Add("@Definition",          r.Definition);
+                p.Add("@Attestation",         r.Attestation);
+                p.Add("@UserID",              userId);
+
+                await conn.ExecuteAsync("dbo.sp_SaveCustomAttribute", p, commandType: CommandType.StoredProcedure);
+
+                var assigned = p.Get<int?>("@AttributeNum");
+                return Ok(new { attributeNum = assigned });
+            }
+            catch (Exception ex)
+            {
+                return Problem(ex.Message);
+            }
+        }
+    }
+}
+
+
+
+

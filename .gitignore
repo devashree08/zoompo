@@ -1,189 +1,25 @@
-Upsert user selection for a baseline (CSF 1.1–derived) attribute.
--- WHEN: User changes Status/Attestation on a baseline row in UI.
--- SIDE EFFECT: Calls sp_RefreshCsfFeed_Subcat to update UI feed slice.
-
-
--- TABLE: dbo.Org_AttributeSelection (HYBRID)
-IF OBJECT_ID('dbo.Org_AttributeSelection','U') IS NOT NULL
-  DROP TABLE dbo.Org_AttributeSelection;
-GO
-CREATE TABLE dbo.Org_AttributeSelection
-(
-  -- Surrogate PK for auditing/ease
-  SelectionID            INT           IDENTITY(1,1) PRIMARY KEY,
-
-  -- Durable keys
-  OrgID                  INT           NOT NULL,
-  CSF2SubcategoryID      INT           NOT NULL,
-  CSF1SubcategoryID      INT           NOT NULL,
-  MaturityLevel          TINYINT       NOT NULL,    -- 3 or 4
-  AttributeNum           INT           NOT NULL,    -- baseline attr #
-
-  -- Your original concatenated key (kept for traceability)
-  Ent_Subcat_Attr        NVARCHAR(100) NOT NULL,    -- e.g. E=FSI~S=ID.AM-1~ML=3~A=1
-
-  -- User-entered selections
-  SelectionStatus        VARCHAR(20)   NULL,        -- Keep | Remove | Partial | NULL
-  SelectionAttestation   VARCHAR(20)   NULL,        -- Meet | Partial | DoesNotMeet | NULL
-
-  CreatedBy              SYSNAME        NOT NULL,
-  CreatedAt              DATETIME2(3)   NOT NULL CONSTRAINT DF_OrgAttrSel_CreatedAt DEFAULT SYSUTCDATETIME(),
-  ModifiedBy             SYSNAME        NOT NULL,
-  ModifiedAt             DATETIME2(3)   NOT NULL CONSTRAINT DF_OrgAttrSel_ModifiedAt DEFAULT SYSUTCDATETIME(),
-
-  -- One row per baseline attribute mapped to a specific CSF2 subcategory
-  CONSTRAINT UQ_OrgAttrSel UNIQUE (OrgID, CSF2SubcategoryID, CSF1SubcategoryID, MaturityLevel, AttributeNum),
-
-  -- Checks
-  CONSTRAINT CK_OrgAttrSel_ML   CHECK (MaturityLevel IN (3,4)),
-  CONSTRAINT CK_OrgAttrSel_Stat CHECK (SelectionStatus IN ('Keep','Remove','Partial') OR SelectionStatus IS NULL),
-  CONSTRAINT CK_OrgAttrSel_Att  CHECK (SelectionAttestation IN ('Meet','Partial','DoesNotMeet') OR SelectionAttestation IS NULL),
-
-  -- FKs (reference schemas as you defined them)
-  CONSTRAINT FK_OrgAttrSel_Org      FOREIGN KEY (OrgID)             REFERENCES dbo.Org(OrgID),
-  CONSTRAINT FK_OrgAttrSel_CSF2     FOREIGN KEY (CSF2SubcategoryID) REFERENCES ref.CSF2_Subcategory(SubcategoryID),
-  CONSTRAINT FK_OrgAttrSel_CSF1     FOREIGN KEY (CSF1SubcategoryID) REFERENCES ref.CSF1_Subcategory(CSF1SubcatID)
-);
-GO
-
--- Read-path index for feed/querying by Org/Subcat
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_OrgAttrSel_Org_Subcat' AND object_id=OBJECT_ID('dbo.Org_AttributeSelection'))
-CREATE NONCLUSTERED INDEX IX_OrgAttrSel_Org_Subcat
-  ON dbo.Org_AttributeSelection (OrgID, CSF2SubcategoryID)
-  INCLUDE (CSF1SubcategoryID, MaturityLevel, AttributeNum, SelectionStatus, SelectionAttestation, ModifiedAt, Ent_Subcat_Attr);
-GO
-
-
-
-
-CREATE OR ALTER PROCEDURE dbo.sp_SaveAttributeSelection
-  @OrgID                 INT,
-  @CSF2SubcategoryID     INT,
-  @CSF1SubcategoryID     INT,
-  @MaturityLevel         TINYINT,          -- 3 or 4
-  @AttributeNum          INT,
-  @SelectionStatus       VARCHAR(20) = NULL,    -- Keep | Remove | Partial | NULL
-  @SelectionAttestation  VARCHAR(20) = NULL,    -- Meet | Partial | DoesNotMeet | NULL
-  @Ent_Subcat_Attr       NVARCHAR(100) = NULL,  -- optional (we'll derive if null)
-  @ModifiedBy            SYSNAME
-AS
-BEGIN
-  SET NOCOUNT ON; 
-  SET XACT_ABORT ON;
-
-  IF @MaturityLevel NOT IN (3,4)
-  BEGIN
-    RAISERROR('MaturityLevel must be 3 or 4.', 16, 1);
-    RETURN;
-  END
-  IF @SelectionStatus IS NOT NULL AND @SelectionStatus NOT IN ('Keep','Remove','Partial')
-  BEGIN
-    RAISERROR('SelectionStatus must be Keep | Remove | Partial (or NULL).', 16, 1);
-    RETURN;
-  END
-  IF @SelectionAttestation IS NOT NULL AND @SelectionAttestation NOT IN ('Meet','Partial','DoesNotMeet')
-  BEGIN
-    RAISERROR('SelectionAttestation must be Meet | Partial | DoesNotMeet (or NULL).', 16, 1);
-    RETURN;
-  END
-
-  BEGIN TRY
-    BEGIN TRAN;
-
-    -- Derive the Ent_Subcat_Attr if not provided
-    DECLARE @EntKey NVARCHAR(100) = @Ent_Subcat_Attr;
-
-    IF @EntKey IS NULL
-    BEGIN
-      SELECT TOP (1) @EntKey = b.Ent_Subcat_Attr
-      FROM stg.Org_CSF1_AttrBaseline b
-      WHERE b.OrgID=@OrgID
-        AND b.CSF1SubcatID=@CSF1SubcategoryID
-        AND b.MaturityLevel=@MaturityLevel
-        AND b.AttributeNum=@AttributeNum;
-    END
-
-    -- Last-resort construction if not in staging
-    IF @EntKey IS NULL
-    BEGIN
-      DECLARE @OrgCode NVARCHAR(50) = (SELECT TOP 1 OrgCode FROM dbo.Org WHERE OrgID=@OrgID);
-      DECLARE @CSF1Name NVARCHAR(50) = (SELECT TOP 1 SubcategoryName FROM ref.CSF1_Subcategory WHERE CSF1SubcatID=@CSF1SubcategoryID);
-      SET @EntKey = CONCAT('E=', ISNULL(@OrgCode,'?'), '~S=', ISNULL(@CSF1Name,'?'), '~ML=', @MaturityLevel, '~A=', @AttributeNum);
-    END
-
-    -- UPSERT (UPDATE first, else INSERT)
-    UPDATE dbo.Org_AttributeSelection
-       SET SelectionStatus      = @SelectionStatus,
-           SelectionAttestation = @SelectionAttestation,
-           -- refresh the human-friendly key if caller sent a new one
-           Ent_Subcat_Attr      = COALESCE(@Ent_Subcat_Attr, Ent_Subcat_Attr),
-           ModifiedBy           = @ModifiedBy,
-           ModifiedAt           = SYSUTCDATETIME()
-     WHERE OrgID=@OrgID
-       AND CSF2SubcategoryID=@CSF2SubcategoryID
-       AND CSF1SubcategoryID=@CSF1SubcategoryID
-       AND MaturityLevel=@MaturityLevel
-       AND AttributeNum=@AttributeNum;
-
-    IF @@ROWCOUNT = 0
-    BEGIN
-      INSERT dbo.Org_AttributeSelection
-        (OrgID, CSF2SubcategoryID, CSF1SubcategoryID, MaturityLevel, AttributeNum,
-         Ent_Subcat_Attr, SelectionStatus, SelectionAttestation,
-         CreatedBy, CreatedAt, ModifiedBy, ModifiedAt)
-      VALUES
-        (@OrgID, @CSF2SubcategoryID, @CSF1SubcategoryID, @MaturityLevel, @AttributeNum,
-         @EntKey, @SelectionStatus, @SelectionAttestation,
-         @ModifiedBy, SYSUTCDATETIME(), @ModifiedBy, SYSUTCDATETIME());
-    END
-
-    COMMIT TRAN;
-
-    -- Refresh the UI feed slice so changes show instantly
-    IF OBJECT_ID('dbo.sp_RefreshCsfFeed_Subcat','P') IS NOT NULL
-      EXEC dbo.sp_RefreshCsfFeed_Subcat @OrgID=@OrgID, @CSF2SubcategoryID=@CSF2SubcategoryID;
-END TRY
-BEGIN CATCH
-  IF XACT_STATE() <> 0 ROLLBACK TRAN;
-  THROW;
-END CATCH
-END
-GO
-
-
-
-
-
-IF OBJECT_ID('dbo.Org_AttributeSelection_Audit','U') IS NOT NULL
-  DROP TABLE dbo.Org_AttributeSelection_Audit;
-GO
+IF OBJECT_ID('dbo.Org_AttributeSelection_Audit','U') IS NULL
 CREATE TABLE dbo.Org_AttributeSelection_Audit
 (
-  AuditID                 BIGINT        IDENTITY(1,1) PRIMARY KEY,
-  Operation               CHAR(1)       NOT NULL,   -- I/U/D
-  ChangedAt               DATETIME2(3)  NOT NULL,   -- UTC
-  ChangedBy               SYSNAME       NOT NULL,
+  AuditID                   BIGINT        IDENTITY(1,1) PRIMARY KEY,
+  Operation                 CHAR(1)       NOT NULL,   -- I/U/D
+  ChangedAt                 DATETIME2(3)  NOT NULL,
+  ChangedBy                 SYSNAME       NOT NULL,
 
-  OrgID                   INT           NOT NULL,
-  CSF2SubcategoryID       INT           NOT NULL,
-  CSF1SubcategoryID       INT           NOT NULL,
-  MaturityLevel           TINYINT       NOT NULL,
-  AttributeNum            INT           NOT NULL,
+  OrgID                     INT           NOT NULL,
+  CSF2SubcategoryID         INT           NOT NULL,
+  CSF1SubcategoryID         INT           NOT NULL,
+  MaturityLevel             TINYINT       NOT NULL,
+  AttributeNum              INT           NOT NULL,
 
-  Old_Ent_Subcat_Attr     NVARCHAR(100) NULL,
-  New_Ent_Subcat_Attr     NVARCHAR(100) NULL,
-  Old_SelectionStatus     VARCHAR(20)   NULL,
-  New_SelectionStatus     VARCHAR(20)   NULL,
-  Old_SelectionAttestation VARCHAR(20)  NULL,
-  New_SelectionAttestation VARCHAR(20)  NULL
+  Old_Ent_Subcat_Attr       NVARCHAR(100) NULL,
+  New_Ent_Subcat_Attr       NVARCHAR(100) NULL,
+  Old_SelectionStatus       VARCHAR(20)   NULL,
+  New_SelectionStatus       VARCHAR(20)   NULL,
+  Old_SelectionAttestation  VARCHAR(20)   NULL,
+  New_SelectionAttestation  VARCHAR(20)   NULL
 );
 GO
-
-
-
-
-
-
 
 
 IF OBJECT_ID('dbo.trg_Org_AttributeSelection_Audit','TR') IS NOT NULL
@@ -241,4 +77,3 @@ BEGIN
   WHERE i.OrgID IS NULL;
 END
 GO
-

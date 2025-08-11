@@ -9,38 +9,38 @@ AS
 BEGIN
   SET NOCOUNT ON;
 
-  /* ---- Parse CSVs ---- */
+  /* Parse CSVs */
   CREATE TABLE #SelOrg  (id INT PRIMARY KEY);
   IF ISNULL(LTRIM(RTRIM(@OrgIDsCsv)),'') <> ''
     INSERT #SelOrg SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@OrgIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
+    FROM STRING_SPLIT(@OrgIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
 
   CREATE TABLE #SelFunc (id INT PRIMARY KEY);
   IF ISNULL(LTRIM(RTRIM(@FunctionIDsCsv)),'') <> ''
     INSERT #SelFunc SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@FunctionIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
+    FROM STRING_SPLIT(@FunctionIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
 
   CREATE TABLE #SelCat  (id INT PRIMARY KEY);
   IF ISNULL(LTRIM(RTRIM(@CategoryIDsCsv)),'') <> ''
     INSERT #SelCat SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@CategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
+    FROM STRING_SPLIT(@CategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
 
   CREATE TABLE #SelSub  (id INT PRIMARY KEY);
   IF ISNULL(LTRIM(RTRIM(@SubcategoryIDsCsv)),'') <> ''
     INSERT #SelSub SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@SubcategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
+    FROM STRING_SPLIT(@SubcategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
 
   CREATE TABLE #SelOwner(name NVARCHAR(200) PRIMARY KEY);
   IF ISNULL(LTRIM(RTRIM(@OwnerNamesCsv)),'') <> ''
     INSERT #SelOwner SELECT LTRIM(RTRIM(value))
-    FROM STRING_SPLIT(@OwnerNamesCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
+    FROM STRING_SPLIT(@OwnerNamesCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
 
   CREATE TABLE #SelCust (name NVARCHAR(200) PRIMARY KEY);
   IF ISNULL(LTRIM(RTRIM(@CustodianNamesCsv)),'') <> ''
     INSERT #SelCust SELECT LTRIM(RTRIM(value))
-    FROM STRING_SPLIT(@CustodianNamesCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
+    FROM STRING_SPLIT(@CustodianNamesCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
 
-  /* Effective contacts (for Owner/Custodian filters) */
+  /* Effective contacts */
   SELECT oc.OrgID, oc.CSF2SubcatID AS CSF2SubcategoryID, oc.FullName, oc.ContactRole
   INTO #EffContacts
   FROM dbo.Org_SubcategoryContact oc
@@ -48,29 +48,26 @@ BEGIN
     AND oc.Eff_Dt <= CAST(GETUTCDATE() AS DATE)
     AND (oc.Exp_Dt IS NULL OR oc.Exp_Dt >= CAST(GETUTCDATE() AS DATE));
 
-  /* ---- Build CSF2 tree from refs (all 106 subcats) ---- */
+  /* CSF2 tree from refs (all 106 subcats) */
   ;WITH Csf2Tree AS (
     SELECT f.FunctionID, c.CategoryID, s.SubcategoryID AS CSF2SubcategoryID
     FROM ref.CSF2_Function f
     JOIN ref.CSF2_Category c   ON c.FunctionID = f.FunctionID
     JOIN ref.CSF2_Subcategory s ON s.CategoryID = c.CategoryID
-  ),
-  OrgList AS (
-    SELECT OrgID FROM dbo.Org
-    WHERE NOT EXISTS (SELECT 1 FROM #SelOrg) OR OrgID IN (SELECT id FROM #SelOrg)
   )
-  /* Base = Org × CSF2 (REF), not the feed */
+  /* Base = ALL Orgs × CSF2 tree (do NOT filter Org here) */
   SELECT o.OrgID, t.FunctionID, t.CategoryID, t.CSF2SubcategoryID
   INTO #Base
-  FROM OrgList o
+  FROM dbo.Org o
   CROSS JOIN Csf2Tree t;
 
-  /* All-filters slice */
+  /* All-filters slice (applies Org + other filters) */
   SELECT b.*
   INTO #Filtered_All
   FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID        IN (SELECT id FROM #SelFunc))
-    AND (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID        IN (SELECT id FROM #SelCat))
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)  OR b.OrgID            IN (SELECT id FROM #SelOrg))
+    AND (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID       IN (SELECT id FROM #SelFunc))
+    AND (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID       IN (SELECT id FROM #SelCat))
     AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
     AND (
          NOT EXISTS (SELECT 1 FROM #SelOwner)
@@ -90,81 +87,110 @@ BEGIN
     );
 
   /* Self-excluding slices */
-  SELECT b.* INTO #Filtered_NoFunc FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID        IN (SELECT id FROM #SelCat))
+  -- Ignore Org filter (for Org lookup)
+  SELECT b.*
+  INTO #Filtered_NoOrg
+  FROM #Base b
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID       IN (SELECT id FROM #SelFunc))
+    AND (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID       IN (SELECT id FROM #SelCat))
     AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
     AND (
          NOT EXISTS (SELECT 1 FROM #SelOwner)
          OR EXISTS (SELECT 1 FROM #EffContacts e
-                   WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                     AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner))
+                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
+                      AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner))
     )
     AND (
          NOT EXISTS (SELECT 1 FROM #SelCust)
          OR EXISTS (SELECT 1 FROM #EffContacts e
-                   WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                     AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust))
+                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
+                      AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust))
     );
 
-  SELECT b.* INTO #Filtered_NoCat FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID        IN (SELECT id FROM #SelFunc))
+  -- Ignore Function filter (for Function lookup)
+  SELECT b.*
+  INTO #Filtered_NoFunc
+  FROM #Base b
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID       IN (SELECT id FROM #SelCat))
     AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
     AND (
          NOT EXISTS (SELECT 1 FROM #SelOwner)
          OR EXISTS (SELECT 1 FROM #EffContacts e
-                   WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                     AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner))
+                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
+                      AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner))
     )
     AND (
          NOT EXISTS (SELECT 1 FROM #SelCust)
          OR EXISTS (SELECT 1 FROM #EffContacts e
-                   WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                     AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust))
+                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
+                      AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust))
     );
 
-  SELECT b.* INTO #Filtered_NoSub FROM #Base b
+  -- Ignore Category filter (for Category lookup)
+  SELECT b.*
+  INTO #Filtered_NoCat
+  FROM #Base b
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID       IN (SELECT id FROM #SelFunc))
+    AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelOwner)
+         OR EXISTS (SELECT 1 FROM #EffContacts e
+                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
+                      AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner))
+    )
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelCust)
+         OR EXISTS (SELECT 1 FROM #EffContacts e
+                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
+                      AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust))
+    );
+
+  -- Ignore Subcategory filter (for Subcategory lookup)
+  SELECT b.*
+  INTO #Filtered_NoSub
+  FROM #Base b
   WHERE (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID IN (SELECT id FROM #SelFunc))
     AND (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID  IN (SELECT id FROM #SelCat))
     AND (
          NOT EXISTS (SELECT 1 FROM #SelOwner)
          OR EXISTS (SELECT 1 FROM #EffContacts e
-                   WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                     AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner))
+                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
+                      AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner))
     )
     AND (
          NOT EXISTS (SELECT 1 FROM #SelCust)
          OR EXISTS (SELECT 1 FROM #EffContacts e
-                   WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                     AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust))
+                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
+                      AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust))
     );
 
-  /* ---- Results (camelCase keys) ---- */
-  -- 1) Orgs
-  SELECT DISTINCT o.OrgID   AS orgID, o.OrgName AS orgName
-  FROM #Filtered_All f JOIN dbo.Org o ON o.OrgID=f.OrgID
+  /* Result sets (camelCase) */
+  -- 1) Orgs (self-excluding)
+  SELECT DISTINCT o.OrgID AS orgID, o.OrgName AS orgName
+  FROM #Filtered_NoOrg f
+  JOIN dbo.Org o ON o.OrgID=f.OrgID
   ORDER BY o.OrgName;
 
   -- 2) Functions (self-excluding)
-  SELECT DISTINCT fn.FunctionID   AS functionID, fn.FunctionName AS functionName
+  SELECT DISTINCT fn.FunctionID AS functionID, fn.FunctionName AS functionName
   FROM #Filtered_NoFunc f
   JOIN ref.CSF2_Category c ON c.CategoryID=f.CategoryID
   JOIN ref.CSF2_Function fn ON fn.FunctionID=c.FunctionID
   ORDER BY fn.FunctionID;
 
   -- 3) Categories (self-excluding)
-  SELECT DISTINCT c.CategoryID   AS categoryID, c.CategoryName AS categoryName
+  SELECT DISTINCT c.CategoryID AS categoryID, c.CategoryName AS categoryName
   FROM #Filtered_NoCat f
   JOIN ref.CSF2_Category c ON c.CategoryID=f.CategoryID
   ORDER BY c.CategoryID;
 
-  -- 4) Subcategories (self-excluding) — will now return **all 106** when no other filters
-  SELECT DISTINCT s.SubcategoryID   AS csF2SubcategoryID,
-                  s.SubcategoryName AS subcategoryName
+  -- 4) Subcategories (self-excluding)
+  SELECT DISTINCT s.SubcategoryID AS csF2SubcategoryID, s.SubcategoryName AS subcategoryName
   FROM #Filtered_NoSub f
   JOIN ref.CSF2_Subcategory s ON s.SubcategoryID=f.CSF2SubcategoryID
   ORDER BY s.SubcategoryID;
 
-  -- 5) Owners (distinct names)
+  -- 5) Owners (distinct names from full slice)
   SELECT DISTINCT e.FullName AS fullName
   FROM #Filtered_All f
   JOIN #EffContacts e
@@ -172,7 +198,7 @@ BEGIN
   WHERE e.ContactRole='Owner'
   ORDER BY e.FullName;
 
-  -- 6) Custodians (distinct names)
+  -- 6) Custodians (distinct names from full slice)
   SELECT DISTINCT e.FullName AS fullName
   FROM #Filtered_All f
   JOIN #EffContacts e

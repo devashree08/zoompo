@@ -1,4 +1,26 @@
 import React from 'react';
+import { Paper, Stack, Box } from '@mui/material';
+import TextField from '../../core/TextField';
+import Button from '../../core/Button';
+
+export default function FilterBar({ filtersLeft=null, searchValue, onSearchChange, onExport, exportLabel='Export' }) {
+  return (
+    <Paper sx={{ p: 2 }}>
+      <Stack direction={{ xs:'column', md:'row' }} spacing={2} alignItems={{ md:'center' }} justifyContent="space-between">
+        <Box sx={{ flex: 1 }}>{filtersLeft}</Box>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 320 }}>
+          <TextField label="Search" search value={searchValue} onChange={onSearchChange} fullWidth />
+          <Button onClick={onExport}>{exportLabel}</Button>
+        </Stack>
+      </Stack>
+    </Paper>
+  );
+}
+
+
+--
+
+import React from 'react';
 import { Snackbar, Alert } from '@mui/material';
 
 const ToastCtx = React.createContext(null);

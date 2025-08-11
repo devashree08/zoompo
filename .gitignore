@@ -1,59 +1,48 @@
 import * as React from 'react';
-import { Autocomplete, TextField, Checkbox } from '@mui/material';
+import { Box, Chip, Stack } from '@mui/material';
+import { toLabelMap } from '../../utils/filters';
 
-export default function MultiSelectSearch({
-  label,
-  value = [],               // array of primitive values
-  options = [],             // [{ value, label }]
+export default function SelectedChipsBar({
+  value,         // { orgIds, functionIds, categoryIds, subcatIds, ownerNames, custodianNames, maturity }
+  options,       // { orgs, functions, categories, subcategories, owners, custodians }
   onChange,
-  placeholder = 'Select…',
-  disabled = false,
-  limitTags = 0,            // show tags outside as chips; keep input compact
-  ...props
 }) {
-  const valueObjects = React.useMemo(() => {
-    const byValue = new Map(options.map(o => [o.value, o]));
-    return value.map(v => byValue.get(v)).filter(Boolean);
-  }, [value, options]);
-
-  const handleChange = (_, selectedOptions) => {
-    onChange?.(selectedOptions.map(o => o.value));
+  const maps = {
+    orgs:          toLabelMap(options.orgs),
+    functions:     toLabelMap(options.functions),
+    categories:    toLabelMap(options.categories),
+    subcategories: toLabelMap(options.subcategories),
+    owners:        toLabelMap(options.owners),
+    custodians:    toLabelMap(options.custodians),
+    maturity:      new Map([[3, 'Level 3'], [4, 'Level 4']]),
   };
 
-  const renderTags = (selected, getTagProps) => {
-    // keep tags inside the field minimal; we render chips below
-    if (!selected?.length || limitTags === 0) return null;
-    if (selected.length > 3) return <span {...getTagProps({ index: 0 })}>{selected.length} selected</span>;
-    return selected.map((opt, i) => (
-      <span key={opt.value} {...getTagProps({ index: i })}>{opt.label}</span>
-    ));
-  };
+  const makeChips = (arr, key, labelMap) =>
+    (arr || []).map(v => ({
+      key: `${key}:${v}`,
+      label: labelMap.get(v) ?? String(v),
+      onDelete: () => onChange({ ...value, [key]: (value[key] || []).filter(x => x !== v) })
+    }));
+
+  const chips = [
+    ...makeChips(value.orgIds, 'orgIds', maps.orgs),
+    ...makeChips(value.functionIds, 'functionIds', maps.functions),
+    ...makeChips(value.categoryIds, 'categoryIds', maps.categories),
+    ...makeChips(value.subcatIds, 'subcatIds', maps.subcategories),
+    ...makeChips(value.ownerNames, 'ownerNames', maps.owners),
+    ...makeChips(value.custodianNames, 'custodianNames', maps.custodians),
+    ...makeChips(value.maturity, 'maturity', maps.maturity),
+  ];
+
+  if (!chips.length) return null;
 
   return (
-    <Autocomplete
-      multiple
-      disableCloseOnSelect
-      options={options}
-      value={valueObjects}
-      onChange={handleChange}
-      getOptionLabel={(o) => o?.label ?? ''}
-      isOptionEqualToValue={(o, v) => o.value === v.value}
-      filterSelectedOptions={false}      // keep selected visible so menu never looks empty
-      renderOption={(props2, option, { selected }) => (
-        <li {...props2}>
-          <Checkbox checked={selected} sx={{ mr: 1 }} />
-          {option.label}
-        </li>
-      )}
-      renderTags={renderTags}
-      limitTags={limitTags}
-      ListboxProps={{ style: { maxHeight: 360 } }}
-      fullWidth
-      disabled={disabled}
-      renderInput={(params) => (
-        <TextField {...params} size="small" label={label} placeholder={placeholder} />
-      )}
-      {...props}
-    />
+    <Box sx={{ mt: 1 }}>
+      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+        {chips.map(c => (
+          <Chip key={c.key} label={c.label} onDelete={c.onDelete} size="small" />
+        ))}
+      </Stack>
+    </Box>
   );
 }

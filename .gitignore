@@ -1,13 +1,76 @@
-// src/providers/AppProviders.jsx
+import axios from 'axios';
+import { config } from '../Config/URLs';
+
+const baseURL = (config.url.API_URL || '').replace(/\/+$/, ''); // trim trailing slash
+
+const client = axios.create({
+  baseURL,           // e.g. https://stg.api.example.com
+  timeout: 30000,
+  withCredentials: false,
+});
+
+client.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    const message = err?.response?.data?.message || err.message || 'Request failed';
+    return Promise.reject({ ...err, message });
+  }
+);
+
+export default client;
+
+
+
+import { createTheme } from '@mui/material/styles';
+
+const primary = { main: '#0561FF', dark: '#0540C5', light: '#4D8DFF', contrastText: '#FFFFFF' };
+const neutral = {
+  50:'#F7F8FB',100:'#EEF1F6',200:'#E4E7EC',300:'#CDD5DF',400:'#98A2B3',
+  500:'#667085',600:'#475467',700:'#344054',800:'#1D2939',900:'#101828',
+};
+const success = { main: '#12B76A', light: '#ECFDF3', dark: '#027A48' };
+const warning = { main: '#F79009', light: '#FFFAEB', dark: '#B54708' };
+const error   = { main: '#D92D20', light: '#FEF3F2', dark: '#912018' };
+
+const theme = createTheme({
+  palette: {
+    mode: 'light',
+    primary, success, warning, error, grey: neutral,
+    background: { default: neutral[50], paper: '#FFFFFF' },
+    text: { primary: neutral[900], secondary: neutral[600] },
+    divider: neutral[200],
+  },
+  shape: { borderRadius: 10 },
+  typography: {
+    fontFamily: ['Inter','Segoe UI','Roboto','Helvetica Neue','Arial','sans-serif'].join(','),
+    h1: { fontWeight: 800, fontSize: '2rem' },
+    h2: { fontWeight: 800, fontSize: '1.6rem' },
+    h3: { fontWeight: 700, fontSize: '1.25rem' },
+    button: { textTransform: 'none', fontWeight: 700 },
+  },
+  components: {
+    MuiCssBaseline: { styleOverrides: { body: { backgroundColor: neutral[50] } } },
+    MuiButton: {
+      defaultProps: { variant: 'contained', disableElevation: true },
+      styleOverrides: { root: { borderRadius: 10, paddingInline: 14, minHeight: 36 } },
+    },
+    MuiPaper: { styleOverrides: { root: { borderRadius: 12, border: `1px solid ${neutral[200]}` } } },
+    MuiCard:  { styleOverrides: { root: { borderRadius: 12, border: `1px solid ${neutral[200]}` } } },
+    MuiChip:  { styleOverrides: { root: { fontWeight: 600 } } },
+    MuiTextField: { defaultProps: { size: 'small' } },
+    MuiSelect:    { defaultProps: { size: 'small' } },
+    MuiFormControl:{ defaultProps: { size: 'small' } },
+  },
+});
+export default theme;
+
 import React from 'react';
 import { ThemeProvider, CssBaseline } from '@mui/material';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import theme from '../theme';
 
 const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: { refetchOnWindowFocus: false, staleTime: 30_000 },
-  },
+  defaultOptions: { queries: { refetchOnWindowFocus: false, staleTime: 30_000 } },
 });
 
 export default function AppProviders({ children }) {
@@ -20,3 +83,401 @@ export default function AppProviders({ children }) {
     </ThemeProvider>
   );
 }
+
+
+
+
+----
+
+
+import React from 'react';
+import { Button as MUIButton } from '@mui/material';
+export default function Button({ variant='contained', size='medium', ...props }) {
+  return <MUIButton variant={variant} size={size} {...props} />;
+}
+
+
+
+
+import React from 'react';
+import { TextField as MUITextField, InputAdornment } from '@mui/material';
+import SearchIcon from '@mui/icons-material/Search';
+
+export default function TextField({ label, value, onChange, type='text', search=false, ...props }) {
+  return (
+    <MUITextField
+      size="small"
+      label={label}
+      type={type}
+      value={value ?? ''}
+      onChange={(e) => onChange?.(e.target.value)}
+      InputProps={ search ? {
+        startAdornment: (
+          <InputAdornment position="start">
+            <SearchIcon fontSize="small" />
+          </InputAdornment>
+        )} : undefined}
+      {...props}
+    />
+  );
+}
+
+
+
+import React from 'react';
+import { FormControl, InputLabel, Select, MenuItem, Checkbox, ListItemText } from '@mui/material';
+
+export default function MultiSelect({ label, value=[], options=[], onChange, placeholder='Select…', ...props }) {
+  const handle = (event) => onChange?.(event.target.value);
+  return (
+    <FormControl size="small" fullWidth>
+      <InputLabel>{label}</InputLabel>
+      <Select
+        multiple
+        label={label}
+        value={value}
+        onChange={handle}
+        renderValue={(selected) => {
+          if (!selected.length) return placeholder;
+          const map = new Map(options.map(o => [o.value, o.label]));
+          return selected.map(v => map.get(v) ?? v).join(', ');
+        }}
+        {...props}
+      >
+        {options.map((opt) => (
+          <MenuItem key={opt.value} value={opt.value}>
+            <Checkbox checked={value.indexOf(opt.value) > -1} />
+            <ListItemText primary={opt.label} />
+          </MenuItem>
+        ))}
+      </Select>
+    </FormControl>
+  );
+}
+
+
+
+
+
+import React from 'react';
+import { FormControlLabel, Switch as MUISwitch } from '@mui/material';
+export default function Switch({ label, checked, onChange, ...props }) {
+  return (
+    <FormControlLabel
+      control={<MUISwitch size="small" checked={!!checked} onChange={(e) => onChange?.(e.target.checked)} />}
+      label={label}
+      {...props}
+    />
+  );
+}
+
+
+
+
+
+export { default as Button } from './core/Button';
+export { default as TextField } from './core/TextField';
+export { default as MultiSelect } from './core/MultiSelect';
+export { default as Switch } from './core/Switch';
+
+
+
+
+
+
+import React from 'react';
+import { Paper, Stack, Box } from '@mui/material';
+import { TextField, Button } from '../../index';
+
+export default function FilterBar({ filtersLeft=null, searchValue, onSearchChange, onExport, exportLabel='Export' }) {
+  return (
+    <Paper sx={{ p: 2 }}>
+      <Stack direction={{ xs:'column', md:'row' }} spacing={2} alignItems={{ md:'center' }} justifyContent="space-between">
+        <Box sx={{ flex: 1 }}>
+          {filtersLeft}
+        </Box>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 320 }}>
+          <TextField label="Search" search value={searchValue} onChange={onSearchChange} fullWidth />
+          <Button onClick={onExport}>{exportLabel}</Button>
+        </Stack>
+      </Stack>
+    </Paper>
+  );
+}
+
+
+
+
+
+
+
+import api from '../../../lib/axiosClient';
+
+const toCsv = (xs) => (xs && xs.length ? xs.join(',') : null);
+
+export async function fetchCsfFilterLookups({ orgIds, functionIds, categoryIds, subcatIds, ownerNames, custodianNames }) {
+  const params = {
+    OrgIDsCsv:         toCsv(orgIds),
+    FunctionIDsCsv:    toCsv(functionIds),
+    CategoryIDsCsv:    toCsv(categoryIds),
+    SubcategoryIDsCsv: toCsv(subcatIds),
+    OwnerNamesCsv:     toCsv(ownerNames),
+    CustodianNamesCsv: toCsv(custodianNames),
+  };
+  const { data } = await api.get('/api/v1/CSFAttributeMap/filters', { params });
+  return data; // { orgs, functions, categories, subcategories, owners, custodians }
+}
+
+export async function fetchCsfFeed(params) {
+  const { data } = await api.get('/api/v1/CSFAttributeMap/feed', { params });
+  return data; // { headers, rows }
+}
+
+
+
+
+
+
+
+import React from 'react';
+import { Grid } from '@mui/material';
+import { FilterBar } from '../../../../ui/patterns/FilterBar';
+import { MultiSelect, Switch } from '../../../../ui';
+import { fetchCsfFilterLookups } from '../../api/csfApi';
+
+const MATURITY_OPTIONS = [{ value: 3, label: 'Level 3' }, { value: 4, label: 'Level 4' }];
+
+export default function CsfFilterBar({ value, onChange, onExport }) {
+  const [loading, setLoading] = React.useState(false);
+  const [opts, setOpts] = React.useState({ orgs: [], functions: [], categories: [], subcategories: [], owners: [], custodians: [] });
+
+  React.useEffect(() => {
+    let ignore = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const data = await fetchCsfFilterLookups({
+          orgIds: value.orgIds,
+          functionIds: value.functionIds,
+          categoryIds: value.categoryIds,
+          subcatIds: value.subcatIds,
+          ownerNames: value.ownerNames,
+          custodianNames: value.custodianNames,
+        });
+        if (!ignore) setOpts(data);
+      } finally { if (!ignore) setLoading(false); }
+    })();
+    return () => { ignore = true; };
+  }, [value.orgIds, value.functionIds, value.categoryIds, value.subcatIds, value.ownerNames, value.custodianNames]);
+
+  const toOptions = (arr, valueKey, labelKey) => (arr || []).map(it => ({ value: it[valueKey], label: it[labelKey] }));
+
+  const filtersLeft = (
+    <Grid container spacing={1.5} alignItems="center">
+      <Grid item xs={12} md={3}>
+        <MultiSelect
+          label="Organizations"
+          value={value.orgIds}
+          onChange={(v) => onChange({ ...value, orgIds: v })}
+          options={toOptions(opts.orgs, 'OrgID', 'OrgName')}
+        />
+      </Grid>
+      <Grid item xs={12} md={3}>
+        <MultiSelect
+          label="Functions"
+          value={value.functionIds}
+          onChange={(v) => onChange({ ...value, functionIds: v })}
+          options={toOptions(opts.functions, 'FunctionID', 'FunctionName')}
+        />
+      </Grid>
+      <Grid item xs={12} md={3}>
+        <MultiSelect
+          label="Categories"
+          value={value.categoryIds}
+          onChange={(v) => onChange({ ...value, categoryIds: v })}
+          options={toOptions(opts.categories, 'CategoryID', 'CategoryName')}
+        />
+      </Grid>
+      <Grid item xs={12} md={3}>
+        <MultiSelect
+          label="Subcategories"
+          value={value.subcatIds}
+          onChange={(v) => onChange({ ...value, subcatIds: v })}
+          options={toOptions(opts.subcategories, 'CSF2SubcategoryID', 'SubcategoryName')}
+        />
+      </Grid>
+
+      <Grid item xs={12} md={3}>
+        <MultiSelect
+          label="Owners"
+          value={value.ownerNames}
+          onChange={(v) => onChange({ ...value, ownerNames: v })}
+          options={(opts.owners || []).map(n => ({ value: n.OwnerName ?? n.FullName ?? n, label: n.OwnerName ?? n.FullName ?? n }))}
+        />
+      </Grid>
+      <Grid item xs={12} md={3}>
+        <MultiSelect
+          label="Custodians"
+          value={value.custodianNames}
+          onChange={(v) => onChange({ ...value, custodianNames: v })}
+          options={(opts.custodians || []).map(n => ({ value: n.CustodianName ?? n.FullName ?? n, label: n.CustodianName ?? n.FullName ?? n }))}
+        />
+      </Grid>
+
+      <Grid item xs={12} md={3}>
+        <MultiSelect
+          label="Maturity"
+          value={value.maturity}
+          onChange={(v) => onChange({ ...value, maturity: v })}
+          options={MATURITY_OPTIONS}
+        />
+      </Grid>
+
+      <Grid item xs={12} md={3}>
+        <Switch
+          label="Final view (hide Removed)"
+          checked={!!value.finalOnly}
+          onChange={(checked) => onChange({ ...value, finalOnly: checked })}
+        />
+      </Grid>
+    </Grid>
+  );
+
+  return (
+    <FilterBar
+      filtersLeft={filtersLeft}
+      searchValue={value.search}
+      onSearchChange={(s) => onChange({ ...value, search: s })}
+      onExport={onExport}
+      exportLabel={loading ? 'Export' : 'Export'}
+    />
+  );
+}
+
+
+
+
+
+import React from 'react';
+import { Stack, Paper, Typography } from '@mui/material';
+import CsfFilterBar from '../components/molecules/CsfFilterBar';
+import api from '../../../lib/axiosClient';
+
+export default function CsfMappingPage() {
+  const [filters, setFilters] = React.useState({
+    orgIds: [], functionIds: [], categoryIds: [], subcatIds: [],
+    ownerNames: [], custodianNames: [],
+    maturity: [3,4],
+    finalOnly: false,
+    search: '',
+  });
+
+  const handleExport = async () => {
+    try {
+      const params = {
+        OrgIDsCsv:         filters.orgIds.join(',') || null,
+        FunctionIDsCsv:    filters.functionIds.join(',') || null,
+        CategoryIDsCsv:    filters.categoryIds.join(',') || null,
+        CSF2SubcatIDsCsv:  filters.subcatIds.join(',') || null,
+        OwnerNamesCsv:     filters.ownerNames.join(',') || null,
+        CustodianNamesCsv: filters.custodianNames.join(',') || null,
+        MaturityCsv:       filters.maturity.join(',') || null,
+        FinalOnly:         filters.finalOnly,
+      };
+      const { data } = await api.get('/api/v1/CSFAttributeMap/feed', { params });
+      console.log('Export payload', data);
+      alert('Export: check console (we can wire CSV/XLSX next).');
+    } catch (e) {
+      console.error(e);
+      alert('Export failed.');
+    }
+  };
+
+  return (
+    <Stack spacing={2}>
+      <Typography variant="h2">CSF 1.1 → 2.0 Attribute Mapping</Typography>
+
+      <CsfFilterBar value={filters} onChange={setFilters} onExport={handleExport} />
+
+      <Paper sx={{ p: 2 }}>
+        <Typography color="text.secondary">
+          Accordion + Detail will render here using the same filters.
+        </Typography>
+      </Paper>
+    </Stack>
+  );
+}
+
+
+
+
+
+
+import React from 'react';
+import { Box, Container } from '@mui/material';
+
+// Adjust these imports to where your components are:
+import Navbar from './Navbar';
+import Sidenav from './Sidenav';
+import Footer from './Footer';
+
+export default function PrimaryLayout({ children }) {
+  return (
+    <Box sx={{ display: 'grid', gridTemplateRows: 'auto 1fr auto', minHeight: '100vh' }}>
+      <Navbar />
+      <Box sx={{ display: 'grid', gridTemplateColumns: { md: '260px 1fr' }, gap: 2, p: 2 }}>
+        <Sidenav />
+        <Container maxWidth="xl" sx={{ p: { xs: 0, md: 1 } }}>
+          {children}
+        </Container>
+      </Box>
+      <Footer />
+    </Box>
+  );
+}
+
+
+
+
+
+import React from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import PrimaryLayout from '../layouts/PrimaryLayout';
+import CsfMappingPage from '../features/csfMapping/pages/CsfMappingPage';
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <PrimaryLayout>
+        <Routes>
+          <Route path="/" element={<Navigate to="/csf/mapping" replace />} />
+          <Route path="/csf/mapping" element={<CsfMappingPage />} />
+        </Routes>
+      </PrimaryLayout>
+    </BrowserRouter>
+  );
+}
+
+
+
+
+
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './app/App';
+import AppProviders from './providers/AppProviders';
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <AppProviders>
+      <App />
+    </AppProviders>
+  </React.StrictMode>
+);
+
+
+
+
+
+
+

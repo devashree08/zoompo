@@ -1,19 +1,59 @@
-export const MATURITY_OPTIONS = [
-  { value: 3, label: 'Level 3' },
-  { value: 4, label: 'Level 4' },
-];
+import * as React from 'react';
+import { Autocomplete, TextField, Checkbox } from '@mui/material';
 
-// ensures currently selected values remain in the options list
-export const ensureSelected = (options, selected) => {
-  const map = new Map((options || []).map(o => [o.value, o]));
-  (selected || []).forEach(v => {
-    if (!map.has(v)) map.set(v, { value: v, label: String(v) });
-  });
-  return Array.from(map.values());
-};
+export default function MultiSelectSearch({
+  label,
+  value = [],               // array of primitive values
+  options = [],             // [{ value, label }]
+  onChange,
+  placeholder = 'Select…',
+  disabled = false,
+  limitTags = 0,            // show tags outside as chips; keep input compact
+  ...props
+}) {
+  const valueObjects = React.useMemo(() => {
+    const byValue = new Map(options.map(o => [o.value, o]));
+    return value.map(v => byValue.get(v)).filter(Boolean);
+  }, [value, options]);
 
-export const toLabelMap = (options) => {
-  const m = new Map();
-  (options || []).forEach(o => m.set(o.value, o.label));
-  return m;
-};
+  const handleChange = (_, selectedOptions) => {
+    onChange?.(selectedOptions.map(o => o.value));
+  };
+
+  const renderTags = (selected, getTagProps) => {
+    // keep tags inside the field minimal; we render chips below
+    if (!selected?.length || limitTags === 0) return null;
+    if (selected.length > 3) return <span {...getTagProps({ index: 0 })}>{selected.length} selected</span>;
+    return selected.map((opt, i) => (
+      <span key={opt.value} {...getTagProps({ index: i })}>{opt.label}</span>
+    ));
+  };
+
+  return (
+    <Autocomplete
+      multiple
+      disableCloseOnSelect
+      options={options}
+      value={valueObjects}
+      onChange={handleChange}
+      getOptionLabel={(o) => o?.label ?? ''}
+      isOptionEqualToValue={(o, v) => o.value === v.value}
+      filterSelectedOptions={false}      // keep selected visible so menu never looks empty
+      renderOption={(props2, option, { selected }) => (
+        <li {...props2}>
+          <Checkbox checked={selected} sx={{ mr: 1 }} />
+          {option.label}
+        </li>
+      )}
+      renderTags={renderTags}
+      limitTags={limitTags}
+      ListboxProps={{ style: { maxHeight: 360 } }}
+      fullWidth
+      disabled={disabled}
+      renderInput={(params) => (
+        <TextField {...params} size="small" label={label} placeholder={placeholder} />
+      )}
+      {...props}
+    />
+  );
+}

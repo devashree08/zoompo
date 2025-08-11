@@ -1,183 +1,110 @@
-CREATE OR ALTER PROCEDURE dbo.sp_GetCsfAttributeFeed
-  @OrgIDsCsv            NVARCHAR(MAX) = NULL,   -- NULL/empty => all orgs
-  @FunctionIDsCsv       NVARCHAR(MAX) = NULL,
-  @CategoryIDsCsv       NVARCHAR(MAX) = NULL,
-  @CSF2SubcatIDsCsv     NVARCHAR(MAX) = NULL,   -- multi-select ok
-  @OwnerNamesCsv        NVARCHAR(MAX) = NULL,
-  @CustodianNamesCsv    NVARCHAR(MAX) = NULL,
-  @FinalOnly            BIT           = 0       -- hide baseline rows with Status='Remove'
-AS
-BEGIN
-  SET NOCOUNT ON;
+src/
+  app/ 
+  # Holds the app shell (routing + layout composition).
+  # What lives here: App.jsx with <BrowserRouter> and route definitions.
+  # As application grows: Keep this thin. Add new routes that point to feature pages. No business logic here.
 
-  /* Parse CSVs to temp tables */
-  CREATE TABLE #SelOrg  (id INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@OrgIDsCsv)),'') <> ''
-    INSERT #SelOrg SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@OrgIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+  assets/
+  # Holds static stuff (css, images, downloads)
 
-  CREATE TABLE #SelFunc (id INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@FunctionIDsCsv)),'') <> ''
-    INSERT #SelFunc SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@FunctionIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+  config/
+  # Environment and config values.
+  # URLs.jsx exporting the base & API URL (wired into axios).
 
-  CREATE TABLE #SelCat  (id INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@CategoryIDsCsv)),'') <> ''
-    INSERT #SelCat SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@CategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+  features/
+  # Each business area/page gets its own folder. This is where page-specific logic lives.
+  # Inside a feature (e.g., features/csfMapping/):
+      pages/ 
+        # route container(s) for that feature. Composes organisms and layouts.
+      components/ 
+        # UI specific to this feature (molecules/organisms). These can use shared UI from src/ui.
+      api/
+        # small functions that call your .NET endpoints via the shared axios client.
+      hooks/ 
+        # React Query hooks and any feature UI state.
+      models/ 
+        # DTOs/types that match your API responses and request payloads.
+      utils/ 
+        # little helpers (grouping, formatting) that are only relevant to this feature.
+      # As app grow: Add more feature folders for new pages. If a component in a feature gets reused by another feature, promote it to src/ui (see below).
 
-  CREATE TABLE #SelSub  (id INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@CSF2SubcatIDsCsv)),'') <> ''
-    INSERT #SelSub SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@CSF2SubcatIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+  layouts/
+Reusable page templates that arrange content (not business UI).
 
-  CREATE TABLE #SelOwner(name NVARCHAR(200) PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@OwnerNamesCsv)),'') <> ''
-    INSERT #SelOwner SELECT LTRIM(RTRIM(value))
-    FROM STRING_SPLIT(@OwnerNamesCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+You have: PrimaryLayout.jsx which hosts your Navbar, Sidenav, Footer and a content slot.
 
-  CREATE TABLE #SelCust (name NVARCHAR(200) PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@CustodianNamesCsv)),'') <> ''
-    INSERT #SelCust SELECT LTRIM(RTRIM(value))
-    FROM STRING_SPLIT(@CustodianNamesCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+As you grow: Add new layouts if a page needs a different skeleton (e.g., ThreePaneLayout or a “dashboard” layout). Keep app-wide chrome here so it’s not duplicated per page.
 
-  /* Effective contacts once, reused twice */
-  SELECT oc.OrgID, oc.CSF2SubcatID AS CSF2SubcategoryID, oc.FullName, oc.ContactRole
-  INTO #EffContacts
-  FROM dbo.Org_SubcategoryContact oc
-  WHERE oc.Status='Active'
-    AND oc.Eff_Dt <= CAST(GETUTCDATE() AS DATE)
-    AND (oc.Exp_Dt IS NULL OR oc.Exp_Dt >= CAST(GETUTCDATE() AS DATE));
+lib/
+Cross-app libraries and clients.
 
-  /* ================= Result A: Headers (accordion) ================= */
-  ;WITH OrgList AS (
-      SELECT o.OrgID, o.OrgName
-      FROM dbo.Org o
-      WHERE NOT EXISTS(SELECT 1 FROM #SelOrg) OR o.OrgID IN (SELECT id FROM #SelOrg)
-    ),
-    Csf2Tree AS (
-      SELECT
-        f.FunctionID, f.FunctionName, f.FunctionLanguage,
-        c.CategoryID, c.CategoryName, c.CategoryLanguage,
-        s.SubcategoryID           AS CSF2SubcategoryID,
-        s.SubcategoryName         AS CSF2SubcategoryName,
-        s.SubcategoryLanguage     AS CSF2SubcategoryLanguage,
-        s.ChangeSummary,
-        s.ImplementationExample   AS ImplementationExamples
-      FROM ref.CSF2_Function  f
-      JOIN ref.CSF2_Category  c ON c.FunctionID = f.FunctionID
-      JOIN ref.CSF2_Subcategory s ON s.CategoryID = c.CategoryID
-      WHERE (NOT EXISTS(SELECT 1 FROM #SelFunc) OR f.FunctionID     IN (SELECT id FROM #SelFunc))
-        AND (NOT EXISTS(SELECT 1 FROM #SelCat)  OR c.CategoryID     IN (SELECT id FROM #SelCat))
-        AND (NOT EXISTS(SELECT 1 FROM #SelSub)  OR s.SubcategoryID  IN (SELECT id FROM #SelSub))
-    ),
-    Counts AS (
-      SELECT
-        OrgID,
-        CSF2SubcategoryID,
-        KeptCount    = SUM(CASE WHEN CSF1SubcategoryID <> 0 AND SelectionStatus = 'Keep'   THEN 1 ELSE 0 END),
-        RemovedCount = SUM(CASE WHEN CSF1SubcategoryID <> 0 AND SelectionStatus = 'Remove' THEN 1 ELSE 0 END),
-        CustomCount  = SUM(CASE WHEN CSF1SubcategoryID = 0 THEN 1 ELSE 0 END)
-      FROM dbo.UI_CsfAttributeFeed
-      WHERE (NOT EXISTS(SELECT 1 FROM #SelOrg) OR OrgID IN (SELECT id FROM #SelOrg))
-      GROUP BY OrgID, CSF2SubcategoryID
-    )
-  SELECT
-    o.OrgID, o.OrgName,
-    t.FunctionID, t.FunctionName, t.FunctionLanguage,
-    t.CategoryID, t.CategoryName, t.CategoryLanguage,
-    t.CSF2SubcategoryID, t.CSF2SubcategoryName, t.CSF2SubcategoryLanguage,
-    t.ChangeSummary, t.ImplementationExamples,
-    Owner = STUFF((
-              SELECT ',' + ec.FullName
-              FROM #EffContacts ec
-              WHERE ec.OrgID        = o.OrgID
-                AND ec.CSF2SubcategoryID = t.CSF2SubcategoryID
-                AND ec.ContactRole  = 'Owner'
-              ORDER BY ec.FullName
-              FOR XML PATH(''), TYPE).value('.','nvarchar(max)'),1,1,''),
-    Custodian = STUFF((
-              SELECT ',' + ec.FullName
-              FROM #EffContacts ec
-              WHERE ec.OrgID        = o.OrgID
-                AND ec.CSF2SubcategoryID = t.CSF2SubcategoryID
-                AND ec.ContactRole  = 'Custodian'
-              ORDER BY ec.FullName
-              FOR XML PATH(''), TYPE).value('.','nvarchar(max)'),1,1,''),
-    ISNULL(c.KeptCount,0)    AS KeptCount,
-    ISNULL(c.RemovedCount,0) AS RemovedCount,
-    ISNULL(c.CustomCount,0)  AS CustomCount
-  FROM OrgList o
-  CROSS JOIN Csf2Tree t
-  LEFT JOIN Counts c
-    ON c.OrgID = o.OrgID
-   AND c.CSF2SubcategoryID = t.CSF2SubcategoryID
-  WHERE
-    (NOT EXISTS(SELECT 1 FROM #SelOwner) OR EXISTS (
-       SELECT 1 FROM #EffContacts e
-       WHERE e.OrgID=o.OrgID AND e.CSF2SubcategoryID=t.CSF2SubcategoryID
-         AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner)))
-    AND
-    (NOT EXISTS(SELECT 1 FROM #SelCust) OR EXISTS (
-       SELECT 1 FROM #EffContacts e
-       WHERE e.OrgID=o.OrgID AND e.CSF2SubcategoryID=t.CSF2SubcategoryID
-         AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust)))
-  ORDER BY o.OrgID, t.FunctionID, t.CategoryID, t.CSF2SubcategoryID;
+You have: axiosClient.js (base URL + interceptors).
 
-  /* ================= Result B: Attribute rows (selected subcats) ================= */
-  IF NOT EXISTS (SELECT 1 FROM #SelSub)
-  BEGIN
-    SELECT TOP (0)
-      OrgID, OrgName,
-      FunctionID, FunctionName, FunctionLanguage,
-      CategoryID, CategoryName, CategoryLanguage,
-      CSF2SubcategoryID, CSF2SubcategoryName, CSF2SubcategoryLanguage,
-      ChangeSummary, ImplementationExamples,
-      CSF1SubcategoryID, CSF1SubcategoryName, CSF1SubcategoryLanguage,
-      Ent_Subcat_Attr,
-      MaturityLevel, AttributeNum,
-      AttributeDefinition, AssessScore2024,
-      SelectionStatus, SelectionAttestation,
-      CustomAttributeNum, CustomAttributeDefinition, CustomAttributeAttestation,
-      Owner, Custodian,
-      Ent_Subcat_Attr_CSF2
-    FROM dbo.UI_CsfAttributeFeed
-    WHERE 1=2;
-    RETURN;
-  END
+As you grow: Add auth/token helpers, error mappers, download helpers, retry logic. Keep third-party integration glue here so features import one clean thing.
 
-  SELECT
-    v.OrgID, v.OrgName,
-    v.FunctionID, v.FunctionName, v.FunctionLanguage,
-    v.CategoryID, v.CategoryName, v.CategoryLanguage,
-    v.CSF2SubcategoryID, v.CSF2SubcategoryName, v.CSF2SubcategoryLanguage,
-    v.ChangeSummary, v.ImplementationExamples,
-    v.CSF1SubcategoryID, v.CSF1SubcategoryName, v.CSF1SubcategoryLanguage,
-    v.Ent_Subcat_Attr,
-    v.MaturityLevel, v.AttributeNum,
-    v.AttributeDefinition, v.AssessScore2024,
-    v.SelectionStatus, v.SelectionAttestation,
-    v.CustomAttributeNum, v.CustomAttributeDefinition, v.CustomAttributeAttestation,
-    v.Owner, v.Custodian,
-    v.Ent_Subcat_Attr_CSF2
-  FROM dbo.UI_CsfAttributeFeed v
-  WHERE (NOT EXISTS(SELECT 1 FROM #SelOrg)  OR v.OrgID            IN (SELECT id FROM #SelOrg))
-    AND (NOT EXISTS(SELECT 1 FROM #SelFunc) OR v.FunctionID       IN (SELECT id FROM #SelFunc))
-    AND (NOT EXISTS(SELECT 1 FROM #SelCat)  OR v.CategoryID       IN (SELECT id FROM #SelCat))
-    AND (             EXISTS(SELECT 1 FROM #SelSub)  AND v.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
-    AND (NOT EXISTS(SELECT 1 FROM #SelOwner) OR EXISTS (
-          SELECT 1 FROM #EffContacts e
-          WHERE e.OrgID=v.OrgID AND e.CSF2SubcategoryID=v.CSF2SubcategoryID
-            AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner)))
-    AND (NOT EXISTS(SELECT 1 FROM #SelCust) OR EXISTS (
-          SELECT 1 FROM #EffContacts e
-          WHERE e.OrgID=v.OrgID AND e.CSF2SubcategoryID=v.CSF2SubcategoryID
-            AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust)))
-    AND (
-          @FinalOnly = 0
-          OR (v.CSF1SubcategoryID = 0  -- customs always included
-              OR ISNULL(v.SelectionStatus,'') <> 'Remove')
-        )
-  ORDER BY v.OrgID, v.MaturityLevel, v.AttributeNum;
-END
-GO
+providers/
+Global React providers.
+
+You have: AppProviders.jsx (MUI ThemeProvider, CssBaseline, React Query).
+
+As you grow: Add Snackbar/Toast provider, ErrorBoundary, i18n provider, etc. Central place to wire “app context.”
+
+theme/
+Your MUI theme (colors, typography, spacing, component overrides).
+
+You have: index.js defining a professional, exec-friendly theme.
+
+As you grow: Add palette tokens, component variants (e.g., “dense table”), and global style overrides. This is how you keep visual consistency without restyling every component.
+
+ui/
+Your small, shared component library (the reusable kit).
+
+core/ – thin wrappers around MUI components with your defaults (Button, TextField, Select, MultiSelect, Chip/Pill, Switch, Card, Paper, CircularProgress, Accordion, Tooltip, Skeleton). These give you a stable prop API and consistent styling everywhere.
+
+patterns/ – small reusable compositions (FilterBar that takes a config array; SegmentedControl; ActionBar). These are generic, not feature-aware.
+
+data/ – Table wrapper (choose MUI DataGrid or TanStack Table) and Excel export helper. One table to rule them all—features don’t import the raw libs directly.
+
+feedback/ – toast/snackbar hook, ConfirmDialog, BusyOverlay.
+
+icons/ – central icon exports so you can swap sets later if needed.
+
+index.ts/js – barrel exports for easy imports (import { Button } from 'ui').
+
+As you grow: Start small. When a feature-level component gets a second real use, promote a generic version of it into ui/ (and keep feature-specific wrappers inside the feature).
+
+main.jsx
+Entry point that renders <AppProviders><App/></AppProviders>.
+
+As you grow: Typically unchanged. If you add Sentry or performance markers, wire them here.
+
+
+
+How to use this as you expand
+Add a new page:
+Create features/newThing/pages/NewThingPage.jsx, build its feature-specific components in features/newThing/components/, wire data with features/newThing/api/ + hooks/, and add a route in app/App.jsx.
+
+Reuse UI primitives:
+Import from src/ui for buttons, inputs, filter bar, table, export, toasts, etc. If you catch yourself duplicating a pattern across features, extract the generic parts into ui/patterns and leave a thin wrapper per feature.
+
+Data flow pattern:
+Features call only their api/ functions, which use the shared axiosClient. React Query hooks in hooks/ own caching and invalidation. Pages/organisms consume those hooks and stay mostly declarative.
+
+Global chrome:
+Keep Navbar, Sidenav, Footer in layouts/ and use them from PrimaryLayout. If a page needs a different chrome, add another layout file, not a new navbar.
+
+Theming:
+Any visual tweak should go through the theme or the ui/core wrappers so you don’t have “one-off” styles scattered around.
+
+Filters & tables (performance):
+Use the FilterBar pattern from ui/patterns (config-driven) and the Table wrapper from ui/data. If a page needs grouping (like CSF 1.1 group headers), implement it once in the Table wrapper or as a Table plugin, not per page.
+
+Promotion rule (keeps things tidy):
+Build inside the feature first. After ≥2 uses across pages, promote the generic core to ui/. This avoids a bloated global library and keeps features fast to develop.
+
+Path aliases (optional):
+Add Vite aliases so imports stay clean: @ui, @features, @theme, @providers, @lib. Helps when the project gets big.
+
+That’s it. Minimal ceremony, clean separation of concerns, and very easy to grow without getting tangled. When you’re ready, we can scaffold the first shared pieces in ui/core (Button, TextField, Select/MultiSelect, Chip/Pill, Switch) and ui/patterns/FilterBar, then wire them to your sp_GetCsfFilterLookups/sp_GetCsfAttributeFeed endpoints.
+
+

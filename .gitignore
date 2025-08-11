@@ -1,209 +1,228 @@
-CREATE OR ALTER PROCEDURE dbo.sp_GetCsfFilterLookups
-  @OrgIDsCsv            NVARCHAR(MAX) = NULL,
+CREATE OR ALTER PROCEDURE dbo.sp_GetCsfAttributeFeed
+  @OrgIDsCsv            NVARCHAR(MAX) = NULL,   -- controller maps OrgIds -> this
   @FunctionIDsCsv       NVARCHAR(MAX) = NULL,
   @CategoryIDsCsv       NVARCHAR(MAX) = NULL,
-  @SubcategoryIDsCsv    NVARCHAR(MAX) = NULL,
+  @CSF2SubcatIDsCsv     NVARCHAR(MAX) = NULL,
   @OwnerNamesCsv        NVARCHAR(MAX) = NULL,
-  @CustodianNamesCsv    NVARCHAR(MAX) = NULL
+  @CustodianNamesCsv    NVARCHAR(MAX) = NULL,
+  @MaturityCsv          NVARCHAR(MAX) = NULL,   -- e.g. "3,4"
+  @FinalOnly            BIT           = 0,      -- hide baseline rows with Status='Remove'
+  @SearchText           NVARCHAR(200) = NULL    -- optional contains search
 AS
 BEGIN
   SET NOCOUNT ON;
 
-  /* Parse CSVs */
+  /* ---------------- Parse CSVs to temp tables ---------------- */
   CREATE TABLE #SelOrg  (id INT PRIMARY KEY);
   IF ISNULL(LTRIM(RTRIM(@OrgIDsCsv)),'') <> ''
     INSERT #SelOrg SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@OrgIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+    FROM STRING_SPLIT(@OrgIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
 
   CREATE TABLE #SelFunc (id INT PRIMARY KEY);
   IF ISNULL(LTRIM(RTRIM(@FunctionIDsCsv)),'') <> ''
     INSERT #SelFunc SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@FunctionIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+    FROM STRING_SPLIT(@FunctionIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
 
   CREATE TABLE #SelCat  (id INT PRIMARY KEY);
   IF ISNULL(LTRIM(RTRIM(@CategoryIDsCsv)),'') <> ''
     INSERT #SelCat SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@CategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+    FROM STRING_SPLIT(@CategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
 
   CREATE TABLE #SelSub  (id INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@SubcategoryIDsCsv)),'') <> ''
+  IF ISNULL(LTRIM(RTRIM(@CSF2SubcatIDsCsv)),'') <> ''
     INSERT #SelSub SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@SubcategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+    FROM STRING_SPLIT(@CSF2SubcatIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
 
   CREATE TABLE #SelOwner(name NVARCHAR(200) PRIMARY KEY);
   IF ISNULL(LTRIM(RTRIM(@OwnerNamesCsv)),'') <> ''
     INSERT #SelOwner SELECT LTRIM(RTRIM(value))
-    FROM STRING_SPLIT(@OwnerNamesCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+    FROM STRING_SPLIT(@OwnerNamesCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
 
   CREATE TABLE #SelCust (name NVARCHAR(200) PRIMARY KEY);
   IF ISNULL(LTRIM(RTRIM(@CustodianNamesCsv)),'') <> ''
     INSERT #SelCust SELECT LTRIM(RTRIM(value))
-    FROM STRING_SPLIT(@CustodianNamesCsv, ',') WHERE LTRIM(RTRIM(value))<> '';
+    FROM STRING_SPLIT(@CustodianNamesCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
 
-  /* Effective contacts */
-  SELECT oc.OrgID, oc.CSF2SubcatID AS CSF2SubcategoryID, oc.FullName, oc.ContactRole
+  CREATE TABLE #SelMat (id INT PRIMARY KEY);
+  IF ISNULL(LTRIM(RTRIM(@MaturityCsv)),'') <> ''
+    INSERT #SelMat
+    SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
+    FROM STRING_SPLIT(@MaturityCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  DECLARE @q NVARCHAR(200) = NULLIF(LTRIM(RTRIM(@SearchText)), '');
+
+  /* -------- Effective contacts (for Owner/Custodian filters & header display) -------- */
+  SELECT oc.OrgID,
+         oc.CSF2SubcatID      AS CSF2SubcategoryID,
+         oc.FullName,
+         oc.ContactRole
   INTO #EffContacts
   FROM dbo.Org_SubcategoryContact oc
-  WHERE oc.Status='Active'
+  WHERE oc.Status = 'Active'
     AND oc.Eff_Dt <= CAST(GETUTCDATE() AS DATE)
     AND (oc.Exp_Dt IS NULL OR oc.Exp_Dt >= CAST(GETUTCDATE() AS DATE));
 
-  /* CSF2 tree from refs (all 106 subcats) */
-  ;WITH Csf2Tree AS (
-    SELECT f.FunctionID, c.CategoryID, s.SubcategoryID AS CSF2SubcategoryID
-    FROM ref.CSF2_Function f
-    JOIN ref.CSF2_Category c   ON c.FunctionID = f.FunctionID
-    JOIN ref.CSF2_Subcategory s ON s.CategoryID = c.CategoryID
-  )
-  /* Base = ALL Orgs × CSF2 tree (do NOT filter Org here) */
-  SELECT o.OrgID, t.FunctionID, t.CategoryID, t.CSF2SubcategoryID
-  INTO #Base
-  FROM dbo.Org o
-  CROSS JOIN Csf2Tree t;
-
-  /* All-filters slice (applies Org + other filters) */
-  SELECT b.*
-  INTO #Filtered_All
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)  OR b.OrgID            IN (SELECT id FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID       IN (SELECT id FROM #SelFunc))
-    AND (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID       IN (SELECT id FROM #SelCat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner)
-         )
+  /* ===================== Result A: Headers (accordion) ===================== */
+  ;WITH OrgList AS (
+      SELECT o.OrgID, o.OrgName
+      FROM dbo.Org o
+      WHERE NOT EXISTS(SELECT 1 FROM #SelOrg) OR o.OrgID IN (SELECT id FROM #SelOrg)
+    ),
+    Csf2Tree AS (
+      SELECT
+        f.FunctionID, f.FunctionName, f.FunctionLanguage,
+        c.CategoryID, c.CategoryName, c.CategoryLanguage,
+        s.SubcategoryID           AS CSF2SubcategoryID,
+        s.SubcategoryName         AS CSF2SubcategoryName,
+        s.SubcategoryLanguage     AS CSF2SubcategoryLanguage,
+        s.ChangeSummary,
+        s.ImplementationExample   AS ImplementationExamples
+      FROM ref.CSF2_Function  f
+      JOIN ref.CSF2_Category  c ON c.FunctionID = f.FunctionID
+      JOIN ref.CSF2_Subcategory s ON s.CategoryID = c.CategoryID
+      WHERE (NOT EXISTS(SELECT 1 FROM #SelFunc) OR f.FunctionID       IN (SELECT id FROM #SelFunc))
+        AND (NOT EXISTS(SELECT 1 FROM #SelCat)  OR c.CategoryID       IN (SELECT id FROM #SelCat))
+        AND (NOT EXISTS(SELECT 1 FROM #SelSub)  OR s.SubcategoryID    IN (SELECT id FROM #SelSub))
+        AND (
+              @q IS NULL OR
+              f.FunctionName LIKE '%' + @q + '%' OR
+              c.CategoryName LIKE '%' + @q + '%' OR
+              s.SubcategoryName LIKE '%' + @q + '%' OR
+              s.SubcategoryLanguage LIKE '%' + @q + '%'
+            )
+    ),
+    Counts AS (
+      SELECT
+        v.OrgID,
+        v.CSF2SubcategoryID,
+        KeptCount    = SUM(CASE WHEN v.CSF1SubcategoryID <> 0 AND v.SelectionStatus = 'Keep'   THEN 1 ELSE 0 END),
+        RemovedCount = SUM(CASE WHEN v.CSF1SubcategoryID <> 0 AND v.SelectionStatus = 'Remove' THEN 1 ELSE 0 END),
+        CustomCount  = SUM(CASE WHEN v.CSF1SubcategoryID = 0 THEN 1 ELSE 0 END)
+      FROM dbo.UI_CsfAttributeFeed v
+      WHERE (NOT EXISTS(SELECT 1 FROM #SelOrg)  OR v.OrgID      IN (SELECT id FROM #SelOrg))
+        AND (NOT EXISTS(SELECT 1 FROM #SelFunc) OR v.FunctionID IN (SELECT id FROM #SelFunc))
+        AND (NOT EXISTS(SELECT 1 FROM #SelCat)  OR v.CategoryID IN (SELECT id FROM #SelCat))
+        AND (NOT EXISTS(SELECT 1 FROM #SelSub)  OR v.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
+      GROUP BY v.OrgID, v.CSF2SubcategoryID
     )
+  SELECT
+    o.OrgID, o.OrgName,
+    t.FunctionID, t.FunctionName, t.FunctionLanguage,
+    t.CategoryID, t.CategoryName, t.CategoryLanguage,
+    t.CSF2SubcategoryID, t.CSF2SubcategoryName, t.CSF2SubcategoryLanguage,
+    t.ChangeSummary, t.ImplementationExamples,
+    Owner = STUFF((
+              SELECT ',' + e.FullName
+              FROM #EffContacts e
+              WHERE e.OrgID = o.OrgID
+                AND e.CSF2SubcategoryID = t.CSF2SubcategoryID
+                AND e.ContactRole = 'Owner'
+              ORDER BY e.FullName
+              FOR XML PATH(''), TYPE).value('.','nvarchar(max)'),1,1,''),
+    Custodian = STUFF((
+              SELECT ',' + e.FullName
+              FROM #EffContacts e
+              WHERE e.OrgID = o.OrgID
+                AND e.CSF2SubcategoryID = t.CSF2SubcategoryID
+                AND e.ContactRole = 'Custodian'
+              ORDER BY e.FullName
+              FOR XML PATH(''), TYPE).value('.','nvarchar(max)'),1,1,''),
+    ISNULL(c.KeptCount,0)    AS KeptCount,
+    ISNULL(c.RemovedCount,0) AS RemovedCount,
+    ISNULL(c.CustomCount,0)  AS CustomCount
+  FROM OrgList o
+  CROSS JOIN Csf2Tree t
+  LEFT JOIN Counts c
+    ON c.OrgID = o.OrgID
+   AND c.CSF2SubcategoryID = t.CSF2SubcategoryID
+  WHERE
+    (NOT EXISTS(SELECT 1 FROM #SelOwner) OR EXISTS (
+       SELECT 1 FROM #EffContacts e
+       WHERE e.OrgID=o.OrgID AND e.CSF2SubcategoryID=t.CSF2SubcategoryID
+         AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner)))
+    AND
+    (NOT EXISTS(SELECT 1 FROM #SelCust) OR EXISTS (
+       SELECT 1 FROM #EffContacts e
+       WHERE e.OrgID=o.OrgID AND e.CSF2SubcategoryID=t.CSF2SubcategoryID
+         AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust)))
+  ORDER BY o.OrgID, t.FunctionID, t.CategoryID, t.CSF2SubcategoryID;
+
+  /* ===================== Result B: Rows (attribute table) ===================== */
+  IF NOT EXISTS (SELECT 1 FROM #SelSub)
+  BEGIN
+    -- empty shape when no subcategory selected
+    SELECT TOP (0)
+      OrgID, OrgName,
+      FunctionID, FunctionName, FunctionLanguage,
+      CategoryID, CategoryName, CategoryLanguage,
+      CSF2SubcategoryID, CSF2SubcategoryName, CSF2SubcategoryLanguage,
+      ChangeSummary, ImplementationExamples,
+      CSF1SubcategoryID, CSF1SubcategoryName, CSF1SubcategoryLanguage,
+      Ent_Subcat_Attr,
+      MaturityLevel, AttributeNum,
+      AttributeDefinition, AssessScore2024,
+      SelectionStatus, SelectionAttestation,
+      CustomAttributeNum, CustomAttributeDefinition, CustomAttributeAttestation,
+      Owner, Custodian,
+      Ent_Subcat_Attr_CSF2
+    FROM dbo.UI_CsfAttributeFeed
+    WHERE 1=2;
+    RETURN;
+  END
+
+  SELECT
+    v.OrgID, v.OrgName,
+    v.FunctionID, v.FunctionName, v.FunctionLanguage,
+    v.CategoryID, v.CategoryName, v.CategoryLanguage,
+    v.CSF2SubcategoryID, v.CSF2SubcategoryName, v.CSF2SubcategoryLanguage,
+    v.ChangeSummary, v.ImplementationExamples,
+    v.CSF1SubcategoryID, v.CSF1SubcategoryName, v.CSF1SubcategoryLanguage,
+    v.Ent_Subcat_Attr,
+    v.MaturityLevel, v.AttributeNum,
+    v.AttributeDefinition, v.AssessScore2024,
+    v.SelectionStatus, v.SelectionAttestation,
+    v.CustomAttributeNum, v.CustomAttributeDefinition, v.CustomAttributeAttestation,
+    v.Owner, v.Custodian,
+    v.Ent_Subcat_Attr_CSF2
+  FROM dbo.UI_CsfAttributeFeed v
+  WHERE (NOT EXISTS(SELECT 1 FROM #SelOrg)  OR v.OrgID            IN (SELECT id FROM #SelOrg))
+    AND (NOT EXISTS(SELECT 1 FROM #SelFunc) OR v.FunctionID       IN (SELECT id FROM #SelFunc))
+    AND (NOT EXISTS(SELECT 1 FROM #SelCat)  OR v.CategoryID       IN (SELECT id FROM #SelCat))
+    AND (             EXISTS(SELECT 1 FROM #SelSub)  AND v.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
+    AND (NOT EXISTS(SELECT 1 FROM #SelMat)  OR v.MaturityLevel    IN (SELECT id FROM #SelMat))
+    AND (NOT EXISTS(SELECT 1 FROM #SelOwner) OR EXISTS (
+          SELECT 1 FROM dbo.Org_SubcategoryContact oc
+          WHERE oc.OrgID = v.OrgID
+            AND oc.CSF2SubcatID = v.CSF2SubcategoryID
+            AND oc.ContactRole  = 'Owner'
+            AND oc.Status       = 'Active'
+            AND oc.Eff_Dt <= CAST(GETUTCDATE() AS DATE)
+            AND (oc.Exp_Dt IS NULL OR oc.Exp_Dt >= CAST(GETUTCDATE() AS DATE))
+            AND oc.FullName     IN (SELECT name FROM #SelOwner)))
+    AND (NOT EXISTS(SELECT 1 FROM #SelCust) OR EXISTS (
+          SELECT 1 FROM dbo.Org_SubcategoryContact oc
+          WHERE oc.OrgID = v.OrgID
+            AND oc.CSF2SubcatID = v.CSF2SubcategoryID
+            AND oc.ContactRole  = 'Custodian'
+            AND oc.Status       = 'Active'
+            AND oc.Eff_Dt <= CAST(GETUTCDATE() AS DATE)
+            AND (oc.Exp_Dt IS NULL OR oc.Exp_Dt >= CAST(GETUTCDATE() AS DATE))
+            AND oc.FullName     IN (SELECT name FROM #SelCust)))
     AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust)
-         )
-    );
-
-  /* Self-excluding slices */
-  -- Ignore Org filter (for Org lookup)
-  SELECT b.*
-  INTO #Filtered_NoOrg
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID       IN (SELECT id FROM #SelFunc))
-    AND (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID       IN (SELECT id FROM #SelCat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
+          @FinalOnly = 0
+          OR (v.CSF1SubcategoryID = 0  -- customs always included
+              OR ISNULL(v.SelectionStatus,'') <> 'Remove')
+        )
     AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (SELECT 1 FROM #EffContacts e
-                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                      AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner))
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (SELECT 1 FROM #EffContacts e
-                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                      AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust))
-    );
-
-  -- Ignore Function filter (for Function lookup)
-  SELECT b.*
-  INTO #Filtered_NoFunc
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID       IN (SELECT id FROM #SelCat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (SELECT 1 FROM #EffContacts e
-                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                      AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner))
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (SELECT 1 FROM #EffContacts e
-                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                      AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust))
-    );
-
-  -- Ignore Category filter (for Category lookup)
-  SELECT b.*
-  INTO #Filtered_NoCat
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID       IN (SELECT id FROM #SelFunc))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (SELECT 1 FROM #EffContacts e
-                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                      AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner))
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (SELECT 1 FROM #EffContacts e
-                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                      AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust))
-    );
-
-  -- Ignore Subcategory filter (for Subcategory lookup)
-  SELECT b.*
-  INTO #Filtered_NoSub
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID IN (SELECT id FROM #SelFunc))
-    AND (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID  IN (SELECT id FROM #SelCat))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (SELECT 1 FROM #EffContacts e
-                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                      AND e.ContactRole='Owner' AND e.FullName IN (SELECT name FROM #SelOwner))
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (SELECT 1 FROM #EffContacts e
-                    WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                      AND e.ContactRole='Custodian' AND e.FullName IN (SELECT name FROM #SelCust))
-    );
-
-  /* Result sets (camelCase) */
-  -- 1) Orgs (self-excluding)
-  SELECT DISTINCT o.OrgID AS orgID, o.OrgName AS orgName
-  FROM #Filtered_NoOrg f
-  JOIN dbo.Org o ON o.OrgID=f.OrgID
-  ORDER BY o.OrgName;
-
-  -- 2) Functions (self-excluding)
-  SELECT DISTINCT fn.FunctionID AS functionID, fn.FunctionName AS functionName
-  FROM #Filtered_NoFunc f
-  JOIN ref.CSF2_Category c ON c.CategoryID=f.CategoryID
-  JOIN ref.CSF2_Function fn ON fn.FunctionID=c.FunctionID
-  ORDER BY fn.FunctionID;
-
-  -- 3) Categories (self-excluding)
-  SELECT DISTINCT c.CategoryID AS categoryID, c.CategoryName AS categoryName
-  FROM #Filtered_NoCat f
-  JOIN ref.CSF2_Category c ON c.CategoryID=f.CategoryID
-  ORDER BY c.CategoryID;
-
-  -- 4) Subcategories (self-excluding)
-  SELECT DISTINCT s.SubcategoryID AS csF2SubcategoryID, s.SubcategoryName AS subcategoryName
-  FROM #Filtered_NoSub f
-  JOIN ref.CSF2_Subcategory s ON s.SubcategoryID=f.CSF2SubcategoryID
-  ORDER BY s.SubcategoryID;
-
-  -- 5) Owners (distinct names from full slice)
-  SELECT DISTINCT e.FullName AS fullName
-  FROM #Filtered_All f
-  JOIN #EffContacts e
-    ON e.OrgID=f.OrgID AND e.CSF2SubcategoryID=f.CSF2SubcategoryID
-  WHERE e.ContactRole='Owner'
-  ORDER BY e.FullName;
-
-  -- 6) Custodians (distinct names from full slice)
-  SELECT DISTINCT e.FullName AS fullName
-  FROM #Filtered_All f
-  JOIN #EffContacts e
-    ON e.OrgID=f.OrgID AND e.CSF2SubcategoryID=f.CSF2SubcategoryID
-  WHERE e.ContactRole='Custodian'
-  ORDER BY e.FullName;
+          @q IS NULL
+          OR v.FunctionName LIKE '%' + @q + '%'
+          OR v.CategoryName LIKE '%' + @q + '%'
+          OR v.CSF2SubcategoryName LIKE '%' + @q + '%'
+          OR v.CSF2SubcategoryLanguage LIKE '%' + @q + '%'
+          OR v.AttributeDefinition LIKE '%' + @q + '%'
+          OR v.CustomAttributeDefinition LIKE '%' + @q + '%'
+        )
+  ORDER BY v.OrgID, v.MaturityLevel, v.AttributeNum;
 END
 GO

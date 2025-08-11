@@ -43,3 +43,106 @@ const theme = createTheme({
   },
 });
 export default theme;
+
+
+
+import React from 'react';
+import { Grid } from '@mui/material';
+import { FilterBar } from '../../../../ui/patterns/FilterBar';
+import MultiSelect from '../../../../ui/core/MultiSelect';
+import Switch from '../../../../ui/core/Switch';
+import { fetchAttributeFilterLookups } from '../../api/attributeApi';
+
+const MATURITY_OPTIONS = [{ value: 3, label: 'Level 3' }, { value: 4, label: 'Level 4' }];
+
+export default function AttributeFilterBar({ value, onChange, onExport }) {
+  const [opts, setOpts] = React.useState({
+    orgs: [], functions: [], categories: [], subcategories: [], owners: [], custodians: []
+  });
+
+  React.useEffect(() => {
+    let ignore = false;
+    (async () => {
+      const data = await fetchAttributeFilterLookups({
+        orgIds: value.orgIds,
+        functionIds: value.functionIds,
+        categoryIds: value.categoryIds,
+        subcatIds: value.subcatIds,
+        ownerNames: value.ownerNames,
+        custodianNames: value.custodianNames,
+      });
+      if (!ignore) {
+        setOpts({
+          // NOTE: use EXACT camelCase keys from your .NET API
+          orgs: (data.orgs || []).map(x => ({ value: x.orgID, label: x.orgName })),
+          functions: (data.functions || []).map(x => ({ value: x.functionID, label: x.functionName })),
+          categories: (data.categories || []).map(x => ({ value: x.categoryID, label: x.categoryName })),
+          subcategories: (data.subcategories || []).map(x => ({ value: x.csF2SubcategoryID, label: x.subcategoryName })),
+          owners: (data.owners || []).map(x => ({ value: x.fullName, label: x.fullName })),
+          custodians: (data.custodians || []).map(x => ({ value: x.fullName, label: x.fullName })),
+        });
+      }
+    })();
+    return () => { ignore = true; };
+  }, [value.orgIds, value.functionIds, value.categoryIds, value.subcatIds, value.ownerNames, value.custodianNames]);
+
+  const filtersLeft = (
+    <Grid container spacing={1} rowSpacing={1.25} alignItems="center">
+      {/* Responsive so it fits on 14" with sidenav */}
+      <Grid item xs={12} sm={6} md={4} lg={3} xl={2}>
+        <MultiSelect label="Organizations" value={value.orgIds}
+          onChange={(v) => onChange({ ...value, orgIds: v })}
+          options={opts.orgs} />
+      </Grid>
+      <Grid item xs={12} sm={6} md={4} lg={3} xl={2}>
+        <MultiSelect label="Functions" value={value.functionIds}
+          onChange={(v) => onChange({ ...value, functionIds: v })}
+          options={opts.functions} />
+      </Grid>
+      <Grid item xs={12} sm={6} md={4} lg={3} xl={2}>
+        <MultiSelect label="Categories" value={value.categoryIds}
+          onChange={(v) => onChange({ ...value, categoryIds: v })}
+          options={opts.categories} />
+      </Grid>
+      <Grid item xs={12} sm={6} md={4} lg={3} xl={2}>
+        <MultiSelect label="Subcategories" value={value.subcatIds}
+          onChange={(v) => onChange({ ...value, subcatIds: v })}
+          options={opts.subcategories} />
+      </Grid>
+
+      <Grid item xs={12} sm={6} md={4} lg={3} xl={2}>
+        <MultiSelect label="Owners" value={value.ownerNames}
+          onChange={(v) => onChange({ ...value, ownerNames: v })}
+          options={opts.owners} />
+      </Grid>
+      <Grid item xs={12} sm={6} md={4} lg={3} xl={2}>
+        <MultiSelect label="Custodians" value={value.custodianNames}
+          onChange={(v) => onChange({ ...value, custodianNames: v })}
+          options={opts.custodians} />
+      </Grid>
+
+      <Grid item xs={12} sm={6} md={4} lg={3} xl={2}>
+        <MultiSelect label="Maturity" value={value.maturity}
+          onChange={(v) => onChange({ ...value, maturity: v })}
+          options={MATURITY_OPTIONS} />
+      </Grid>
+
+      <Grid item xs={12} sm={6} md="auto">
+        <Switch label="Final view (hide Removed)"
+          checked={!!value.finalOnly}
+          onChange={(checked) => onChange({ ...value, finalOnly: checked })} />
+      </Grid>
+    </Grid>
+  );
+
+  return (
+    <FilterBar
+      filtersLeft={filtersLeft}
+      searchValue={value.search}
+      onSearchChange={(s) => onChange({ ...value, search: s })}
+      onExport={onExport}
+      exportLabel="Export"
+    />
+  );
+}
+

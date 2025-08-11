@@ -1,48 +1,114 @@
-import * as React from 'react';
-import { Box, Chip, Stack } from '@mui/material';
-import { toLabelMap } from '../../utils/filters';
+import React from 'react';
+import { Box } from '@mui/material';
+import { FilterBar } from '../../../../ui/patterns/FilterBar';
+import MultiSelectSearch from '../../../../ui/core/MultiSelectSearch';
+import Switch from '../../../../ui/core/Switch';
+import { fetchAttributeFilterLookups } from '../../api/attributeApi';
+import SelectedChipsBar from './SelectedChipsBar';
+import { ensureSelected, MATURITY_OPTIONS } from '../../utils/filters';
 
-export default function SelectedChipsBar({
-  value,         // { orgIds, functionIds, categoryIds, subcatIds, ownerNames, custodianNames, maturity }
-  options,       // { orgs, functions, categories, subcategories, owners, custodians }
-  onChange,
-}) {
-  const maps = {
-    orgs:          toLabelMap(options.orgs),
-    functions:     toLabelMap(options.functions),
-    categories:    toLabelMap(options.categories),
-    subcategories: toLabelMap(options.subcategories),
-    owners:        toLabelMap(options.owners),
-    custodians:    toLabelMap(options.custodians),
-    maturity:      new Map([[3, 'Level 3'], [4, 'Level 4']]),
-  };
+export default function AttributeFilterBar({ value, onChange, onExport }) {
+  const [opts, setOpts] = React.useState({
+    orgs: [], functions: [], categories: [], subcategories: [], owners: [], custodians: []
+  });
 
-  const makeChips = (arr, key, labelMap) =>
-    (arr || []).map(v => ({
-      key: `${key}:${v}`,
-      label: labelMap.get(v) ?? String(v),
-      onDelete: () => onChange({ ...value, [key]: (value[key] || []).filter(x => x !== v) })
-    }));
+  // Load cross-filtered lookups
+  React.useEffect(() => {
+    let ignore = false;
+    (async () => {
+      const data = await fetchAttributeFilterLookups({
+        orgIds: value.orgIds,
+        functionIds: value.functionIds,
+        categoryIds: value.categoryIds,
+        subcatIds: value.subcatIds,
+        ownerNames: value.ownerNames,
+        custodianNames: value.custodianNames,
+      });
+      if (ignore) return;
+      setOpts({
+        orgs:          (data.orgs || []).map(x => ({ value: x.orgID,            label: x.orgName })),
+        functions:     (data.functions || []).map(x => ({ value: x.functionID,   label: x.functionName })),
+        categories:    (data.categories || []).map(x => ({ value: x.categoryID,  label: x.categoryName })),
+        subcategories: (data.subcategories || []).map(x => ({ value: x.csF2SubcategoryID, label: x.subcategoryName })),
+        owners:        (data.owners || []).map(x => ({ value: x.fullName,        label: x.fullName })),
+        custodians:    (data.custodians || []).map(x => ({ value: x.fullName,    label: x.fullName })),
+      });
+    })();
+    return () => { ignore = true; };
+  }, [
+    value.orgIds, value.functionIds, value.categoryIds,
+    value.subcatIds, value.ownerNames, value.custodianNames
+  ]);
 
-  const chips = [
-    ...makeChips(value.orgIds, 'orgIds', maps.orgs),
-    ...makeChips(value.functionIds, 'functionIds', maps.functions),
-    ...makeChips(value.categoryIds, 'categoryIds', maps.categories),
-    ...makeChips(value.subcatIds, 'subcatIds', maps.subcategories),
-    ...makeChips(value.ownerNames, 'ownerNames', maps.owners),
-    ...makeChips(value.custodianNames, 'custodianNames', maps.custodians),
-    ...makeChips(value.maturity, 'maturity', maps.maturity),
-  ];
-
-  if (!chips.length) return null;
+  const filtersLayout = (
+    <Box
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+        gap: 1.5,
+        alignItems: 'center',
+      }}
+    >
+      <MultiSelectSearch
+        label="Organizations"
+        value={value.orgIds}
+        options={ensureSelected(opts.orgs, value.orgIds)}
+        onChange={(v) => onChange({ ...value, orgIds: v })}
+      />
+      <MultiSelectSearch
+        label="Functions"
+        value={value.functionIds}
+        options={ensureSelected(opts.functions, value.functionIds)}
+        onChange={(v) => onChange({ ...value, functionIds: v })}
+      />
+      <MultiSelectSearch
+        label="Categories"
+        value={value.categoryIds}
+        options={ensureSelected(opts.categories, value.categoryIds)}
+        onChange={(v) => onChange({ ...value, categoryIds: v })}
+      />
+      <MultiSelectSearch
+        label="Subcategories"
+        value={value.subcatIds}
+        options={ensureSelected(opts.subcategories, value.subcatIds)}
+        onChange={(v) => onChange({ ...value, subcatIds: v })}
+      />
+      <MultiSelectSearch
+        label="Owners"
+        value={value.ownerNames}
+        options={ensureSelected(opts.owners, value.ownerNames)}
+        onChange={(v) => onChange({ ...value, ownerNames: v })}
+      />
+      <MultiSelectSearch
+        label="Custodians"
+        value={value.custodianNames}
+        options={ensureSelected(opts.custodians, value.custodianNames)}
+        onChange={(v) => onChange({ ...value, custodianNames: v })}
+      />
+      <MultiSelectSearch
+        label="Maturity"
+        value={value.maturity}
+        options={ensureSelected(MATURITY_OPTIONS, value.maturity)}
+        onChange={(v) => onChange({ ...value, maturity: v })}
+      />
+      <Switch
+        label="Final view (hide Removed)"
+        checked={!!value.finalOnly}
+        onChange={(checked) => onChange({ ...value, finalOnly: checked })}
+      />
+    </Box>
+  );
 
   return (
-    <Box sx={{ mt: 1 }}>
-      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-        {chips.map(c => (
-          <Chip key={c.key} label={c.label} onDelete={c.onDelete} size="small" />
-        ))}
-      </Stack>
-    </Box>
+    <>
+      <FilterBar
+        filtersLeft={filtersLayout}
+        searchValue={value.search}
+        onSearchChange={(s) => onChange({ ...value, search: s })}
+        onExport={onExport}
+        exportLabel="Export"
+      />
+      <SelectedChipsBar value={value} options={opts} onChange={onChange} />
+    </>
   );
 }

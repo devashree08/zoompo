@@ -1,110 +1,109 @@
-src/
-  app/ 
-  # Holds the app shell (routing + layout composition).
-  # What lives here: App.jsx with <BrowserRouter> and route definitions.
-  # As application grows: Keep this thin. Add new routes that point to feature pages. No business logic here.
+// src/theme/index.js
+import { createTheme } from '@mui/material/styles';
 
-  assets/
-  # Holds static stuff (css, images, downloads)
+const primary = {
+  main: '#0561FF',
+  dark: '#0540C5',
+  light: '#4D8DFF',
+  contrastText: '#FFFFFF',
+};
 
-  config/
-  # Environment and config values.
-  # URLs.jsx exporting the base & API URL (wired into axios).
+const neutral = {
+  50:  '#F7F8FB',
+  100: '#EEF1F6',
+  200: '#E4E7EC',
+  300: '#CDD5DF',
+  400: '#98A2B3',
+  500: '#667085',
+  600: '#475467',
+  700: '#344054',
+  800: '#1D2939',
+  900: '#101828',
+};
 
-  features/
-  # Each business area/page gets its own folder. This is where page-specific logic lives.
-  # Inside a feature (e.g., features/csfMapping/):
-      pages/ 
-        # route container(s) for that feature. Composes organisms and layouts.
-      components/ 
-        # UI specific to this feature (molecules/organisms). These can use shared UI from src/ui.
-      api/
-        # small functions that call your .NET endpoints via the shared axios client.
-      hooks/ 
-        # React Query hooks and any feature UI state.
-      models/ 
-        # DTOs/types that match your API responses and request payloads.
-      utils/ 
-        # little helpers (grouping, formatting) that are only relevant to this feature.
-      # As app grow: Add more feature folders for new pages. If a component in a feature gets reused by another feature, promote it to src/ui (see below).
+const success = { main: '#12B76A', light: '#ECFDF3', dark: '#027A48' };
+const warning = { main: '#F79009', light: '#FFFAEB', dark: '#B54708' };
+const error   = { main: '#D92D20', light: '#FEF3F2', dark: '#912018' };
 
-  layouts/
-Reusable page templates that arrange content (not business UI).
+const theme = createTheme({
+  palette: {
+    mode: 'light',
+    primary,
+    success,
+    warning,
+    error,
+    grey: neutral,
+    background: {
+      default: neutral[50],
+      paper: '#FFFFFF',
+    },
+    text: {
+      primary: neutral[900],
+      secondary: neutral[600],
+    },
+    divider: neutral[200],
+  },
+  shape: { borderRadius: 10 },
+  typography: {
+    fontFamily: [
+      'Inter', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'
+    ].join(','),
+    h1: { fontWeight: 800, fontSize: '2rem' },
+    h2: { fontWeight: 800, fontSize: '1.6rem' },
+    h3: { fontWeight: 700, fontSize: '1.25rem' },
+    subtitle1: { color: neutral[600] },
+    body1: { color: neutral[800] },
+    button: { textTransform: 'none', fontWeight: 700 },
+  },
+  components: {
+    MuiCssBaseline: {
+      styleOverrides: {
+        body: { backgroundColor: neutral[50] },
+      },
+    },
+    MuiButton: {
+      defaultProps: { variant: 'contained', disableElevation: true },
+      styleOverrides: {
+        root: { borderRadius: 10, paddingInline: 14, minHeight: 36 },
+        containedPrimary: { color: '#fff' },
+      },
+    },
+    MuiPaper: {
+      styleOverrides: {
+        root: {
+          borderRadius: 12,
+          border: `1px solid ${neutral[200]}`,
+        },
+      },
+    },
+    MuiCard: {
+      styleOverrides: {
+        root: {
+          borderRadius: 12,
+          border: `1px solid ${neutral[200]}`,
+        },
+      },
+    },
+    MuiChip: {
+      styleOverrides: {
+        root: { fontWeight: 600 },
+      },
+    },
+    MuiTooltip: {
+      styleOverrides: {
+        tooltip: { fontSize: 12, fontWeight: 600 },
+      },
+    },
+    MuiTextField: {
+      defaultProps: { size: 'small' },
+    },
+    MuiSelect: {
+      defaultProps: { size: 'small' },
+    },
+    MuiFormControl: {
+      defaultProps: { size: 'small' },
+    },
+  },
+});
 
-You have: PrimaryLayout.jsx which hosts your Navbar, Sidenav, Footer and a content slot.
-
-As you grow: Add new layouts if a page needs a different skeleton (e.g., ThreePaneLayout or a “dashboard” layout). Keep app-wide chrome here so it’s not duplicated per page.
-
-lib/
-Cross-app libraries and clients.
-
-You have: axiosClient.js (base URL + interceptors).
-
-As you grow: Add auth/token helpers, error mappers, download helpers, retry logic. Keep third-party integration glue here so features import one clean thing.
-
-providers/
-Global React providers.
-
-You have: AppProviders.jsx (MUI ThemeProvider, CssBaseline, React Query).
-
-As you grow: Add Snackbar/Toast provider, ErrorBoundary, i18n provider, etc. Central place to wire “app context.”
-
-theme/
-Your MUI theme (colors, typography, spacing, component overrides).
-
-You have: index.js defining a professional, exec-friendly theme.
-
-As you grow: Add palette tokens, component variants (e.g., “dense table”), and global style overrides. This is how you keep visual consistency without restyling every component.
-
-ui/
-Your small, shared component library (the reusable kit).
-
-core/ – thin wrappers around MUI components with your defaults (Button, TextField, Select, MultiSelect, Chip/Pill, Switch, Card, Paper, CircularProgress, Accordion, Tooltip, Skeleton). These give you a stable prop API and consistent styling everywhere.
-
-patterns/ – small reusable compositions (FilterBar that takes a config array; SegmentedControl; ActionBar). These are generic, not feature-aware.
-
-data/ – Table wrapper (choose MUI DataGrid or TanStack Table) and Excel export helper. One table to rule them all—features don’t import the raw libs directly.
-
-feedback/ – toast/snackbar hook, ConfirmDialog, BusyOverlay.
-
-icons/ – central icon exports so you can swap sets later if needed.
-
-index.ts/js – barrel exports for easy imports (import { Button } from 'ui').
-
-As you grow: Start small. When a feature-level component gets a second real use, promote a generic version of it into ui/ (and keep feature-specific wrappers inside the feature).
-
-main.jsx
-Entry point that renders <AppProviders><App/></AppProviders>.
-
-As you grow: Typically unchanged. If you add Sentry or performance markers, wire them here.
-
-
-
-How to use this as you expand
-Add a new page:
-Create features/newThing/pages/NewThingPage.jsx, build its feature-specific components in features/newThing/components/, wire data with features/newThing/api/ + hooks/, and add a route in app/App.jsx.
-
-Reuse UI primitives:
-Import from src/ui for buttons, inputs, filter bar, table, export, toasts, etc. If you catch yourself duplicating a pattern across features, extract the generic parts into ui/patterns and leave a thin wrapper per feature.
-
-Data flow pattern:
-Features call only their api/ functions, which use the shared axiosClient. React Query hooks in hooks/ own caching and invalidation. Pages/organisms consume those hooks and stay mostly declarative.
-
-Global chrome:
-Keep Navbar, Sidenav, Footer in layouts/ and use them from PrimaryLayout. If a page needs a different chrome, add another layout file, not a new navbar.
-
-Theming:
-Any visual tweak should go through the theme or the ui/core wrappers so you don’t have “one-off” styles scattered around.
-
-Filters & tables (performance):
-Use the FilterBar pattern from ui/patterns (config-driven) and the Table wrapper from ui/data. If a page needs grouping (like CSF 1.1 group headers), implement it once in the Table wrapper or as a Table plugin, not per page.
-
-Promotion rule (keeps things tidy):
-Build inside the feature first. After ≥2 uses across pages, promote the generic core to ui/. This avoids a bloated global library and keeps features fast to develop.
-
-Path aliases (optional):
-Add Vite aliases so imports stay clean: @ui, @features, @theme, @providers, @lib. Helps when the project gets big.
-
-That’s it. Minimal ceremony, clean separation of concerns, and very easy to grow without getting tangled. When you’re ready, we can scaffold the first shared pieces in ui/core (Button, TextField, Select/MultiSelect, Chip/Pill, Switch) and ui/patterns/FilterBar, then wire them to your sp_GetCsfFilterLookups/sp_GetCsfAttributeFeed endpoints.
-
-
+export default theme;

@@ -1,3 +1,4 @@
+// src/ui/core/MultiSelectSearch.jsx
 import * as React from 'react';
 import { Autocomplete, TextField, Checkbox } from '@mui/material';
 
@@ -8,7 +9,7 @@ export default function MultiSelectSearch({
   onChange,
   placeholder = 'Select…',
   disabled = false,
-  limitTags = 1,            // keep input compact
+  limitTags = 2,            // compact but readable
   ...props
 }) {
   // Map value (primitives) -> option objects for Autocomplete
@@ -23,9 +24,6 @@ export default function MultiSelectSearch({
 
   const renderTags = (selected, getTagProps) => {
     if (!selected?.length) return null;
-    if (options?.length && selected.length === options.length) {
-      return <span {...getTagProps({ index: 0 })}>All</span>;
-    }
     if (selected.length > 2) {
       return <span {...getTagProps({ index: 0 })}>{selected.length} selected</span>;
     }
@@ -43,6 +41,8 @@ export default function MultiSelectSearch({
       onChange={handleChange}
       getOptionLabel={(o) => o?.label ?? ''}
       isOptionEqualToValue={(o, v) => o.value === v.value}
+      // Keep selected options visible so the menu never looks empty
+      filterSelectedOptions={false}
       renderOption={(props2, option, { selected }) => (
         <li {...props2}>
           <Checkbox checked={selected} sx={{ mr: 1 }} />
@@ -51,9 +51,9 @@ export default function MultiSelectSearch({
       )}
       renderTags={renderTags}
       limitTags={limitTags}
-      filterSelectedOptions
-      disabled={disabled}
       ListboxProps={{ style: { maxHeight: 360 } }}
+      fullWidth
+      disabled={disabled}
       renderInput={(params) => (
         <TextField {...params} size="small" label={label} placeholder={placeholder} />
       )}
@@ -61,214 +61,3 @@ export default function MultiSelectSearch({
     />
   );
 }
-
-
-
------
-
-
-
-import api from '../../../lib/axiosClient';
-const toCsv = (arr) => (arr && arr.length ? arr.join(',') : null);
-
-/** Filters endpoint (controller expects these names) */
-export async function fetchAttributeFilterLookups({
-  orgIds,
-  functionIds,
-  categoryIds,
-  subcatIds,       // maps to SubcategoryIds
-  ownerNames,
-  custodianNames,
-}) {
-  const params = {
-    OrgIds:          toCsv(orgIds),
-    FunctionIds:     toCsv(functionIds),
-    CategoryIds:     toCsv(categoryIds),
-    SubcategoryIds:  toCsv(subcatIds),
-    OwnerNames:      toCsv(ownerNames),
-    CustodianNames:  toCsv(custodianNames),
-  };
-  const { data } = await api.get('/api/v1/CSFAttributeMap/filters', { params });
-  return data;
-}
-
-/** Feed endpoint (controller likely maps these to the SP) */
-export async function fetchAttributeFeed({
-  orgIds,
-  functionIds,
-  categoryIds,
-  subcatIds,       // maps to CSF2SubcatIds
-  ownerNames,
-  custodianNames,
-  maturity,
-  finalOnly,
-  search,
-}) {
-  const params = {
-    OrgIds:         toCsv(orgIds),
-    FunctionIds:    toCsv(functionIds),
-    CategoryIds:    toCsv(categoryIds),
-    CSF2SubcatIds:  toCsv(subcatIds),
-    OwnerNames:     toCsv(ownerNames),
-    CustodianNames: toCsv(custodianNames),
-    Maturity:       toCsv(maturity),
-    FinalOnly:      !!finalOnly,
-    SearchText:     search || null,
-  };
-  const { data } = await api.get('/api/v1/CSFAttributeMap/feed', { params });
-  return data;
-}
-
-
-
----
-
-
-import React from 'react';
-import { Box } from '@mui/material';
-import { FilterBar } from '../../../../ui/patterns/FilterBar';
-import MultiSelectSearch from '../../../../ui/core/MultiSelectSearch';
-import Switch from '../../../../ui/core/Switch';
-import { fetchAttributeFilterLookups } from '../../api/attributeApi';
-
-const MATURITY_OPTIONS = [
-  { value: 3, label: 'Level 3' },
-  { value: 4, label: 'Level 4' },
-];
-
-export default function AttributeFilterBar({ value, onChange, onExport }) {
-  const [opts, setOpts] = React.useState({
-    orgs: [], functions: [], categories: [], subcategories: [], owners: [], custodians: []
-  });
-
-  // Load lookups for the current filter slice (server does cross-filtering)
-  React.useEffect(() => {
-    let ignore = false;
-    (async () => {
-      const data = await fetchAttributeFilterLookups({
-        orgIds: value.orgIds,
-        functionIds: value.functionIds,
-        categoryIds: value.categoryIds,
-        subcatIds: value.subcatIds,
-        ownerNames: value.ownerNames,
-        custodianNames: value.custodianNames,
-      });
-      if (ignore) return;
-
-      setOpts({
-        // EXACT camelCase keys from your API:
-        orgs:          (data.orgs || []).map(x => ({ value: x.orgID,            label: x.orgName })),
-        functions:     (data.functions || []).map(x => ({ value: x.functionID,   label: x.functionName })),
-        categories:    (data.categories || []).map(x => ({ value: x.categoryID,  label: x.categoryName })),
-        subcategories: (data.subcategories || []).map(x => ({ value: x.csF2SubcategoryID, label: x.subcategoryName })),
-        owners:        (data.owners || []).map(x => ({ value: x.fullName,        label: x.fullName })),
-        custodians:    (data.custodians || []).map(x => ({ value: x.fullName,    label: x.fullName })),
-      });
-    })();
-    return () => { ignore = true; };
-  }, [
-    value.orgIds, value.functionIds, value.categoryIds,
-    value.subcatIds, value.ownerNames, value.custodianNames
-  ]);
-
-  // Responsive, non-cluttered layout (auto-fit columns)
-  const filtersLayout = (
-    <Box
-      sx={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-        gap: 1.5,
-        alignItems: 'center',
-      }}
-    >
-      <MultiSelectSearch
-        label="Organizations"
-        value={value.orgIds}
-        options={opts.orgs}
-        onChange={(v) => onChange({ ...value, orgIds: v })}
-      />
-
-      <MultiSelectSearch
-        label="Functions"
-        value={value.functionIds}
-        options={opts.functions}
-        onChange={(v) => onChange({ ...value, functionIds: v })}
-      />
-
-      <MultiSelectSearch
-        label="Categories"
-        value={value.categoryIds}
-        options={opts.categories}
-        onChange={(v) => onChange({ ...value, categoryIds: v })}
-      />
-
-      <MultiSelectSearch
-        label="Subcategories"
-        value={value.subcatIds}
-        options={opts.subcategories}
-        onChange={(v) => onChange({ ...value, subcatIds: v })}
-      />
-
-      <MultiSelectSearch
-        label="Owners"
-        value={value.ownerNames}
-        options={opts.owners}
-        onChange={(v) => onChange({ ...value, ownerNames: v })}
-      />
-
-      <MultiSelectSearch
-        label="Custodians"
-        value={value.custodianNames}
-        options={opts.custodians}
-        onChange={(v) => onChange({ ...value, custodianNames: v })}
-      />
-
-      <MultiSelectSearch
-        label="Maturity"
-        value={value.maturity}
-        options={MATURITY_OPTIONS}
-        onChange={(v) => onChange({ ...value, maturity: v })}
-      />
-
-      <Switch
-        label="Final view (hide Removed)"
-        checked={!!value.finalOnly}
-        onChange={(checked) => onChange({ ...value, finalOnly: checked })}
-      />
-    </Box>
-  );
-
-  return (
-    <FilterBar
-      filtersLeft={filtersLayout}
-      searchValue={value.search}
-      onSearchChange={(s) => onChange({ ...value, search: s })}
-      onExport={onExport}
-      exportLabel="Export"
-    />
-  );
-}
-
-
-
------
-
-
-import { fetchAttributeFeed } from '../api/attributeApi';
-import { exportCsv } from '../../../ui/data/csvExport';
-
-// ...
-const handleExport = async () => {
-  const data = await fetchAttributeFeed(filters); // just pass filters
-  const headers = data?.headers ?? [];
-  const cols = [
-    { header: 'Org', accessor: 'OrgName' },
-    { header: 'Function', accessor: 'FunctionName' },
-    { header: 'Category', accessor: 'CategoryName' },
-    { header: 'Subcategory', accessor: 'CSF2SubcategoryName' },
-    { header: 'Kept', accessor: 'KeptCount' },
-    { header: 'Removed', accessor: 'RemovedCount' },
-    { header: 'Custom', accessor: 'CustomCount' },
-  ];
-  exportCsv('attribute-headers.csv', cols, headers);
-};

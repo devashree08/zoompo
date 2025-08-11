@@ -1,39 +1,57 @@
 import React from 'react';
-import { FormControl, InputLabel, Select, MenuItem, Checkbox, ListItemText } from '@mui/material';
+import { Box, Container } from '@mui/material';
+import Navbar from './components/Navbar';
+import Sidenav from './components/Sidenav';
+import Footer from './components/Footer';
 
-export default function MultiSelect({
-  label,
-  value = [],
-  options = [],           // [{ value, label }]
-  onChange,
-  placeholder = 'Select…',
-  ...props
-}) {
-  const handle = (event) => onChange?.(event.target.value);
+const SIDE_NAV_WIDTH = 80; // adjust to your icon rail width
 
+export default function PrimaryLayout({ children }) {
   return (
-    <FormControl size="small" fullWidth>
-      <InputLabel>{label}</InputLabel>
-      <Select
-        multiple
-        label={label}
-        value={value}
-        onChange={handle}
-        renderValue={(selected) => {
-          if (!selected.length) return placeholder;
-          const map = new Map(options.map(o => [o.value, o.label]));
-          return selected.map(v => map.get(v) ?? v).join(', ');
+    <Box sx={{ display: 'grid', gridTemplateRows: 'auto 1fr auto', minHeight: '100vh' }}>
+      <Navbar />
+
+      {/* Content grid: left = main content, right = sidenav */}
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { md: `1fr ${SIDE_NAV_WIDTH}px` },
+          columnGap: 0,
+          rowGap: 0,
+          minWidth: 0,      // prevent overflow pushing content
         }}
-        MenuProps={{ PaperProps: { style: { maxHeight: 360 } } }}
-        {...props}
       >
-        {options.map((opt) => (
-          <MenuItem key={opt.value} value={opt.value}>
-            <Checkbox checked={value.indexOf(opt.value) > -1} />
-            <ListItemText primary={opt.label} />
-          </MenuItem>
-        ))}
-      </Select>
-    </FormControl>
+        {/* Main content column */}
+        <Container
+          maxWidth={false}                   // use full width
+          sx={{
+            // tight, consistent padding – this removes the “gap around the header”
+            px: { xs: 2, md: 3 },
+            py: { xs: 2, md: 3 },
+            minWidth: 0,                    // let children shrink as needed
+          }}
+        >
+          {children}
+        </Container>
+
+        {/* Right-side nav rail (sticky, square, no rounded edges) */}
+        <Box
+          sx={{
+            borderLeft: '1px solid',
+            borderColor: 'divider',
+            minWidth: SIDE_NAV_WIDTH,
+            display: { xs: 'none', md: 'block' },
+            position: 'sticky',
+            top: 64, // adjust to your Navbar height
+            height: 'calc(100vh - 64px)',
+            backgroundColor: 'background.paper',
+          }}
+        >
+          <Sidenav />
+        </Box>
+      </Box>
+
+      <Footer />
+    </Box>
   );
 }

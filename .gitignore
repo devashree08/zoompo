@@ -1,309 +1,45 @@
-export function exportCsv(filename, columns, rows) {
-  const header = columns.map(c => `"${c.header.replace(/"/g,'""')}"`).join(',');
-  const lines = rows.map(r =>
-    columns.map(c => {
-      const raw = typeof c.accessor === 'function' ? c.accessor(r) : r[c.accessor];
-      const val = (raw ?? '').toString().replace(/"/g,'""');
-      return `"${val}"`;
-    }).join(',')
-  );
-  const csv = [header, ...lines].join('\r\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
-}
+import { createTheme } from '@mui/material/styles';
 
+const primary = { main: '#0561FF', dark: '#0540C5', light: '#4D8DFF', contrastText: '#FFFFFF' };
+const neutral = {
+  50:'#F7F8FB',100:'#EEF1F6',200:'#E4E7EC',300:'#CDD5DF',400:'#98A2B3',
+  500:'#667085',600:'#475467',700:'#344054',800:'#1D2939',900:'#101828',
+};
+const success = { main: '#12B76A', light: '#ECFDF3', dark: '#027A48' };
+const warning = { main: '#F79009', light: '#FFFAEB', dark: '#B54708' };
+const error   = { main: '#D92D20', light: '#FEF3F2', dark: '#912018' };
 
----
-
-
-import React from 'react';
-import { Box } from '@mui/material';
-
-export default function TwoPane({ left, right, leftWidth = 380, gap = 2 }) {
-  return (
-    <Box sx={{
-      display: 'grid',
-      gridTemplateColumns: { xs: '1fr', md: `${leftWidth}px 1fr` },
-      gap,
-      alignItems: 'start',
-    }}>
-      <Box>{left}</Box>
-      <Box>{right}</Box>
-    </Box>
-  );
-}
-
-
------
-
-import React from 'react';
-import { Paper, Stack, Box } from '@mui/material';
-import Button from '../core/Button';
-
-export default function FloatingActionBar({
-  onSave, onCancel, onDelete,
-  saving = false, dirty = false,
-  leftContent = null, rightExtras = null,
-  saveLabel = 'Save', cancelLabel = 'Cancel', deleteLabel = 'Delete',
-}) {
-  return (
-    <Paper
-      elevation={6}
-      sx={{
-        position: 'sticky', bottom: 0, zIndex: 2,
-        borderTopLeftRadius: 8, borderTopRightRadius: 8,
-        p: 1.5, mt: 2,
-      }}
-    >
-      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
-        <Box>{leftContent}</Box>
-        <Stack direction="row" spacing={1}>
-          {onCancel && <Button variant="outlined" disabled={saving} onClick={onCancel}>{cancelLabel}</Button>}
-          {onDelete && <Button variant="outlined" color="error" disabled={saving} onClick={onDelete}>{deleteLabel}</Button>}
-          {onSave && (
-            <Button color="primary" disabled={!dirty || saving} onClick={onSave}>
-              {saving ? 'Saving…' : saveLabel}
-            </Button>
-          )}
-        </Stack>
-      </Stack>
-    </Paper>
-  );
-}
-
-
------
-
-import React from 'react';
-import { Box, CircularProgress } from '@mui/material';
-
-export default function BusyOverlay({ open }) {
-  if (!open) return null;
-  return (
-    <Box sx={{
-      position: 'absolute', inset: 0,
-      bgcolor: 'rgba(255,255,255,0.6)',
-      display: 'grid', placeItems: 'center',
-      zIndex: 3, backdropFilter: 'blur(1px)',
-    }}>
-      <CircularProgress />
-    </Box>
-  );
-}
-
-
-
-----
-
-import api from '../../../lib/axiosClient';
-const toCsv = (xs) => (xs && xs.length ? xs.join(',') : null);
-
-export async function fetchAttributeFilterLookups({ orgIds, functionIds, categoryIds, subcatIds, ownerNames, custodianNames }) {
-  const params = {
-    OrgIDsCsv:         toCsv(orgIds),
-    FunctionIDsCsv:    toCsv(functionIds),
-    CategoryIDsCsv:    toCsv(categoryIds),
-    SubcategoryIDsCsv: toCsv(subcatIds),
-    OwnerNamesCsv:     toCsv(ownerNames),
-    CustodianNamesCsv: toCsv(custodianNames),
-  };
-  const { data } = await api.get('/api/v1/CSFAttributeMap/filters', { params });
-  return data; // { orgs, functions, categories, subcategories, owners, custodians }
-}
-
-export async function fetchAttributeFeed(params) {
-  const { data } = await api.get('/api/v1/CSFAttributeMap/feed', { params });
-  return data; // { headers, rows }
-}
-
-----
-
-
-import React from 'react';
-import { Grid } from '@mui/material';
-import { FilterBar } from '../../../../ui/patterns/FilterBar';
-import MultiSelect from '../../../../ui/core/MultiSelect';
-import Switch from '../../../../ui/core/Switch';
-import { fetchAttributeFilterLookups } from '../../api/attributeApi';
-
-const MATURITY_OPTIONS = [{ value: 3, label: 'Level 3' }, { value: 4, label: 'Level 4' }];
-
-export default function AttributeFilterBar({ value, onChange, onExport }) {
-  const [opts, setOpts] = React.useState({ orgs: [], functions: [], categories: [], subcategories: [], owners: [], custodians: [] });
-
-  React.useEffect(() => {
-    let ignore = false;
-    (async () => {
-      const data = await fetchAttributeFilterLookups({
-        orgIds: value.orgIds,
-        functionIds: value.functionIds,
-        categoryIds: value.categoryIds,
-        subcatIds: value.subcatIds,
-        ownerNames: value.ownerNames,
-        custodianNames: value.custodianNames,
-      });
-      if (!ignore) setOpts(data);
-    })();
-    return () => { ignore = true; };
-  }, [value.orgIds, value.functionIds, value.categoryIds, value.subcatIds, value.ownerNames, value.custodianNames]);
-
-  const toOptions = (arr, valueKey, labelKey) => (arr || []).map(it => ({ value: it[valueKey], label: it[labelKey] }));
-
-  const filtersLeft = (
-    <Grid container spacing={1.5} alignItems="center">
-      <Grid item xs={12} md={3}>
-        <MultiSelect label="Organizations" value={value.orgIds}
-          onChange={(v) => onChange({ ...value, orgIds: v })}
-          options={toOptions(opts.orgs, 'OrgID', 'OrgName')} />
-      </Grid>
-      <Grid item xs={12} md={3}>
-        <MultiSelect label="Functions" value={value.functionIds}
-          onChange={(v) => onChange({ ...value, functionIds: v })}
-          options={toOptions(opts.functions, 'FunctionID', 'FunctionName')} />
-      </Grid>
-      <Grid item xs={12} md={3}>
-        <MultiSelect label="Categories" value={value.categoryIds}
-          onChange={(v) => onChange({ ...value, categoryIds: v })}
-          options={toOptions(opts.categories, 'CategoryID', 'CategoryName')} />
-      </Grid>
-      <Grid item xs={12} md={3}>
-        <MultiSelect label="Subcategories" value={value.subcatIds}
-          onChange={(v) => onChange({ ...value, subcatIds: v })}
-          options={toOptions(opts.subcategories, 'CSF2SubcategoryID', 'SubcategoryName')} />
-      </Grid>
-
-      <Grid item xs={12} md={3}>
-        <MultiSelect label="Owners" value={value.ownerNames}
-          onChange={(v) => onChange({ ...value, ownerNames: v })}
-          options={(opts.owners || []).map(n => ({ value: n.OwnerName ?? n.FullName ?? n, label: n.OwnerName ?? n.FullName ?? n }))} />
-      </Grid>
-      <Grid item xs={12} md={3}>
-        <MultiSelect label="Custodians" value={value.custodianNames}
-          onChange={(v) => onChange({ ...value, custodianNames: v })}
-          options={(opts.custodians || []).map(n => ({ value: n.CustodianName ?? n.FullName ?? n, label: n.CustodianName ?? n.FullName ?? n }))} />
-      </Grid>
-
-      <Grid item xs={12} md={3}>
-        <MultiSelect label="Maturity" value={value.maturity}
-          onChange={(v) => onChange({ ...value, maturity: v })}
-          options={MATURITY_OPTIONS} />
-      </Grid>
-
-      <Grid item xs={12} md={3}>
-        <Switch label="Final view (hide Removed)" checked={!!value.finalOnly}
-          onChange={(checked) => onChange({ ...value, finalOnly: checked })} />
-      </Grid>
-    </Grid>
-  );
-
-  return (
-    <FilterBar
-      filtersLeft={filtersLeft}
-      searchValue={value.search}
-      onSearchChange={(s) => onChange({ ...value, search: s })}
-      onExport={onExport}
-      exportLabel="Export"
-    />
-  );
-}
-
-
-
-----
-
-import React from 'react';
-import { Stack, Paper, Typography, Box } from '@mui/material';
-import AttributeFilterBar from '../components/molecules/AttributeFilterBar';
-import { fetchAttributeFeed } from '../api/attributeApi';
-import { exportCsv } from '../../../ui/data/csvExport';
-import TwoPane from '../../../ui/patterns/TwoPane';
-import BusyOverlay from '../../../ui/feedback/BusyOverlay';
-import FloatingActionBar from '../../../ui/patterns/FloatingActionBar';
-import useToast from '../../../ui/feedback/useToast';
-
-export default function AttributeMappingPage() {
-  const toast = useToast();
-  const [filters, setFilters] = React.useState({
-    orgIds: [], functionIds: [], categoryIds: [], subcatIds: [],
-    ownerNames: [], custodianNames: [],
-    maturity: [3,4],
-    finalOnly: false,
-    search: '',
-  });
-
-  const [saving, setSaving] = React.useState(false);
-  const [dirty, setDirty] = React.useState(false);
-
-  const handleExport = async () => {
-    const params = {
-      OrgIDsCsv:         filters.orgIds.join(',') || null,
-      FunctionIDsCsv:    filters.functionIds.join(',') || null,
-      CategoryIDsCsv:    filters.categoryIds.join(',') || null,
-      CSF2SubcatIDsCsv:  filters.subcatIds.join(',') || null,
-      OwnerNamesCsv:     filters.ownerNames.join(',') || null,
-      CustodianNamesCsv: filters.custodianNames.join(',') || null,
-      MaturityCsv:       filters.maturity.join(',') || null,
-      FinalOnly:         filters.finalOnly,
-    };
-    const data = await fetchAttributeFeed(params); // { headers, rows }
-    const headers = data?.headers ?? [];
-    const cols = [
-      { header: 'Org', accessor: 'OrgName' },
-      { header: 'Function', accessor: 'FunctionName' },
-      { header: 'Category', accessor: 'CategoryName' },
-      { header: 'Subcategory', accessor: 'CSF2SubcategoryName' },
-      { header: 'Kept', accessor: 'KeptCount' },
-      { header: 'Removed', accessor: 'RemovedCount' },
-      { header: 'Custom', accessor: 'CustomCount' },
-    ];
-    exportCsv('attribute-headers.csv', cols, headers);
-    toast.success('Exported header slice');
-  };
-
-  const RightPane = (
-    <Box sx={{ position: 'relative' }}>
-      <BusyOverlay open={saving} />
-      <Paper sx={{ p: 2, minHeight: 240 }}>
-        <Typography color="text.secondary">
-          Detail panel (rows) will render here in the next phase.
-        </Typography>
-      </Paper>
-      <FloatingActionBar
-        onSave={async () => {
-          setSaving(true);
-          try {
-            // Call save endpoints here later…
-            setDirty(false);
-            toast.success('Saved');
-          } catch {
-            toast.error('Save failed');
-          } finally {
-            setSaving(false);
-          }
-        }}
-        onCancel={() => setDirty(false)}
-        onDelete={null}   // wire later if you allow delete from here
-        saving={saving}
-        dirty={dirty}
-      />
-    </Box>
-  );
-
-  return (
-    <Stack spacing={2}>
-      <Typography variant="h2">CSF 1.1 → 2.0 Attribute Mapping</Typography>
-
-      <AttributeFilterBar value={filters} onChange={setFilters} onExport={handleExport} />
-
-      <TwoPane
-        left={<Paper sx={{ p: 2 }}>Left accordion (headers) — coming next</Paper>}
-        right={RightPane}
-      />
-    </Stack>
-  );
-}
-
-
+const theme = createTheme({
+  palette: {
+    mode: 'light',
+    primary, success, warning, error, grey: neutral,
+    background: { default: neutral[50], paper: '#FFFFFF' },
+    text: { primary: neutral[900], secondary: neutral[600] },
+    divider: neutral[200],
+  },
+  // Square by default; we’ll round only small elements via component overrides if needed
+  shape: { borderRadius: 4 },
+  typography: {
+    fontFamily: ['Inter','Segoe UI','Roboto','Helvetica Neue','Arial','sans-serif'].join(','),
+    h1: { fontWeight: 800, fontSize: '2rem' },
+    h2: { fontWeight: 800, fontSize: '1.6rem' },
+    h3: { fontWeight: 700, fontSize: '1.25rem' },
+    button: { textTransform: 'none', fontWeight: 700 },
+  },
+  components: {
+    MuiCssBaseline: { styleOverrides: { body: { backgroundColor: neutral[50] } } },
+    MuiButton: {
+      defaultProps: { variant: 'contained', disableElevation: true },
+      styleOverrides: { root: { borderRadius: 6, paddingInline: 14, minHeight: 36 } },
+    },
+    // Keep big shells square
+    MuiPaper: { styleOverrides: { root: { borderRadius: 4, border: `1px solid ${neutral[200]}` } } },
+    MuiCard:  { styleOverrides: { root: { borderRadius: 6, border: `1px solid ${neutral[200]}` } } },
+    MuiTextField: { defaultProps: { size: 'small' } },
+    MuiSelect:    { defaultProps: { size: 'small' } },
+    MuiFormControl:{ defaultProps: { size: 'small' } },
+    // AppBar is square by default, but force it in case your Navbar uses Paper
+    MuiAppBar: { styleOverrides: { root: { borderRadius: 0 } } },
+  },
+});
+export default theme;

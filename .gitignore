@@ -1,87 +1,18 @@
-import React from 'react';
-import { Paper, Stack, Box } from '@mui/material';
-import TextField from '../../core/TextField';
-import Button from '../../core/Button';
-
-export default function FilterBar({ filtersLeft=null, searchValue, onSearchChange, onExport, exportLabel='Export' }) {
-  return (
-    <Paper sx={{ p: 2 }}>
-      <Stack direction={{ xs:'column', md:'row' }} spacing={2} alignItems={{ md:'center' }} justifyContent="space-between">
-        <Box sx={{ flex: 1 }}>{filtersLeft}</Box>
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 320 }}>
-          <TextField label="Search" search value={searchValue} onChange={onSearchChange} fullWidth />
-          <Button onClick={onExport}>{exportLabel}</Button>
-        </Stack>
-      </Stack>
-    </Paper>
+export function exportCsv(filename, columns, rows) {
+  const header = columns.map(c => `"${c.header.replace(/"/g,'""')}"`).join(',');
+  const lines = rows.map(r =>
+    columns.map(c => {
+      const raw = typeof c.accessor === 'function' ? c.accessor(r) : r[c.accessor];
+      const val = (raw ?? '').toString().replace(/"/g,'""');
+      return `"${val}"`;
+    }).join(',')
   );
-}
-
-
---
-
-import React from 'react';
-import { Snackbar, Alert } from '@mui/material';
-
-const ToastCtx = React.createContext(null);
-export const ToastContext = ToastCtx;
-
-export default function ToastProvider({ children, autoHideDuration = 3500 }) {
-  const [queue, setQueue] = React.useState([]);
-  const [open, setOpen] = React.useState(false);
-  const [current, setCurrent] = React.useState(null);
-
-  const show = React.useCallback((payload) => {
-    setQueue(q => [...q, payload]);
-    if (!open && !current) { setCurrent(payload); setOpen(true); }
-  }, [open, current]);
-
-  React.useEffect(() => {
-    if (!open && !current && queue.length) {
-      const [next, ...rest] = queue;
-      setQueue(rest); setCurrent(next); setOpen(true);
-    }
-  }, [open, current, queue]);
-
-  const handleClose = (_, reason) => {
-    if (reason === 'clickaway') return;
-    setOpen(false); setCurrent(null);
-  };
-
-  const api = React.useMemo(() => ({
-    success: (m) => show({ severity: 'success', message: m }),
-    error:   (m) => show({ severity: 'error',   message: m }),
-    info:    (m) => show({ severity: 'info',    message: m }),
-    warning: (m) => show({ severity: 'warning', message: m }),
-  }), [show]);
-
-  return (
-    <ToastCtx.Provider value={api}>
-      {children}
-      <Snackbar open={!!current && open} autoHideDuration={autoHideDuration}
-        onClose={handleClose} anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}>
-        <Alert onClose={handleClose} severity={current?.severity || 'info'} variant="filled" sx={{ minWidth: 300 }}>
-          {current?.message}
-        </Alert>
-      </Snackbar>
-    </ToastCtx.Provider>
-  );
-}
-
-
-
-
-
-
-----------
-
-
-import React from 'react';
-import { ToastContext } from './ToastProvider';
-export default function useToast() {
-  const ctx = React.useContext(ToastContext);
-  if (!ctx) throw new Error('useToast must be used within <ToastProvider>');
-  return ctx;
+  const csv = [header, ...lines].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
 }
 
 

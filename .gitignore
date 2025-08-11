@@ -1,60 +1,43 @@
-// ...imports and fetch logic unchanged
+import React from 'react';
+import { FormControl, InputLabel, Select, MenuItem, Checkbox, ListItemText } from '@mui/material';
 
-export default function AttributeFilterBar({ value, onChange, onExport }) {
-  // ...state + useEffect unchanged (using orgID, functionID, categoryID, csF2SubcategoryID, fullName)
+export default function MultiSelect({
+  label,
+  value = [],
+  options = [],           // [{ value, label }]
+  onChange,
+  placeholder = 'Select…',
+  ...props
+}) {
+  const handle = (event) => onChange?.(event.target.value);
 
-  const filtersLayout = (
-    <Box
-      sx={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-        gap: 12 / 8,  // 1.5 spacing units
-        alignItems: 'center',
-      }}
-    >
-      <MultiSelect label="Organizations" value={value.orgIds}
-        onChange={(v) => onChange({ ...value, orgIds: v })}
-        options={opts.orgs} />
-
-      <MultiSelect label="Functions" value={value.functionIds}
-        onChange={(v) => onChange({ ...value, functionIds: v })}
-        options={opts.functions} />
-
-      <MultiSelect label="Categories" value={value.categoryIds}
-        onChange={(v) => onChange({ ...value, categoryIds: v })}
-        options={opts.categories} />
-
-      <MultiSelect label="Subcategories" value={value.subcatIds}
-        onChange={(v) => onChange({ ...value, subcatIds: v })}
-        options={opts.subcategories} />
-
-      <MultiSelect label="Owners" value={value.ownerNames}
-        onChange={(v) => onChange({ ...value, ownerNames: v })}
-        options={opts.owners} />
-
-      <MultiSelect label="Custodians" value={value.custodianNames}
-        onChange={(v) => onChange({ ...value, custodianNames: v })}
-        options={opts.custodians} />
-
-      <MultiSelect label="Maturity" value={value.maturity}
-        onChange={(v) => onChange({ ...value, maturity: v })}
-        options={[{ value: 3, label: 'Level 3' }, { value: 4, label: 'Level 4' }]} />
-
-      <Switch
-        label="Final view (hide Removed)"
-        checked={!!value.finalOnly}
-        onChange={(checked) => onChange({ ...value, finalOnly: checked })}
-      />
-    </Box>
-  );
+  const render = (selected) => {
+    if (!selected?.length) return placeholder;
+    if (options?.length && selected.length === options.length) return 'All';
+    if (selected.length > 2) return `${selected.length} selected`;
+    const map = new Map(options.map(o => [o.value, o.label]));
+    return selected.map(v => map.get(v) ?? v).join(', ');
+  };
 
   return (
-    <FilterBar
-      filtersLeft={filtersLayout}
-      searchValue={value.search}
-      onSearchChange={(s) => onChange({ ...value, search: s })}
-      onExport={onExport}
-      exportLabel="Export"
-    />
+    <FormControl size="small" fullWidth>
+      <InputLabel>{label}</InputLabel>
+      <Select
+        multiple
+        label={label}
+        value={value}
+        onChange={handle}
+        renderValue={render}
+        MenuProps={{ PaperProps: { style: { maxHeight: 360 } } }}
+        {...props}
+      >
+        {options.map((opt) => (
+          <MenuItem key={opt.value} value={opt.value}>
+            <Checkbox checked={value.indexOf(opt.value) > -1} />
+            <ListItemText primary={opt.label} />
+          </MenuItem>
+        ))}
+      </Select>
+    </FormControl>
   );
 }

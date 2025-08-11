@@ -1,109 +1,22 @@
-// src/theme/index.js
-import { createTheme } from '@mui/material/styles';
+// src/providers/AppProviders.jsx
+import React from 'react';
+import { ThemeProvider, CssBaseline } from '@mui/material';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import theme from '../theme';
 
-const primary = {
-  main: '#0561FF',
-  dark: '#0540C5',
-  light: '#4D8DFF',
-  contrastText: '#FFFFFF',
-};
-
-const neutral = {
-  50:  '#F7F8FB',
-  100: '#EEF1F6',
-  200: '#E4E7EC',
-  300: '#CDD5DF',
-  400: '#98A2B3',
-  500: '#667085',
-  600: '#475467',
-  700: '#344054',
-  800: '#1D2939',
-  900: '#101828',
-};
-
-const success = { main: '#12B76A', light: '#ECFDF3', dark: '#027A48' };
-const warning = { main: '#F79009', light: '#FFFAEB', dark: '#B54708' };
-const error   = { main: '#D92D20', light: '#FEF3F2', dark: '#912018' };
-
-const theme = createTheme({
-  palette: {
-    mode: 'light',
-    primary,
-    success,
-    warning,
-    error,
-    grey: neutral,
-    background: {
-      default: neutral[50],
-      paper: '#FFFFFF',
-    },
-    text: {
-      primary: neutral[900],
-      secondary: neutral[600],
-    },
-    divider: neutral[200],
-  },
-  shape: { borderRadius: 10 },
-  typography: {
-    fontFamily: [
-      'Inter', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'
-    ].join(','),
-    h1: { fontWeight: 800, fontSize: '2rem' },
-    h2: { fontWeight: 800, fontSize: '1.6rem' },
-    h3: { fontWeight: 700, fontSize: '1.25rem' },
-    subtitle1: { color: neutral[600] },
-    body1: { color: neutral[800] },
-    button: { textTransform: 'none', fontWeight: 700 },
-  },
-  components: {
-    MuiCssBaseline: {
-      styleOverrides: {
-        body: { backgroundColor: neutral[50] },
-      },
-    },
-    MuiButton: {
-      defaultProps: { variant: 'contained', disableElevation: true },
-      styleOverrides: {
-        root: { borderRadius: 10, paddingInline: 14, minHeight: 36 },
-        containedPrimary: { color: '#fff' },
-      },
-    },
-    MuiPaper: {
-      styleOverrides: {
-        root: {
-          borderRadius: 12,
-          border: `1px solid ${neutral[200]}`,
-        },
-      },
-    },
-    MuiCard: {
-      styleOverrides: {
-        root: {
-          borderRadius: 12,
-          border: `1px solid ${neutral[200]}`,
-        },
-      },
-    },
-    MuiChip: {
-      styleOverrides: {
-        root: { fontWeight: 600 },
-      },
-    },
-    MuiTooltip: {
-      styleOverrides: {
-        tooltip: { fontSize: 12, fontWeight: 600 },
-      },
-    },
-    MuiTextField: {
-      defaultProps: { size: 'small' },
-    },
-    MuiSelect: {
-      defaultProps: { size: 'small' },
-    },
-    MuiFormControl: {
-      defaultProps: { size: 'small' },
-    },
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { refetchOnWindowFocus: false, staleTime: 30_000 },
   },
 });
 
-export default theme;
+export default function AppProviders({ children }) {
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <QueryClientProvider client={queryClient}>
+        {children}
+      </QueryClientProvider>
+    </ThemeProvider>
+  );
+}

@@ -1,207 +1,191 @@
-CREATE OR ALTER PROCEDURE dbo.sp_GetCsfFilterLookups
-  @OrgIDsCsv            NVARCHAR(MAX) = NULL,
-  @FunctionIDsCsv       NVARCHAR(MAX) = NULL,
-  @CategoryIDsCsv       NVARCHAR(MAX) = NULL,
-  @SubcategoryIDsCsv    NVARCHAR(MAX) = NULL,
-  @OwnerNamesCsv        NVARCHAR(MAX) = NULL,
-  @CustodianNamesCsv    NVARCHAR(MAX) = NULL
-AS
-BEGIN
-  SET NOCOUNT ON;
+// src/ui/core/MultiSelectSearch.jsx
+import * as React from 'react';
+import { Autocomplete, TextField, Checkbox } from '@mui/material';
 
-  /* ---- Parse CSVs ---- */
-  CREATE TABLE #SelOrg  (id INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@OrgIDsCsv)),'') <> ''
-    INSERT #SelOrg SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@OrgIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
+export default function MultiSelectSearch({
+  label,
+  value = [],
+  options = [],
+  onChange,
+  placeholder = 'Select…',
+  disabled = false,
+  limitTags = 2,
+  ...props
+}) {
+  const valueObjects = React.useMemo(() => {
+    const byValue = new Map(options.map(o => [o.value, o]));
+    return value.map(v => byValue.get(v)).filter(Boolean);
+  }, [value, options]);
 
-  CREATE TABLE #SelFunc (id INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@FunctionIDsCsv)),'') <> ''
-    INSERT #SelFunc SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@FunctionIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
+  const handleChange = (_, selectedOptions) => {
+    onChange?.(selectedOptions.map(o => o.value));
+  };
 
-  CREATE TABLE #SelCat  (id INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@CategoryIDsCsv)),'') <> ''
-    INSERT #SelCat SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@CategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
+  const renderTags = (selected, getTagProps) => {
+    if (!selected?.length) return null;
+    if (selected.length > 3) {
+      return <span {...getTagProps({ index: 0 })}>{selected.length} selected</span>;
+    }
+    return selected.map((opt, i) => (
+      <span key={opt.value} {...getTagProps({ index: i })}>{opt.label}</span>
+    ));
+  };
 
-  CREATE TABLE #SelSub  (id INT PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@SubcategoryIDsCsv)),'') <> ''
-    INSERT #SelSub SELECT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
-    FROM STRING_SPLIT(@SubcategoryIDsCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
+  return (
+    <Autocomplete
+      multiple
+      disableCloseOnSelect
+      options={options}
+      value={valueObjects}
+      onChange={handleChange}
+      getOptionLabel={(o) => o?.label ?? ''}
+      isOptionEqualToValue={(o, v) => o.value === v.value}
+      filterSelectedOptions={false}      // keep selected visible
+      renderOption={(props2, option, { selected }) => (
+        <li {...props2}>
+          <Checkbox checked={selected} sx={{ mr: 1 }} />
+          {option.label}
+        </li>
+      )}
+      renderTags={renderTags}
+      limitTags={limitTags}
+      ListboxProps={{ style: { maxHeight: 360 } }}
+      fullWidth
+      disabled={disabled}
+      renderInput={(params) => (
+        <TextField {...params} size="small" label={label} placeholder={placeholder} />
+      )}
+      {...props}
+    />
+  );
+}
 
-  CREATE TABLE #SelOwner(name NVARCHAR(200) PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@OwnerNamesCsv)),'') <> ''
-    INSERT #SelOwner SELECT LTRIM(RTRIM(value))
-    FROM STRING_SPLIT(@OwnerNamesCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
 
-  CREATE TABLE #SelCust (name NVARCHAR(200) PRIMARY KEY);
-  IF ISNULL(LTRIM(RTRIM(@CustodianNamesCsv)),'') <> ''
-    INSERT #SelCust SELECT LTRIM(RTRIM(value))
-    FROM STRING_SPLIT(@CustodianNamesCsv, ',') WHERE LTRIM(RTRIM(value)) <> '';
+// src/features/attributeMapping/components/molecules/AttributeFilterBar.jsx
+import React from 'react';
+import { Box } from '@mui/material';
+import { FilterBar } from '../../../../ui/patterns/FilterBar';
+import MultiSelectSearch from '../../../../ui/core/MultiSelectSearch';
+import Switch from '../../../../ui/core/Switch';
+import { fetchAttributeFilterLookups } from '../../api/attributeApi';
 
-  /* Effective contacts */
-  SELECT oc.OrgID, oc.CSF2SubcatID AS CSF2SubcategoryID, oc.FullName, oc.ContactRole
-  INTO #EffContacts
-  FROM dbo.Org_SubcategoryContact oc
-  WHERE oc.Status = 'Active'
-    AND oc.Eff_Dt <= CAST(GETUTCDATE() AS DATE)
-    AND (oc.Exp_Dt IS NULL OR oc.Exp_Dt >= CAST(GETUTCDATE() AS DATE));
+const MATURITY_OPTIONS = [
+  { value: 3, label: 'Level 3' },
+  { value: 4, label: 'Level 4' },
+];
 
-  /* Base: distinct Org × Func × Cat × Subcat */
-  SELECT DISTINCT v.OrgID, v.FunctionID, v.CategoryID, v.CSF2SubcategoryID
-  INTO #Base
-  FROM dbo.UI_CsfAttributeFeed v;
+const ensureSelected = (options, selected) => {
+  const map = new Map((options || []).map(o => [o.value, o]));
+  (selected || []).forEach(v => {
+    if (!map.has(v)) map.set(v, { value: v, label: String(v) });
+  });
+  return Array.from(map.values());
+};
 
-  /* Slice with ALL filters applied */
-  SELECT b.*
-  INTO #Filtered_All
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)  OR b.OrgID            IN (SELECT id FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID       IN (SELECT id FROM #SelFunc))
-    AND (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID       IN (SELECT id FROM #SelCat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Owner'
-                AND e.FullName IN (SELECT name FROM #SelOwner)
-         )
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Custodian'
-                AND e.FullName IN (SELECT name FROM #SelCust)
-         )
-    );
+export default function AttributeFilterBar({ value, onChange, onExport }) {
+  const [opts, setOpts] = React.useState({
+    orgs: [], functions: [], categories: [], subcategories: [], owners: [], custodians: []
+  });
 
-  /* Self-excluding slices (omit that filter only) */
-  -- Functions list ignores Function filter
-  SELECT b.*
-  INTO #Filtered_NoFunc
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)  OR b.OrgID            IN (SELECT id FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID       IN (SELECT id FROM #SelCat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Owner'
-                AND e.FullName IN (SELECT name FROM #SelOwner)
-         )
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Custodian'
-                AND e.FullName IN (SELECT name FROM #SelCust)
-         )
-    );
+  React.useEffect(() => {
+    let ignore = false;
+    (async () => {
+      const data = await fetchAttributeFilterLookups({
+        orgIds: value.orgIds,
+        functionIds: value.functionIds,
+        categoryIds: value.categoryIds,
+        subcatIds: value.subcatIds,
+        ownerNames: value.ownerNames,
+        custodianNames: value.custodianNames,
+      });
+      if (ignore) return;
+      setOpts({
+        orgs:          (data.orgs || []).map(x => ({ value: x.orgID,            label: x.orgName })),
+        functions:     (data.functions || []).map(x => ({ value: x.functionID,   label: x.functionName })),
+        categories:    (data.categories || []).map(x => ({ value: x.categoryID,  label: x.categoryName })),
+        subcategories: (data.subcategories || []).map(x => ({ value: x.csF2SubcategoryID, label: x.subcategoryName })),
+        owners:        (data.owners || []).map(x => ({ value: x.fullName,        label: x.fullName })),
+        custodians:    (data.custodians || []).map(x => ({ value: x.fullName,    label: x.fullName })),
+      });
+    })();
+    return () => { ignore = true; };
+  }, [
+    value.orgIds, value.functionIds, value.categoryIds,
+    value.subcatIds, value.ownerNames, value.custodianNames
+  ]);
 
-  -- Categories list ignores Category filter
-  SELECT b.*
-  INTO #Filtered_NoCat
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)  OR b.OrgID            IN (SELECT id FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID       IN (SELECT id FROM #SelFunc))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSub)  OR b.CSF2SubcategoryID IN (SELECT id FROM #SelSub))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Owner'
-                AND e.FullName IN (SELECT name FROM #SelOwner)
-         )
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Custodian'
-                AND e.FullName IN (SELECT name FROM #SelCust)
-         )
-    );
+  const filtersLayout = (
+    <Box
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+        gap: 1.5,
+        alignItems: 'center',
+      }}
+    >
+      <MultiSelectSearch
+        label="Organizations"
+        value={value.orgIds}
+        options={ensureSelected(opts.orgs, value.orgIds)}
+        onChange={(v) => onChange({ ...value, orgIds: v })}
+      />
+      <MultiSelectSearch
+        label="Functions"
+        value={value.functionIds}
+        options={ensureSelected(opts.functions, value.functionIds)}
+        onChange={(v) => onChange({ ...value, functionIds: v })}
+      />
+      <MultiSelectSearch
+        label="Categories"
+        value={value.categoryIds}
+        options={ensureSelected(opts.categories, value.categoryIds)}
+        onChange={(v) => onChange({ ...value, categoryIds: v })}
+      />
+      <MultiSelectSearch
+        label="Subcategories"
+        value={value.subcatIds}
+        options={ensureSelected(opts.subcategories, value.subcatIds)}
+        onChange={(v) => onChange({ ...value, subcatIds: v })}
+      />
+      <MultiSelectSearch
+        label="Owners"
+        value={value.ownerNames}
+        options={ensureSelected(opts.owners, value.ownerNames)}
+        onChange={(v) => onChange({ ...value, ownerNames: v })}
+      />
+      <MultiSelectSearch
+        label="Custodians"
+        value={value.custodianNames}
+        options={ensureSelected(opts.custodians, value.custodianNames)}
+        onChange={(v) => onChange({ ...value, custodianNames: v })}
+      />
+      <MultiSelectSearch
+        label="Maturity"
+        value={value.maturity}
+        options={ensureSelected(MATURITY_OPTIONS, value.maturity)}
+        onChange={(v) => onChange({ ...value, maturity: v })}
+      />
+      <Switch
+        label="Final view (hide Removed)"
+        checked={!!value.finalOnly}
+        onChange={(checked) => onChange({ ...value, finalOnly: checked })}
+      />
+    </Box>
+  );
 
-  -- Subcategories list ignores Subcategory filter
-  SELECT b.*
-  INTO #Filtered_NoSub
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)  OR b.OrgID            IN (SELECT id FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelFunc) OR b.FunctionID       IN (SELECT id FROM #SelFunc))
-    AND (NOT EXISTS (SELECT 1 FROM #SelCat)  OR b.CategoryID       IN (SELECT id FROM #SelCat))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Owner'
-                AND e.FullName IN (SELECT name FROM #SelOwner)
-         )
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1 FROM #EffContacts e
-              WHERE e.OrgID=b.OrgID AND e.CSF2SubcategoryID=b.CSF2SubcategoryID
-                AND e.ContactRole='Custodian'
-                AND e.FullName IN (SELECT name FROM #SelCust)
-         )
-    );
+  return (
+    <FilterBar
+      filtersLeft={filtersLayout}
+      searchValue={value.search}
+      onSearchChange={(s) => onChange({ ...value, search: s })}
+      onExport={onExport}
+      exportLabel="Export"
+    />
+  );
+}
 
-  /* ---- Result sets ---- */
-  -- 1) Orgs (from full filtered slice)
-  SELECT DISTINCT o.OrgID   AS orgID,
-                  o.OrgName AS orgName
-  FROM #Filtered_All f JOIN dbo.Org o ON o.OrgID=f.OrgID
-  ORDER BY o.OrgName;
 
-  -- 2) Functions (ignoring Function filter)
-  SELECT DISTINCT fn.FunctionID   AS functionID,
-                  fn.FunctionName AS functionName
-  FROM #Filtered_NoFunc f
-  JOIN ref.CSF2_Category c ON c.CategoryID=f.CategoryID
-  JOIN ref.CSF2_Function fn ON fn.FunctionID=c.FunctionID
-  ORDER BY fn.FunctionID;
 
-  -- 3) Categories (ignoring Category filter)
-  SELECT DISTINCT c.CategoryID   AS categoryID,
-                  c.CategoryName AS categoryName
-  FROM #Filtered_NoCat f
-  JOIN ref.CSF2_Category c ON c.CategoryID=f.CategoryID
-  ORDER BY c.CategoryID;
 
-  -- 4) Subcategories (ignoring Subcategory filter)
-  SELECT DISTINCT s.SubcategoryID   AS csF2SubcategoryID,
-                  s.SubcategoryName AS subcategoryName
-  FROM #Filtered_NoSub f
-  JOIN ref.CSF2_Subcategory s ON s.SubcategoryID=f.CSF2SubcategoryID
-  ORDER BY s.SubcategoryID;
 
-  -- 5) Owners (distinct names inside full filtered slice)
-  SELECT DISTINCT e.FullName AS fullName
-  FROM #Filtered_All f
-  JOIN #EffContacts e
-    ON e.OrgID=f.OrgID AND e.CSF2SubcategoryID=f.CSF2SubcategoryID
-  WHERE e.ContactRole='Owner'
-  ORDER BY e.FullName;
 
-  -- 6) Custodians (distinct names inside full filtered slice)
-  SELECT DISTINCT e.FullName AS fullName
-  FROM #Filtered_All f
-  JOIN #EffContacts e
-    ON e.OrgID=f.OrgID AND e.CSF2SubcategoryID=f.CSF2SubcategoryID
-  WHERE e.ContactRole='Custodian'
-  ORDER BY e.FullName;
-END
-GO

@@ -1,57 +1,50 @@
 import React from 'react';
-import { Box, Container } from '@mui/material';
-import Navbar from './components/Navbar';
-import Sidenav from './components/Sidenav';
-import Footer from './components/Footer';
+import { Paper, Stack, Box } from '@mui/material';
+import TextField from '../../core/TextField';
+import Button from '../../core/Button';
 
-const SIDE_NAV_WIDTH = 80; // adjust to your icon rail width
-
-export default function PrimaryLayout({ children }) {
+export default function FilterBar({
+  filtersLeft = null,         // a node: we'll pass a grid of selects from the page
+  searchValue,
+  onSearchChange,
+  onExport,
+  exportLabel = 'Export',
+}) {
   return (
-    <Box sx={{ display: 'grid', gridTemplateRows: 'auto 1fr auto', minHeight: '100vh' }}>
-      <Navbar />
-
-      {/* Content grid: left = main content, right = sidenav */}
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: { md: `1fr ${SIDE_NAV_WIDTH}px` },
-          columnGap: 0,
-          rowGap: 0,
-          minWidth: 0,      // prevent overflow pushing content
-        }}
+    <Paper sx={{ p: { xs: 1.25, md: 2 } }}>
+      <Stack
+        direction={{ xs: 'column', lg: 'row' }}
+        spacing={2}
+        alignItems={{ lg: 'center' }}
+        justifyContent="space-between"
+        sx={{ rowGap: 1 }}
       >
-        {/* Main content column */}
-        <Container
-          maxWidth={false}                   // use full width
-          sx={{
-            // tight, consistent padding – this removes the “gap around the header”
-            px: { xs: 2, md: 3 },
-            py: { xs: 2, md: 3 },
-            minWidth: 0,                    // let children shrink as needed
-          }}
-        >
-          {children}
-        </Container>
-
-        {/* Right-side nav rail (sticky, square, no rounded edges) */}
-        <Box
-          sx={{
-            borderLeft: '1px solid',
-            borderColor: 'divider',
-            minWidth: SIDE_NAV_WIDTH,
-            display: { xs: 'none', md: 'block' },
-            position: 'sticky',
-            top: 64, // adjust to your Navbar height
-            height: 'calc(100vh - 64px)',
-            backgroundColor: 'background.paper',
-          }}
-        >
-          <Sidenav />
+        {/* Filters area auto-wraps nicely from tablets to wide monitors */}
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          {filtersLeft}
         </Box>
-      </Box>
 
-      <Footer />
-    </Box>
+        {/* Search + Export always visible, never clipped */}
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          sx={{
+            width: { xs: '100%', lg: 'auto' },
+            minWidth: { lg: 320 },
+            flexShrink: 0,
+          }}
+        >
+          <TextField
+            label="Search"
+            search
+            value={searchValue}
+            onChange={onSearchChange}
+            fullWidth
+          />
+          <Button onClick={onExport}>{exportLabel}</Button>
+        </Stack>
+      </Stack>
+    </Paper>
   );
 }

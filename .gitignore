@@ -1,34 +1,39 @@
 import React from 'react';
-import { Box, Container } from '@mui/material';
-import Navbar from './components/Navbar';
-import Sidenav from './components/Sidenav';
-import Footer from './components/Footer';
+import { FormControl, InputLabel, Select, MenuItem, Checkbox, ListItemText } from '@mui/material';
 
-export default function PrimaryLayout({ children }) {
+export default function MultiSelect({
+  label,
+  value = [],
+  options = [],           // [{ value, label }]
+  onChange,
+  placeholder = 'Select…',
+  ...props
+}) {
+  const handle = (event) => onChange?.(event.target.value);
+
   return (
-    <Box sx={{ display: 'grid', gridTemplateRows: 'auto 1fr auto', minHeight: '100vh' }}>
-      <Navbar />
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: { md: '260px 1fr' }, // match your side nav width
-          gap: 2,
-          p: 2,
-          minWidth: 0, // prevent child overflow clipping
+    <FormControl size="small" fullWidth>
+      <InputLabel>{label}</InputLabel>
+      <Select
+        multiple
+        label={label}
+        value={value}
+        onChange={handle}
+        renderValue={(selected) => {
+          if (!selected.length) return placeholder;
+          const map = new Map(options.map(o => [o.value, o.label]));
+          return selected.map(v => map.get(v) ?? v).join(', ');
         }}
+        MenuProps={{ PaperProps: { style: { maxHeight: 360 } } }}
+        {...props}
       >
-        <Box sx={{ minWidth: 0 }}>
-          <Sidenav />
-        </Box>
-        <Container
-          // full width to avoid squeezing when sidenav is present
-          maxWidth={false}
-          sx={{ p: { xs: 0, md: 1 }, minWidth: 0 }}
-        >
-          {children}
-        </Container>
-      </Box>
-      <Footer />
-    </Box>
+        {options.map((opt) => (
+          <MenuItem key={opt.value} value={opt.value}>
+            <Checkbox checked={value.indexOf(opt.value) > -1} />
+            <ListItemText primary={opt.label} />
+          </MenuItem>
+        ))}
+      </Select>
+    </FormControl>
   );
 }

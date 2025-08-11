@@ -1,7 +1,133 @@
+import * as React from 'react';
+import { Autocomplete, TextField, Checkbox } from '@mui/material';
+
+export default function MultiSelectSearch({
+  label,
+  value = [],               // array of primitive values
+  options = [],             // [{ value, label }]
+  onChange,
+  placeholder = 'Select…',
+  disabled = false,
+  limitTags = 1,            // keep input compact
+  ...props
+}) {
+  // Map value (primitives) -> option objects for Autocomplete
+  const valueObjects = React.useMemo(() => {
+    const byValue = new Map(options.map(o => [o.value, o]));
+    return value.map(v => byValue.get(v)).filter(Boolean);
+  }, [value, options]);
+
+  const handleChange = (_, selectedOptions) => {
+    onChange?.(selectedOptions.map(o => o.value));
+  };
+
+  const renderTags = (selected, getTagProps) => {
+    if (!selected?.length) return null;
+    if (options?.length && selected.length === options.length) {
+      return <span {...getTagProps({ index: 0 })}>All</span>;
+    }
+    if (selected.length > 2) {
+      return <span {...getTagProps({ index: 0 })}>{selected.length} selected</span>;
+    }
+    return selected.map((opt, i) => (
+      <span key={opt.value} {...getTagProps({ index: i })}>{opt.label}</span>
+    ));
+  };
+
+  return (
+    <Autocomplete
+      multiple
+      disableCloseOnSelect
+      options={options}
+      value={valueObjects}
+      onChange={handleChange}
+      getOptionLabel={(o) => o?.label ?? ''}
+      isOptionEqualToValue={(o, v) => o.value === v.value}
+      renderOption={(props2, option, { selected }) => (
+        <li {...props2}>
+          <Checkbox checked={selected} sx={{ mr: 1 }} />
+          {option.label}
+        </li>
+      )}
+      renderTags={renderTags}
+      limitTags={limitTags}
+      filterSelectedOptions
+      disabled={disabled}
+      ListboxProps={{ style: { maxHeight: 360 } }}
+      renderInput={(params) => (
+        <TextField {...params} size="small" label={label} placeholder={placeholder} />
+      )}
+      {...props}
+    />
+  );
+}
+
+
+
+-----
+
+
+
+import api from '../../../lib/axiosClient';
+const toCsv = (arr) => (arr && arr.length ? arr.join(',') : null);
+
+/** Filters endpoint (controller expects these names) */
+export async function fetchAttributeFilterLookups({
+  orgIds,
+  functionIds,
+  categoryIds,
+  subcatIds,       // maps to SubcategoryIds
+  ownerNames,
+  custodianNames,
+}) {
+  const params = {
+    OrgIds:          toCsv(orgIds),
+    FunctionIds:     toCsv(functionIds),
+    CategoryIds:     toCsv(categoryIds),
+    SubcategoryIds:  toCsv(subcatIds),
+    OwnerNames:      toCsv(ownerNames),
+    CustodianNames:  toCsv(custodianNames),
+  };
+  const { data } = await api.get('/api/v1/CSFAttributeMap/filters', { params });
+  return data;
+}
+
+/** Feed endpoint (controller likely maps these to the SP) */
+export async function fetchAttributeFeed({
+  orgIds,
+  functionIds,
+  categoryIds,
+  subcatIds,       // maps to CSF2SubcatIds
+  ownerNames,
+  custodianNames,
+  maturity,
+  finalOnly,
+  search,
+}) {
+  const params = {
+    OrgIds:         toCsv(orgIds),
+    FunctionIds:    toCsv(functionIds),
+    CategoryIds:    toCsv(categoryIds),
+    CSF2SubcatIds:  toCsv(subcatIds),
+    OwnerNames:     toCsv(ownerNames),
+    CustodianNames: toCsv(custodianNames),
+    Maturity:       toCsv(maturity),
+    FinalOnly:      !!finalOnly,
+    SearchText:     search || null,
+  };
+  const { data } = await api.get('/api/v1/CSFAttributeMap/feed', { params });
+  return data;
+}
+
+
+
+---
+
+
 import React from 'react';
 import { Box } from '@mui/material';
 import { FilterBar } from '../../../../ui/patterns/FilterBar';
-import MultiSelect from '../../../../ui/core/MultiSelect';
+import MultiSelectSearch from '../../../../ui/core/MultiSelectSearch';
 import Switch from '../../../../ui/core/Switch';
 import { fetchAttributeFilterLookups } from '../../api/attributeApi';
 
@@ -10,20 +136,12 @@ const MATURITY_OPTIONS = [
   { value: 4, label: 'Level 4' },
 ];
 
-// shallow compare for arrays of primitives (order-insensitive)
-const sameSet = (a = [], b = []) => {
-  if (a.length !== b.length) return false;
-  const A = new Set(a);
-  for (const v of b) if (!A.has(v)) return false;
-  return true;
-};
-
 export default function AttributeFilterBar({ value, onChange, onExport }) {
   const [opts, setOpts] = React.useState({
     orgs: [], functions: [], categories: [], subcategories: [], owners: [], custodians: []
   });
 
-  // Load lookups for the current filter slice
+  // Load lookups for the current filter slice (server does cross-filtering)
   React.useEffect(() => {
     let ignore = false;
     (async () => {
@@ -37,90 +155,80 @@ export default function AttributeFilterBar({ value, onChange, onExport }) {
       });
       if (ignore) return;
 
-      // Map EXACT camelCase keys from your API
-      const mapped = {
+      setOpts({
+        // EXACT camelCase keys from your API:
         orgs:          (data.orgs || []).map(x => ({ value: x.orgID,            label: x.orgName })),
         functions:     (data.functions || []).map(x => ({ value: x.functionID,   label: x.functionName })),
         categories:    (data.categories || []).map(x => ({ value: x.categoryID,  label: x.categoryName })),
         subcategories: (data.subcategories || []).map(x => ({ value: x.csF2SubcategoryID, label: x.subcategoryName })),
         owners:        (data.owners || []).map(x => ({ value: x.fullName,        label: x.fullName })),
         custodians:    (data.custodians || []).map(x => ({ value: x.fullName,    label: x.fullName })),
-      };
-      setOpts(mapped);
-
-      // ---- PRUNE stale selections when upstream changes ----
-      const allow = {
-        orgIds:          new Set(mapped.orgs.map(o => o.value)),
-        functionIds:     new Set(mapped.functions.map(o => o.value)),
-        categoryIds:     new Set(mapped.categories.map(o => o.value)),
-        subcatIds:       new Set(mapped.subcategories.map(o => o.value)),
-        ownerNames:      new Set(mapped.owners.map(o => o.value)),
-        custodianNames:  new Set(mapped.custodians.map(o => o.value)),
-      };
-
-      const pruned = {
-        ...value,
-        orgIds:         value.orgIds.filter(v => allow.orgIds.has(v)),
-        functionIds:    value.functionIds.filter(v => allow.functionIds.has(v)),
-        categoryIds:    value.categoryIds.filter(v => allow.categoryIds.has(v)),
-        subcatIds:      value.subcatIds.filter(v => allow.subcatIds.has(v)),
-        ownerNames:     value.ownerNames.filter(v => allow.ownerNames.has(v)),
-        custodianNames: value.custodianNames.filter(v => allow.custodianNames.has(v)),
-      };
-
-      // Only push if anything actually changed (avoid loops)
-      if (
-        !sameSet(pruned.orgIds, value.orgIds) ||
-        !sameSet(pruned.functionIds, value.functionIds) ||
-        !sameSet(pruned.categoryIds, value.categoryIds) ||
-        !sameSet(pruned.subcatIds, value.subcatIds) ||
-        !sameSet(pruned.ownerNames, value.ownerNames) ||
-        !sameSet(pruned.custodianNames, value.custodianNames)
-      ) {
-        onChange(pruned);
-      }
+      });
     })();
     return () => { ignore = true; };
-  // Trigger when *selections* change (not on opts change to avoid loops)
-  }, [value.orgIds, value.functionIds, value.categoryIds, value.subcatIds, value.ownerNames, value.custodianNames]);
+  }, [
+    value.orgIds, value.functionIds, value.categoryIds,
+    value.subcatIds, value.ownerNames, value.custodianNames
+  ]);
 
-  // Auto-fit grid so filters breathe on tablets → monitors
+  // Responsive, non-cluttered layout (auto-fit columns)
   const filtersLayout = (
     <Box
       sx={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
         gap: 1.5,
         alignItems: 'center',
       }}
     >
-      <MultiSelect label="Organizations" value={value.orgIds}
+      <MultiSelectSearch
+        label="Organizations"
+        value={value.orgIds}
+        options={opts.orgs}
         onChange={(v) => onChange({ ...value, orgIds: v })}
-        options={opts.orgs} />
+      />
 
-      <MultiSelect label="Functions" value={value.functionIds}
+      <MultiSelectSearch
+        label="Functions"
+        value={value.functionIds}
+        options={opts.functions}
         onChange={(v) => onChange({ ...value, functionIds: v })}
-        options={opts.functions} />
+      />
 
-      <MultiSelect label="Categories" value={value.categoryIds}
+      <MultiSelectSearch
+        label="Categories"
+        value={value.categoryIds}
+        options={opts.categories}
         onChange={(v) => onChange({ ...value, categoryIds: v })}
-        options={opts.categories} />
+      />
 
-      <MultiSelect label="Subcategories" value={value.subcatIds}
+      <MultiSelectSearch
+        label="Subcategories"
+        value={value.subcatIds}
+        options={opts.subcategories}
         onChange={(v) => onChange({ ...value, subcatIds: v })}
-        options={opts.subcategories} />
+      />
 
-      <MultiSelect label="Owners" value={value.ownerNames}
+      <MultiSelectSearch
+        label="Owners"
+        value={value.ownerNames}
+        options={opts.owners}
         onChange={(v) => onChange({ ...value, ownerNames: v })}
-        options={opts.owners} />
+      />
 
-      <MultiSelect label="Custodians" value={value.custodianNames}
+      <MultiSelectSearch
+        label="Custodians"
+        value={value.custodianNames}
+        options={opts.custodians}
         onChange={(v) => onChange({ ...value, custodianNames: v })}
-        options={opts.custodians} />
+      />
 
-      <MultiSelect label="Maturity" value={value.maturity}
+      <MultiSelectSearch
+        label="Maturity"
+        value={value.maturity}
+        options={MATURITY_OPTIONS}
         onChange={(v) => onChange({ ...value, maturity: v })}
-        options={MATURITY_OPTIONS} />
+      />
 
       <Switch
         label="Final view (hide Removed)"
@@ -140,3 +248,27 @@ export default function AttributeFilterBar({ value, onChange, onExport }) {
     />
   );
 }
+
+
+
+-----
+
+
+import { fetchAttributeFeed } from '../api/attributeApi';
+import { exportCsv } from '../../../ui/data/csvExport';
+
+// ...
+const handleExport = async () => {
+  const data = await fetchAttributeFeed(filters); // just pass filters
+  const headers = data?.headers ?? [];
+  const cols = [
+    { header: 'Org', accessor: 'OrgName' },
+    { header: 'Function', accessor: 'FunctionName' },
+    { header: 'Category', accessor: 'CategoryName' },
+    { header: 'Subcategory', accessor: 'CSF2SubcategoryName' },
+    { header: 'Kept', accessor: 'KeptCount' },
+    { header: 'Removed', accessor: 'RemovedCount' },
+    { header: 'Custom', accessor: 'CustomCount' },
+  ];
+  exportCsv('attribute-headers.csv', cols, headers);
+};

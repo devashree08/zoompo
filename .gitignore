@@ -1,50 +1,60 @@
-import React from 'react';
-import { Paper, Stack, Box } from '@mui/material';
-import TextField from '../../core/TextField';
-import Button from '../../core/Button';
+// ...imports and fetch logic unchanged
 
-export default function FilterBar({
-  filtersLeft = null,         // a node: we'll pass a grid of selects from the page
-  searchValue,
-  onSearchChange,
-  onExport,
-  exportLabel = 'Export',
-}) {
+export default function AttributeFilterBar({ value, onChange, onExport }) {
+  // ...state + useEffect unchanged (using orgID, functionID, categoryID, csF2SubcategoryID, fullName)
+
+  const filtersLayout = (
+    <Box
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+        gap: 12 / 8,  // 1.5 spacing units
+        alignItems: 'center',
+      }}
+    >
+      <MultiSelect label="Organizations" value={value.orgIds}
+        onChange={(v) => onChange({ ...value, orgIds: v })}
+        options={opts.orgs} />
+
+      <MultiSelect label="Functions" value={value.functionIds}
+        onChange={(v) => onChange({ ...value, functionIds: v })}
+        options={opts.functions} />
+
+      <MultiSelect label="Categories" value={value.categoryIds}
+        onChange={(v) => onChange({ ...value, categoryIds: v })}
+        options={opts.categories} />
+
+      <MultiSelect label="Subcategories" value={value.subcatIds}
+        onChange={(v) => onChange({ ...value, subcatIds: v })}
+        options={opts.subcategories} />
+
+      <MultiSelect label="Owners" value={value.ownerNames}
+        onChange={(v) => onChange({ ...value, ownerNames: v })}
+        options={opts.owners} />
+
+      <MultiSelect label="Custodians" value={value.custodianNames}
+        onChange={(v) => onChange({ ...value, custodianNames: v })}
+        options={opts.custodians} />
+
+      <MultiSelect label="Maturity" value={value.maturity}
+        onChange={(v) => onChange({ ...value, maturity: v })}
+        options={[{ value: 3, label: 'Level 3' }, { value: 4, label: 'Level 4' }]} />
+
+      <Switch
+        label="Final view (hide Removed)"
+        checked={!!value.finalOnly}
+        onChange={(checked) => onChange({ ...value, finalOnly: checked })}
+      />
+    </Box>
+  );
+
   return (
-    <Paper sx={{ p: { xs: 1.25, md: 2 } }}>
-      <Stack
-        direction={{ xs: 'column', lg: 'row' }}
-        spacing={2}
-        alignItems={{ lg: 'center' }}
-        justifyContent="space-between"
-        sx={{ rowGap: 1 }}
-      >
-        {/* Filters area auto-wraps nicely from tablets to wide monitors */}
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          {filtersLeft}
-        </Box>
-
-        {/* Search + Export always visible, never clipped */}
-        <Stack
-          direction="row"
-          spacing={1}
-          alignItems="center"
-          sx={{
-            width: { xs: '100%', lg: 'auto' },
-            minWidth: { lg: 320 },
-            flexShrink: 0,
-          }}
-        >
-          <TextField
-            label="Search"
-            search
-            value={searchValue}
-            onChange={onSearchChange}
-            fullWidth
-          />
-          <Button onClick={onExport}>{exportLabel}</Button>
-        </Stack>
-      </Stack>
-    </Paper>
+    <FilterBar
+      filtersLeft={filtersLayout}
+      searchValue={value.search}
+      onSearchChange={(s) => onChange({ ...value, search: s })}
+      onExport={onExport}
+      exportLabel="Export"
+    />
   );
 }

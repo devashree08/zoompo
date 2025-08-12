@@ -1,45 +1,23 @@
 import * as React from 'react';
-import {
-  Box, Typography, Button, Dialog, DialogTitle, DialogContent, DialogActions
-} from '@mui/material';
+import { Box } from '@mui/material';
 
-export default function CollapsibleText({ title, text, lines = 6, initiallyCollapsed = true }) {
-  const [collapsed, setCollapsed] = React.useState(initiallyCollapsed);
-  const [openDlg, setOpenDlg] = React.useState(false);
+const COLORS = {
+  'GOVERN (GV)':   '#f9f49d',
+  'IDENTIFY (ID)': '#4bb2e0',
+  'PROTECT (PR)':  '#918cea',
+  'DETECT (DE)':   '#fab746',
+  'RESPOND (RS)':  '#e57676',
+  'RECOVER (RC)':  '#7df59f',
+};
 
-  if (!text) return <Typography variant="body2" color="text.secondary">—</Typography>;
-
+export default function FunctionBadge({ functionName }) {
+  const color = COLORS[functionName] || '#ccc';
   return (
-    <>
-      <Typography variant="overline" color="text.secondary">{title}</Typography>
-      <Box
-        sx={{
-          position: 'relative',
-          mt: .5,
-          ...(collapsed ? {
-            display: '-webkit-box',
-            WebkitLineClamp: lines,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden'
-          } : {})
-        }}
-      >
-        <Typography variant="body2" whiteSpace="pre-wrap">{text}</Typography>
-      </Box>
-      <Box sx={{ mt: .5, display: 'flex', gap: 1 }}>
-        <Button size="small" onClick={() => setCollapsed(c => !c)}>
-          {collapsed ? 'Show more' : 'Show less'}
-        </Button>
-        <Button size="small" onClick={() => setOpenDlg(true)}>Open in dialog</Button>
-      </Box>
-
-      <Dialog open={openDlg} onClose={() => setOpenDlg(false)} maxWidth="md" fullWidth>
-        <DialogTitle>{title}</DialogTitle>
-        <DialogContent dividers>
-          <Typography variant="body2" whiteSpace="pre-wrap">{text}</Typography>
-        </DialogContent>
-        <DialogActions><Button onClick={() => setOpenDlg(false)}>Close</Button></DialogActions>
-      </Dialog>
-    </>
+    <Box
+      sx={{
+        width: 10, height: 10, borderRadius: .5, bgcolor: color,
+        boxShadow: '0 2px 6px rgba(0,0,0,.15)', mr: 1
+      }}
+    />
   );
 }

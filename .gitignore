@@ -1,23 +1,86 @@
 import * as React from 'react';
-import { Box } from '@mui/material';
+import {
+  List, ListItemButton, ListItemText, Collapse, Chip, Stack, Typography
+} from '@mui/material';
+import { ExpandLess, ExpandMore } from '@mui/icons-material';
 
-const COLORS = {
-  'GOVERN (GV)':   '#f9f49d',
-  'IDENTIFY (ID)': '#4bb2e0',
-  'PROTECT (PR)':  '#918cea',
-  'DETECT (DE)':   '#fab746',
-  'RESPOND (RS)':  '#e57676',
-  'RECOVER (RC)':  '#7df59f',
-};
+function NodeRow({ node, level, selectedId, onSelect, renderAdornment, renderCounts }) {
+  const [open, setOpen] = React.useState(level < 1); // open functions by default
 
-export default function FunctionBadge({ functionName }) {
-  const color = COLORS[functionName] || '#ccc';
+  const hasChildren = !!node.children?.length;
+  const isLeaf = !hasChildren;
+  const selected = String(node.id) === String(selectedId);
+
+  const leftAdornment = renderAdornment ? renderAdornment(node, level) : null;
+  const rightAdornment = renderCounts && isLeaf ? renderCounts(node) : null;
+
+  const handleClick = () => {
+    if (isLeaf) onSelect?.(node.id);
+    else setOpen(o => !o);
+  };
+
   return (
-    <Box
-      sx={{
-        width: 10, height: 10, borderRadius: .5, bgcolor: color,
-        boxShadow: '0 2px 6px rgba(0,0,0,.15)', mr: 1
-      }}
-    />
+    <>
+      <ListItemButton
+        dense
+        selected={selected}
+        onClick={handleClick}
+        sx={{ pl: 1 + level * 2 }}
+      >
+        {leftAdornment}
+        <ListItemText
+          primary={
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant={level === 0 ? 'subtitle1' : level === 1 ? 'body1' : 'body2'}>
+                {node.label}
+              </Typography>
+              {rightAdornment}
+            </Stack>
+          }
+          secondary={node.sublabel}
+          secondaryTypographyProps={{ variant: 'caption', color: 'text.secondary' }}
+        />
+        {hasChildren ? (open ? <ExpandLess /> : <ExpandMore />) : null}
+      </ListItemButton>
+      {hasChildren && (
+        <Collapse in={open} unmountOnExit timeout="auto">
+          <List disablePadding>
+            {node.children.map((child) => (
+              <NodeRow
+                key={child.id}
+                node={child}
+                level={level + 1}
+                selectedId={selectedId}
+                onSelect={onSelect}
+                renderAdornment={renderAdornment}
+                renderCounts={renderCounts}
+              />
+            ))}
+          </List>
+        </Collapse>
+      )}
+    </>
   );
 }
+
+export default function TreeAccordion({
+  nodes = [], selectedId, onSelect,
+  renderAdornment, renderCounts
+}) {
+  return (
+    <List disablePadding>
+      {nodes.map((n) => (
+        <NodeRow
+          key={n.id}
+          node={n}
+          level={0}
+          selectedId={selectedId}
+          onSelect={onSelect}
+          renderAdornment={renderAdornment}
+          renderCounts={renderCounts}
+        />
+      ))}
+    </List>
+  );
+}
+

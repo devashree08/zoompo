@@ -1,68 +1,78 @@
 import * as React from 'react';
-import TreeAccordion from '../../../../ui/patterns/TreeAccordion';
+import { Card, CardContent, Typography, Box, Stack, Chip } from '@mui/material';
 import FunctionBadge from '../atoms/FunctionBadge';
 
 /**
- * headers: FeedHeaderDto[] (Result A of /feed)
- * onSelectSubcat(id), selectedSubcatID
+ * header: one selected header record (chosen subcategory)
+ * ownerCsv, custodianCsv: comma-separated names for chip display
  */
-export default function CsfTree({ headers = [], onSelectSubcat, selectedSubcatID }) {
-  // Build nodes: Function -> Category -> Subcategory
-  const nodes = React.useMemo(() => {
-    const funcMap = new Map();
-
-    headers.forEach(h => {
-      // Function
-      if (!funcMap.has(h.FunctionID)) {
-        funcMap.set(h.FunctionID, {
-          id: `F-${h.FunctionID}`,
-          label: h.FunctionName,
-          sublabel: h.FunctionLanguage || '',
-          children: new Map()
-        });
-      }
-      const f = funcMap.get(h.FunctionID);
-
-      // Category
-      if (!f.children.has(h.CategoryID)) {
-        f.children.set(h.CategoryID, {
-          id: `C-${h.CategoryID}`,
-          label: h.CategoryName,
-          sublabel: h.CategoryLanguage || '',
-          children: new Map()
-        });
-      }
-      const c = f.children.get(h.CategoryID);
-
-      // Subcategory (leaf)
-      if (!c.children.has(h.CSF2SubcategoryID)) {
-        c.children.set(h.CSF2SubcategoryID, {
-          id: h.CSF2SubcategoryID, // numeric leaf id -> used to fetch rows
-          label: h.CSF2SubcategoryName,
-          sublabel: h.CSF2SubcategoryLanguage || ''
-        });
-      }
-    });
-
-    return Array.from(funcMap.values()).map(f => ({
-      id: f.id,
-      label: f.label,
-      sublabel: f.sublabel,
-      children: Array.from(f.children.values()).map(c => ({
-        id: c.id,
-        label: c.label,
-        sublabel: c.sublabel,
-        children: Array.from(c.children.values())
-      }))
-    }));
-  }, [headers]);
+export default function HeaderInfoPanel({ header, ownerCsv, custodianCsv }) {
+  if (!header) return null;
 
   return (
-    <TreeAccordion
-      nodes={nodes}
-      selectedId={selectedSubcatID}
-      onSelect={onSelectSubcat}
-      renderAdornment={(node, level) => level === 0 ? <FunctionBadge functionName={node.label} /> : null}
-    />
+    <Card variant="outlined" sx={{ mb: 2 }}>
+      <CardContent>
+        <Stack spacing={1.25}>
+          <Box>
+            <Box sx={{ display: 'flex', alignItems: 'center' }}>
+              <FunctionBadge functionName={header.FunctionName} size={18} />
+              <Typography variant="h6" sx={{ ml: .5 }}>{header.FunctionName}</Typography>
+            </Box>
+            {header.FunctionLanguage && (
+              <Typography variant="body2" color="text.secondary">
+                {header.FunctionLanguage}
+              </Typography>
+            )}
+          </Box>
+
+          <Box>
+            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+              {header.CategoryName}
+            </Typography>
+            {header.CategoryLanguage && (
+              <Typography variant="body2" color="text.secondary">
+                {header.CategoryLanguage}
+              </Typography>
+            )}
+          </Box>
+
+          <Box>
+            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+              {header.CSF2SubcategoryName}
+            </Typography>
+            {header.CSF2SubcategoryLanguage && (
+              <Typography variant="body2" color="text.secondary">
+                {header.CSF2SubcategoryLanguage}
+              </Typography>
+            )}
+          </Box>
+
+          {header.ChangeSummary && (
+            <Box>
+              <Typography variant="overline" color="text.secondary">Change Summary</Typography>
+              <Typography variant="body2">{header.ChangeSummary}</Typography>
+            </Box>
+          )}
+
+          {header.ImplementationExamples && (
+            <Box>
+              <Typography variant="overline" color="text.secondary">Implementation Examples</Typography>
+              <Typography variant="body2">{header.ImplementationExamples}</Typography>
+            </Box>
+          )}
+
+          {(ownerCsv || custodianCsv) && (
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ pt: .5 }}>
+              {ownerCsv?.split(',').filter(Boolean).map(n => (
+                <Chip key={`owner-${n}`} label={`Owner: ${n}`} size="small" />
+              ))}
+              {custodianCsv?.split(',').filter(Boolean).map(n => (
+                <Chip key={`cust-${n}`} label={`Custodian: ${n}`} size="small" variant="outlined" />
+              ))}
+            </Stack>
+          )}
+        </Stack>
+      </CardContent>
+    </Card>
   );
 }

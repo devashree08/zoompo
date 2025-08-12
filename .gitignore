@@ -1,16 +1,24 @@
-// Map by Function CODE (GV, ID, PR, DE, RS, RC)
-export const FUNCTION_COLORS = {
-  GV: { bg: '#f9f49d', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // GOVERN
-  ID: { bg: '#4bb2e0', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // IDENTITY
-  PR: { bg: '#918cea', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // PROTECT
-  DE: { bg: '#fab746', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // DETECT
-  RS: { bg: '#e57676', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // RESPOND
-  RC: { bg: '#7df59f', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // RECOVER
-};
+import * as React from 'react';
+import { Box } from '@mui/material';
+import { FUNCTION_COLORS, getFunctionCode } from '../../utils/csf2';
 
-// Try to extract "(XX)" code from "GOVERN (GV)" etc.
-export const getFunctionCode = (functionName) => {
-  if (!functionName) return null;
-  const m = functionName.match(/\(([A-Z]{2})\)/);
-  return m ? m[1] : null;
-};
+export default function FunctionBadge({ functionName, size = 16 }) {
+  const code = getFunctionCode(functionName);
+  const color = code && FUNCTION_COLORS[code] ? FUNCTION_COLORS[code] : { bg: '#E0E0E0', shadow: '0px 4px 10px rgba(0,0,0,0.1)' };
+
+  return (
+    <Box
+      component="span"
+      sx={{
+        display: 'inline-block',
+        width: size,
+        height: size,
+        borderRadius: '4px',
+        backgroundColor: color.bg,
+        boxShadow: color.shadow,
+        mr: 1,
+        verticalAlign: 'middle',
+      }}
+    />
+  );
+}

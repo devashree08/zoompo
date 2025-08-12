@@ -1,113 +1,16 @@
-// src/features/attributeMapping/components/molecules/AttributeFilterBar.jsx
-import React from 'react';
-import { Box } from '@mui/material';
-import { FilterBar } from '../../../../ui/patterns/FilterBar';
-import MultiSelectSearch from '../../../../ui/core/MultiSelectSearch';
-import Switch from '../../../../ui/core/Switch';
-import { fetchAttributeFilterLookups } from '../../api/attributeApi';
-import { ensureSelected, MATURITY_OPTIONS } from '../../utils/filters';
+// Map by Function CODE (GV, ID, PR, DE, RS, RC)
+export const FUNCTION_COLORS = {
+  GV: { bg: '#f9f49d', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // GOVERN
+  ID: { bg: '#4bb2e0', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // IDENTITY
+  PR: { bg: '#918cea', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // PROTECT
+  DE: { bg: '#fab746', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // DETECT
+  RS: { bg: '#e57676', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // RESPOND
+  RC: { bg: '#7df59f', shadow: '0px 4px 10px rgba(0,0,0,0.15)' },  // RECOVER
+};
 
-export default function AttributeFilterBar({ value, onChange, onExport }) {
-  const [opts, setOpts] = React.useState({
-    orgs: [], functions: [], categories: [], subcategories: [], owners: [], custodians: []
-  });
-
-  // Load cross-filtered lookups (server handles cross-filter logic)
-  React.useEffect(() => {
-    let ignore = false;
-    (async () => {
-      const data = await fetchAttributeFilterLookups({
-        orgIds: value.orgIds,
-        functionIds: value.functionIds,
-        categoryIds: value.categoryIds,
-        subcatIds: value.subcatIds,
-        ownerNames: value.ownerNames,
-        custodianNames: value.custodianNames,
-      });
-      if (ignore) return;
-
-      // Map EXACT keys your API returns
-      setOpts({
-        orgs:          (data.orgs || []).map(x => ({ value: x.orgID,            label: x.orgName })),
-        functions:     (data.functions || []).map(x => ({ value: x.functionID,   label: x.functionName })),
-        categories:    (data.categories || []).map(x => ({ value: x.categoryID,  label: x.categoryName })),
-        subcategories: (data.subcategories || []).map(x => ({ value: x.csF2SubcategoryID, label: x.subcategoryName })),
-        owners:        (data.owners || []).map(x => ({ value: x.fullName,        label: x.fullName })),
-        custodians:    (data.custodians || []).map(x => ({ value: x.fullName,    label: x.fullName })),
-      });
-    })();
-    return () => { ignore = true; };
-  }, [
-    value.orgIds, value.functionIds, value.categoryIds,
-    value.subcatIds, value.ownerNames, value.custodianNames
-  ]);
-
-  const filtersLayout = (
-    <Box
-      sx={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-        gap: 1.5,
-        alignItems: 'center',
-      }}
-    >
-      <MultiSelectSearch
-        label="Organizations"
-        value={value.orgIds}
-        options={ensureSelected(opts.orgs, value.orgIds)}
-        onChange={(v) => onChange({ ...value, orgIds: v })}
-      />
-      <MultiSelectSearch
-        label="Functions"
-        value={value.functionIds}
-        options={ensureSelected(opts.functions, value.functionIds)}
-        onChange={(v) => onChange({ ...value, functionIds: v })}
-      />
-      <MultiSelectSearch
-        label="Categories"
-        value={value.categoryIds}
-        options={ensureSelected(opts.categories, value.categoryIds)}
-        onChange={(v) => onChange({ ...value, categoryIds: v })}
-      />
-      <MultiSelectSearch
-        label="Subcategories"
-        value={value.subcatIds}
-        options={ensureSelected(opts.subcategories, value.subcatIds)}
-        onChange={(v) => onChange({ ...value, subcatIds: v })}
-      />
-      <MultiSelectSearch
-        label="Owners"
-        value={value.ownerNames}
-        options={ensureSelected(opts.owners, value.ownerNames)}
-        onChange={(v) => onChange({ ...value, ownerNames: v })}
-      />
-      <MultiSelectSearch
-        label="Custodians"
-        value={value.custodianNames}
-        options={ensureSelected(opts.custodians, value.custodianNames)}
-        onChange={(v) => onChange({ ...value, custodianNames: v })}
-      />
-      <MultiSelectSearch
-        label="Maturity"
-        value={value.maturity}
-        options={ensureSelected(MATURITY_OPTIONS, value.maturity)}
-        onChange={(v) => onChange({ ...value, maturity: v })}
-      />
-      <Switch
-        label="Final view (hide Removed)"
-        checked={!!value.finalOnly}
-        onChange={(checked) => onChange({ ...value, finalOnly: checked })}
-      />
-    </Box>
-  );
-
-  return (
-    <FilterBar
-      filtersLeft={filtersLayout}
-      searchValue={value.search}
-      onSearchChange={(s) => onChange({ ...value, search: s })}
-      onExport={onExport}
-      exportLabel="Export"
-    />
-  );
-}
+// Try to extract "(XX)" code from "GOVERN (GV)" etc.
+export const getFunctionCode = (functionName) => {
+  if (!functionName) return null;
+  const m = functionName.match(/\(([A-Z]{2})\)/);
+  return m ? m[1] : null;
+};

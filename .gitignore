@@ -1,10 +1,92 @@
 import * as React from 'react';
-import { Backdrop, CircularProgress } from '@mui/material';
+import {
+  Accordion, AccordionSummary, AccordionDetails,
+  Typography, List, ListItemButton, ListItemText, Box
+} from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 
-export default function BusyOverlay({ open }) {
+/**
+ * Props:
+ * - nodes: [{ id, label, sublabel?, children?: Node[] }]
+ * - selectedId
+ * - onSelect(id)
+ * - renderAdornment?: (node, level) => ReactNode
+ * - dense?: boolean
+ * - defaultExpandedIds?: Set<string|number>
+ */
+export default function TreeAccordion({
+  nodes = [],
+  selectedId = null,
+  onSelect,
+  renderAdornment,
+  dense = true,
+  defaultExpandedIds
+}) {
+  const [expanded, setExpanded] = React.useState(() => defaultExpandedIds ? new Set(defaultExpandedIds) : new Set());
+
+  const toggle = (id) => setExpanded(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  const renderNode = (node, level) => {
+    const hasChildren = !!(node.children && node.children.length);
+    const isExpanded = expanded.has(node.id);
+
+    if (hasChildren) {
+      return (
+        <Accordion
+          key={node.id}
+          disableGutters
+          expanded={isExpanded}
+          onChange={() => toggle(node.id)}
+          sx={{ borderTop: level === 0 ? '1px solid' : 'none', borderColor: level === 0 ? 'divider' : 'transparent', ml: level === 0 ? 0 : 2 }}
+        >
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                {renderAdornment ? renderAdornment(node, level) : null}
+                <Typography variant={level === 0 ? 'subtitle1' : 'subtitle2'} sx={{ fontWeight: 600 }}>
+                  {node.label}
+                </Typography>
+              </Box>
+              {node.sublabel ? (
+                <Typography variant="caption" color="text.secondary" sx={{ mt: .25 }}>
+                  {node.sublabel}
+                </Typography>
+              ) : null}
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails sx={{ p: 0 }}>
+            <Box sx={{ width: '100%' }}>
+              {node.children.map(child => renderNode(child, level + 1))}
+            </Box>
+          </AccordionDetails>
+        </Accordion>
+      );
+    }
+
+    const selected = node.id === selectedId;
+    return (
+      <List dense={dense} disablePadding key={node.id} sx={{ ml: level === 0 ? 2 : 4 }}>
+        <ListItemButton
+          selected={selected}
+          onClick={() => onSelect?.(node.id)}
+          sx={{ py: dense ? .75 : 1, borderTop: '1px dashed', borderColor: 'divider' }}
+        >
+          <ListItemText
+            primary={<Typography variant="body2" sx={{ fontWeight: selected ? 700 : 500 }}>{node.label}</Typography>}
+            secondary={node.sublabel ? <Typography variant="caption" color="text.secondary">{node.sublabel}</Typography> : null}
+          />
+        </ListItemButton>
+      </List>
+    );
+  };
+
   return (
-    <Backdrop open={!!open} sx={{ zIndex: (t) => t.zIndex.drawer + 10 }}>
-      <CircularProgress />
-    </Backdrop>
+    <Box sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
+      {nodes.map(n => renderNode(n, 0))}
+    </Box>
   );
 }

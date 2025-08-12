@@ -7,22 +7,12 @@ import {
 import { ExpandMore, ExpandLess } from '@mui/icons-material';
 import FunctionBadge from '../atoms/FunctionBadge';
 
-/* function color swatch (same palette we’ve been using) */
-const funcColor = (name='') => {
-  if (name.includes('(GV)')) return '#f9f49d';
-  if (name.includes('(ID)')) return '#4bb2e0';
-  if (name.includes('(PR)')) return '#918cea';
-  if (name.includes('(DE)')) return '#fab746';
-  if (name.includes('(RS)')) return '#e57676';
-  if (name.includes('(RC)')) return '#7df59f';
-  return '#cfd8dc';
-};
-
 /**
  * Left navigation tree for CSF 2.0
- * - Browse mode (selectedSubcatID == null): show rich headers with languages
- * - Compact mode   (selectedSubcatID != null): focus on the selected subcat; Function/Category compact (names only),
- *   Subcategory shows name + language. Only the owning Function & Category are opened.
+ * - Browse mode (no subcat selected): show labeled sections like the screenshot:
+ *   CATEGORY (name + language), then SUBCATEGORY (name + language)
+ * - Compact mode (subcat selected): focus on chosen subcat; Function/Category show names only,
+ *   Subcategory still shows name + language. Only the owning Function/Category are opened.
  */
 export default function CsfTree({
   headers = [],
@@ -30,9 +20,9 @@ export default function CsfTree({
   selectedSubcatID = null,
   maxHeight = 'calc(100vh - 200px)',
 }) {
-  const compactMode = !!selectedSubcatID; // collapse view when a subcat has been chosen
+  const compactMode = !!selectedSubcatID;
 
-  /* -------- aggregate counts per subcategory -------- */
+  /* counts per subcategory */
   const countsBySub = React.useMemo(() => {
     const m = new Map();
     headers.forEach(h => {
@@ -46,7 +36,7 @@ export default function CsfTree({
     return m;
   }, [headers]);
 
-  /* -------- build Function -> Category -> Subcategory tree -------- */
+  /* build Function -> Category -> Subcategory tree */
   const tree = React.useMemo(() => {
     const fM = new Map();
     headers.forEach(h => {
@@ -74,14 +64,13 @@ export default function CsfTree({
       }
     });
 
-    // flatten maps into arrays
     return Array.from(fM.values()).map(f => ({
       ...f,
       cats: Array.from(f.cats.values()).map(c => ({ ...c, subs: Array.from(c.subs.values()) }))
     }));
   }, [headers, countsBySub]);
 
-  /* -------- locate the owning Function/Category for the selected subcat -------- */
+  /* find owner function/category of selected subcat */
   const ownerIds = React.useMemo(() => {
     if (!selectedSubcatID) return { funcId: null, catId: null };
     for (const f of tree) {
@@ -93,11 +82,11 @@ export default function CsfTree({
     return { funcId: null, catId: null };
   }, [tree, selectedSubcatID]);
 
-  /* -------- expand/collapse state (multiple functions/categories can be open) -------- */
+  /* expand state */
   const [openFuncs, setOpenFuncs] = React.useState(new Set());
   const [openCats, setOpenCats]   = React.useState(new Set());
 
-  // When a subcat is selected, focus: open only its owner Function & Category.
+  // focus the selected subcat: open only its function & category
   React.useEffect(() => {
     if (!compactMode || !ownerIds.funcId) return;
     setOpenFuncs(new Set([ownerIds.funcId]));
@@ -107,45 +96,48 @@ export default function CsfTree({
   const toggleFunc = (fid) => {
     setOpenFuncs(prev => {
       const n = new Set(prev);
-      if (n.has(fid)) n.delete(fid); else n.add(fid);
+      n.has(fid) ? n.delete(fid) : n.add(fid);
       return n;
     });
   };
-
   const toggleCat = (fid, cid) => {
     const key = `${fid}:${cid}`;
     setOpenCats(prev => {
       const n = new Set(prev);
-      if (n.has(key)) n.delete(key); else n.add(key);
+      n.has(key) ? n.delete(key) : n.add(key);
       return n;
     });
   };
 
-  /* -------- render -------- */
+  const SectionTitle = ({ children }) => (
+    <Typography variant="overline" sx={{ color: 'text.primary', fontWeight: 800, letterSpacing: .6 }}>
+      {children}
+    </Typography>
+  );
+
   return (
     <Box sx={{ maxHeight, overflow: 'auto' }}>
       {tree.map((f) => {
         const fOpen = openFuncs.has(f.id);
         return (
           <Paper key={f.id} variant="outlined" sx={{ mb: 2, borderRadius: 2 }}>
-            {/* Function header */}
+            {/* FUNCTION header (name; language only in browse mode) */}
             <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 1.25 }}>
               <Stack direction="row" spacing={1.25} alignItems="center">
-                <Box sx={{ width:10, height:10, borderRadius: '3px', bgcolor: funcColor(f.name) }} />
                 <FunctionBadge functionName={f.name} />
-                <Typography variant="subtitle1" fontWeight={700}>{f.name}</Typography>
+                <Typography variant="subtitle1" fontWeight={800}>{f.name}</Typography>
               </Stack>
               <IconButton size="small" onClick={() => toggleFunc(f.id)}>
                 {fOpen ? <ExpandLess/> : <ExpandMore/>}
               </IconButton>
             </Stack>
+            {!compactMode && f.desc && (
+              <Typography variant="caption" color="text.secondary" sx={{ px: 1.5, pb: 1 }}>
+                {f.desc}
+              </Typography>
+            )}
 
             <Collapse in={fOpen} unmountOnExit>
-              {!compactMode && f.desc && (
-                <Typography variant="caption" color="text.secondary" sx={{ px: 1.5, pb: 1 }}>
-                  {f.desc}
-                </Typography>
-              )}
               <Divider />
               <Box sx={{ p: 1.25, pt: 1 }}>
                 {f.cats.map((c) => {
@@ -153,10 +145,11 @@ export default function CsfTree({
                   const cOpen = openCats.has(key);
                   return (
                     <Paper key={c.id} variant="outlined" sx={{ mb: 1.25, borderRadius: 2, bgcolor: 'background.default' }}>
-                      {/* Category header: always show name; show language only in browse mode */}
+                      {/* CATEGORY block */}
                       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 1 }}>
-                        <Box>
-                          <Typography variant="body1" fontWeight={700}>{c.name}</Typography>
+                        <Box sx={{ pr: 1 }}>
+                          <SectionTitle>CATEGORY</SectionTitle>
+                          <Typography variant="body1" fontWeight={800}>{c.name}</Typography>
                           {!compactMode && c.desc ? (
                             <Typography variant="caption" color="text.secondary">{c.desc}</Typography>
                           ) : null}
@@ -171,25 +164,34 @@ export default function CsfTree({
                         <List dense disablePadding sx={{ py: .5 }}>
                           {c.subs.map(s => {
                             const selected = String(s.id) === String(selectedSubcatID);
+                            const chips = (
+                              <Stack direction="row" spacing={1} sx={{ ml: 1 }}>
+                                <Chip size="small" label={`${s.counts.kept} Kept`}    sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }}/>
+                                <Chip size="small" label={`${s.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }}/>
+                                <Chip size="small" label={`${s.counts.custom} Custom`}  sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }}/>
+                              </Stack>
+                            );
                             return (
                               <ListItemButton
                                 key={s.id}
                                 onClick={() => onSelectSubcat?.(s.id)}
                                 selected={selected}
-                                sx={{ px: 1.25, py: .75, borderRadius: 1, mb: .25 }}
+                                sx={{ px: 1.25, py: 1, borderRadius: 1, mb: .5 }}
                               >
                                 <ListItemText
                                   primary={
-                                    <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
-                                      <Typography variant="body2" fontWeight={700}>{s.name}</Typography>
-                                      <Chip size="small" label={`${s.counts.kept} Kept`}    sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }}/>
-                                      <Chip size="small" label={`${s.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }}/>
-                                      <Chip size="small" label={`${s.counts.custom} Custom`}  sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }}/>
+                                    <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+                                      <Box sx={{ pr: 2, flex: 1, minWidth: 0 }}>
+                                        <SectionTitle>SUBCATEGORY</SectionTitle>
+                                        <Typography variant="body2" fontWeight={800} noWrap>{s.name}</Typography>
+                                        {/* Always show subcategory language */}
+                                        <Typography variant="caption" color="text.secondary" sx={{ display:'block' }}>
+                                          {s.desc}
+                                        </Typography>
+                                      </Box>
+                                      {chips}
                                     </Stack>
                                   }
-                                  // Always show subcategory language (both modes)
-                                  secondary={s.desc}
-                                  secondaryTypographyProps={{ variant:'caption', color:'text.secondary' }}
                                 />
                               </ListItemButton>
                             );

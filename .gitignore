@@ -1,149 +1,128 @@
 import * as React from 'react';
 import {
-  Box, Paper, Stack, Typography, IconButton, Collapse, Divider, Chip, List, ListItemButton, ListItemText
+  Box, Grid, Card, CardContent, Typography, Stack, Chip, Button, Collapse,
+  Dialog, DialogTitle, DialogContent
 } from '@mui/material';
-import { ExpandMore, ExpandLess } from '@mui/icons-material';
 import FunctionBadge from '../atoms/FunctionBadge';
+import AssociatedCsf11Panel from './AssociatedCsf11Panel';
 
-const funcColor = (name='') => {
-  if (name.includes('(GV)')) return '#f9f49d';
-  if (name.includes('(ID)')) return '#4bb2e0';
-  if (name.includes('(PR)')) return '#918cea';
-  if (name.includes '(DE)') return '#fab746';
-  if (name.includes('(RS)')) return '#e57676';
-  if (name.includes('(RC)')) return '#7df59f';
-  return '#cfd8dc';
-};
+function LongTextDialog({ open, title, text, onClose }) {
+  const openNew = () => {
+    const w = window.open('', '_blank');
+    if (w) {
+      w.document.write(`<pre style="white-space:pre-wrap;font-family:system-ui,Segoe UI,Arial;padding:16px">${(text||'').replaceAll('<','&lt;')}</pre>`);
+      w.document.close();
+    }
+  };
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+      <DialogTitle>{title} <Button onClick={openNew} size="small" sx={{ ml: 1 }}>Open in new window</Button></DialogTitle>
+      <DialogContent dividers><Typography whiteSpace="pre-wrap">{text || '—'}</Typography></DialogContent>
+    </Dialog>
+  );
+}
 
-export default function CsfTree({ headers=[], onSelectSubcat, selectedSubcatID, maxHeight }) {
-  // aggregate counts per subcat
-  const countsBySub = React.useMemo(() => {
-    const m = new Map();
-    headers.forEach(h => {
-      const id = h.csF2SubcategoryID;
-      const acc = m.get(id) || { kept:0, removed:0, custom:0 };
-      acc.kept    += Number(h.keptCount    || 0);
-      acc.removed += Number(h.removedCount || 0);
-      acc.custom  += Number(h.customCount  || 0);
-      m.set(id, acc);
-    });
-    return m;
-  }, [headers]);
+export default function RightHeaderComposite({ header, associatedRows=[], ownerCsv='', custodianCsv='' }) {
+  const [open, setOpen] = React.useState(true);
+  const [showChange, setShowChange] = React.useState(false);
+  const [showImpl, setShowImpl] = React.useState(false);
 
-  // build Function -> Category -> Subcategory tree
-  const tree = React.useMemo(() => {
-    const fM = new Map();
-    headers.forEach(h => {
-      if (!fM.has(h.functionID)) {
-        fM.set(h.functionID, { id:h.functionID, name:h.functionName, desc:h.functionLanguage||'', cats:new Map() });
-      }
-      const f = fM.get(h.functionID);
+  const owners = (ownerCsv||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const custodians = (custodianCsv||'').split(',').map(s=>s.trim()).filter(Boolean);
 
-      if (!f.cats.has(h.categoryID)) {
-        f.cats.set(h.categoryID, { id:h.categoryID, name:h.categoryName, desc:h.categoryLanguage||'', subs:new Map() });
-      }
-      const c = f.cats.get(h.categoryID);
-
-      if (!c.subs.has(h.csF2SubcategoryID)) {
-        c.subs.set(h.csF2SubcategoryID, {
-          id:h.csF2SubcategoryID,
-          name:h.csF2SubcategoryName,
-          desc:h.csF2SubcategoryLanguage||'',
-          counts: countsBySub.get(h.csF2SubcategoryID) || { kept:0, removed:0, custom:0 }
-        });
-      }
-    });
-
-    return Array.from(fM.values()).map(f => ({
-      ...f,
-      cats: Array.from(f.cats.values()).map(c => ({ ...c, subs: Array.from(c.subs.values()) }))
-    }));
-  }, [headers, countsBySub]);
-
-  // expand state: one function open at a time by default
-  const [openFunc, setOpenFunc] = React.useState(null);
-  const [openCats, setOpenCats] = React.useState(new Set());
-  React.useEffect(() => {
-    if (openFunc == null && tree.length) setOpenFunc(tree[0].id);
-  }, [tree, openFunc]);
+  const short = (txt, n=6) => {
+    if (!txt) return '—';
+    const lines = txt.split(/\r?\n/);
+    return lines.length <= n ? txt : lines.slice(0,n).join('\n') + '\n…';
+  };
 
   return (
-    <Box sx={{ maxHeight: maxHeight || 'calc(100vh - 200px)', overflow: 'auto' }}>
-      {tree.map((f, fi) => {
-        const isOpen = openFunc === f.id;
-        return (
-          <Paper key={f.id} variant="outlined" sx={{ mb: 2, borderRadius: 2 }}>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 1.25 }}>
-              <Stack direction="row" spacing={1.25} alignItems="center">
-                <Box sx={{ width:10, height:10, borderRadius: '3px', bgcolor: funcColor(f.name) }} />
-                <FunctionBadge functionName={f.name} />
-                <Box>
-                  <Typography variant="subtitle1" fontWeight={700}>{f.name}</Typography>
-                  {f.desc ? <Typography variant="caption" color="text.secondary">{f.desc}</Typography> : null}
-                </Box>
-              </Stack>
-              <IconButton size="small" onClick={() => setOpenFunc(isOpen ? null : f.id)}>
-                {isOpen ? <ExpandLess/> : <ExpandMore/>}
-              </IconButton>
-            </Stack>
+    <Box sx={{ mb: 2 }}>
+      <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
+        <Button size="small" onClick={() => setOpen(o=>!o)}>{open ? 'Hide header' : 'Show header'}</Button>
+      </Stack>
 
-            <Collapse in={isOpen} unmountOnExit>
-              <Divider />
-              <Box sx={{ p: 1.25, pt: 1 }}>
-                {f.cats.map((c, ci) => {
-                  const key = `${f.id}:${c.id}`;
-                  const cOpen = openCats.has(key);
-                  const toggleCat = () => setOpenCats(s => {
-                    const n=new Set(s); n.has(key)?n.delete(key):n.add(key); return n;
-                  });
+      <Collapse in={open} timeout="auto" unmountOnExit>
+        <Grid container spacing={2}>
+          {/* LEFT: three cards */}
+          <Grid item xs={12} md={8}>
+            <Grid container spacing={2}>
+              {/* Function */}
+              <Grid item xs={12} md={4}>
+                <Card variant="outlined" sx={{ height: '100%' }}>
+                  <CardContent>
+                    <Typography variant="overline" color="text.secondary">Function</Typography>
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                      <FunctionBadge functionName={header.functionName} />
+                      <Typography variant="h6" fontWeight={800}>{header.functionName}</Typography>
+                    </Stack>
+                    <Typography variant="body2" color="text.secondary">{header.functionLanguage}</Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
 
-                  return (
-                    <Paper key={c.id} variant="outlined" sx={{ mb: 1.25, borderRadius: 2, bgcolor: 'background.default' }}>
-                      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 1 }}>
-                        <Box>
-                          <Typography variant="body1" fontWeight={700}>{c.name}</Typography>
-                          {c.desc ? <Typography variant="caption" color="text.secondary">{c.desc}</Typography> : null}
-                        </Box>
-                        <IconButton size="small" onClick={toggleCat}>{cOpen ? <ExpandLess/> : <ExpandMore/>}</IconButton>
-                      </Stack>
+              {/* Category */}
+              <Grid item xs={12} md={4}>
+                <Card variant="outlined" sx={{ height: '100%' }}>
+                  <CardContent>
+                    <Typography variant="overline" color="text.secondary">Category</Typography>
+                    <Typography variant="h6" fontWeight={800}>{header.categoryName}</Typography>
+                    <Typography variant="body2" color="text.secondary">{header.categoryLanguage}</Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
 
-                      <Collapse in={cOpen} unmountOnExit>
-                        <Divider />
-                        <List dense disablePadding sx={{ py: .5 }}>
-                          {c.subs.map(s => {
-                            const selected = String(s.id) === String(selectedSubcatID);
-                            return (
-                              <ListItemButton
-                                key={s.id}
-                                onClick={() => onSelectSubcat?.(s.id)}
-                                selected={selected}
-                                sx={{ px: 1.25, py: .75, borderRadius: 1, mb: .25 }}
-                              >
-                                <ListItemText
-                                  primary={
-                                    <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
-                                      <Typography variant="body2" fontWeight={700}>{s.name}</Typography>
-                                      <Chip size="small" label={`${s.counts.kept} Kept`}    sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }}/>
-                                      <Chip size="small" label={`${s.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }}/>
-                                      <Chip size="small" label={`${s.counts.custom} Custom`}  sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }}/>
-                                    </Stack>
-                                  }
-                                  secondary={s.desc}
-                                  secondaryTypographyProps={{ variant:'caption', color:'text.secondary' }}
-                                />
-                              </ListItemButton>
-                            );
-                          })}
-                        </List>
-                      </Collapse>
-                    </Paper>
-                  );
-                })}
-              </Box>
-            </Collapse>
-          </Paper>
-        );
-      })}
+              {/* CSF 2.0 Subcategory */}
+              <Grid item xs={12} md={4}>
+                <Card variant="outlined" sx={{ height: '100%' }}>
+                  <CardContent>
+                    <Typography variant="overline" color="text.secondary">CSF 2.0 Subcategory</Typography>
+                    <Typography variant="h6" fontWeight={800}>{header.csF2SubcategoryName}</Typography>
+                    <Typography variant="body2" color="text.secondary">{header.csF2SubcategoryLanguage}</Typography>
+
+                    <Typography variant="overline" color="text.secondary" sx={{ mt: 1.5, display:'block' }}>Owner / Custodian</Typography>
+                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                      {owners.map(n => <Chip key={`own-${n}`} size="small" label={`Owner: ${n}`} />)}
+                      {custodians.map(n => <Chip key={`cus-${n}`} size="small" label={`Custodian: ${n}`} />)}
+                      {!owners.length && !custodians.length && (
+                        <Typography variant="body2" color="text.secondary">—</Typography>
+                      )}
+                    </Stack>
+                  </CardContent>
+                </Card>
+              </Grid>
+
+              {/* Long texts as two wide cards */}
+              <Grid item xs={12} md={6}>
+                <Card variant="outlined">
+                  <CardContent>
+                    <Typography variant="overline" color="text.secondary">Change Summary</Typography>
+                    <Typography whiteSpace="pre-wrap" sx={{ mb: 1 }}>{short(header.changeSummary)}</Typography>
+                    <Button size="small" onClick={() => setShowChange(true)}>Show more</Button>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Card variant="outlined">
+                  <CardContent>
+                    <Typography variant="overline" color="text.secondary">Implementation Examples</Typography>
+                    <Typography whiteSpace="pre-wrap" sx={{ mb: 1 }}>{short(header.implementationExamples)}</Typography>
+                    <Button size="small" onClick={() => setShowImpl(true)}>Show more</Button>
+                  </CardContent>
+                </Card>
+              </Grid>
+            </Grid>
+          </Grid>
+
+          {/* RIGHT: Associated 1.1 list */}
+          <Grid item xs={12} md={4}>
+            <AssociatedCsf11Panel rows={associatedRows} />
+          </Grid>
+        </Grid>
+      </Collapse>
+
+      <LongTextDialog open={showChange} title="Change Summary" text={header.changeSummary} onClose={() => setShowChange(false)} />
+      <LongTextDialog open={showImpl}   title="Implementation Examples" text={header.implementationExamples} onClose={() => setShowImpl(false)} />
     </Box>
   );
 }

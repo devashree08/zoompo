@@ -1,199 +1,69 @@
-// src/features/attributeMapping/components/organisms/RightHeaderComposite.jsx
+// src/features/attributeMapping/components/atoms/ExpandableText.jsx
 import * as React from 'react';
-import {
-  Box, Paper, Typography, Chip, Button, IconButton,
-  Stack, Divider
-} from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import ExpandLessIcon  from '@mui/icons-material/ExpandLess';
-import OpenInNewIcon   from '@mui/icons-material/OpenInNew';
+import { Box, Typography, Stack, Button } from '@mui/material';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 
-const Card = ({ title, children, sx }) => (
-  <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, ...sx }}>
-    <Typography variant="overline" sx={{ letterSpacing: .6, color: 'text.secondary' }}>
-      {title}
-    </Typography>
-    {children}
-  </Paper>
-);
-
-const TitleAndText = ({ title, text }) => (
-  <Box>
-    <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: .25 }}>{title}</Typography>
-    <Typography variant="body2" color="text.secondary">{text || '—'}</Typography>
-  </Box>
-);
-
-const splitCsv = (csv) => (csv || '').split(',').map(s => s.trim()).filter(Boolean);
-
-// minimal HTML escaper for the new-window writer
-const escapeHtml = (s = '') =>
-  s.replace(/[&<>"']/g, c => ({'&':'&nbsp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c));
-
-function openTextInNewWindow(title, text) {
-  // must run directly in the click handler to avoid popup blockers
-  const win = window.open('', '_blank', 'noopener,noreferrer');
-  if (!win) return; // blocked
-  const html = `
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8"/>
-        <title>${escapeHtml(title)}</title>
-        <style>
-          :root { color-scheme: light; }
-          body {
-            font-family: Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-            margin: 24px; line-height: 1.6; color: #1D2939;
-          }
-          h2 { margin: 0 0 12px; font-size: 20px; font-weight: 800; }
-          pre { white-space: pre-wrap; word-wrap: break-word; margin: 0; }
-        </style>
-      </head>
-      <body>
-        <h2>${escapeHtml(title)}</h2>
-        <pre>${escapeHtml(text || '—')}</pre>
-      </body>
-    </html>`;
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
-}
-
-function ExpandableText({ title, text, maxLines = 4 }) {
+/**
+ * Renders long text with CSS line-clamp. Provides "Show more / Show less"
+ * and optional onOpenDialog (we use it to open a NEW TAB).
+ *
+ * Props:
+ *  - text: string
+ *  - maxLines: number (default 5)
+ *  - sx: MUI sx for the outer Box
+ *  - onOpenDialog?: () => void   // called when "Open dialog" is clicked
+ */
+export default function ExpandableText({
+  text = '',
+  maxLines = 5,
+  sx,
+  onOpenDialog,
+}) {
   const [expanded, setExpanded] = React.useState(false);
+
+  if (!text) {
+    return <Typography variant="body2" color="text.secondary">—</Typography>;
+  }
+
   return (
-    <Card title={title}>
-      <Box sx={{
-        position: 'relative',
-        ...(expanded ? {} : {
-          display: '-webkit-box',
-          WebkitLineClamp: maxLines,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden'
-        })
-      }}>
-        <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-          {text || '—'}
-        </Typography>
-      </Box>
-      <Stack direction="row" spacing={1} sx={{ mt: .75 }}>
-        <Button size="small" onClick={() => setExpanded(v => !v)}>
+    <Box sx={sx}>
+      <Typography
+        variant="body2"
+        sx={{
+          ...(expanded
+            ? {}
+            : {
+                display: '-webkit-box',
+                WebkitLineClamp: maxLines,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+              }),
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {text}
+      </Typography>
+
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }}>
+        <Button
+          size="small"
+          color="primary"
+          onClick={() => setExpanded(v => !v)}
+        >
           {expanded ? 'Show less' : 'Show more'}
         </Button>
-        {!!text && (
+
+        {!!onOpenDialog && (
           <Button
             size="small"
+            color="primary"
             endIcon={<OpenInNewIcon fontSize="small" />}
-            onClick={() => openTextInNewWindow(title, text)}
+            onClick={onOpenDialog}
           >
-            Open in new window
+            Open dialog
           </Button>
         )}
       </Stack>
-    </Card>
-  );
-}
-
-export default function RightHeaderComposite({ header, associatedRows, ownerCsv, custodianCsv }) {
-  const [collapsed, setCollapsed] = React.useState(false);
-  if (!header) return null;
-
-  // distinct 1.1 mappings
-  const assoc = React.useMemo(() => {
-    const m = new Map();
-    (associatedRows || []).forEach(r => {
-      const id = r.csF1SubcategoryID;
-      if (id && Number(id) !== 0 && !m.has(id)) {
-        m.set(id, { id, name: r.csF1SubcategoryName, lang: r.csF1SubcategoryLanguage });
-      }
-    });
-    return [...m.values()];
-  }, [associatedRows]);
-
-  const owners = splitCsv(ownerCsv);
-  const custodians = splitCsv(custodianCsv);
-
-  return (
-    <Box>
-      {/* one-line summary, collapsible */}
-      <Paper
-        variant="outlined"
-        sx={{ p: 1, borderRadius: 2, mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}
-      >
-        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-          {header.csF2SubcategoryName}
-        </Typography>
-        <Typography variant="body2" color="text.secondary" noWrap sx={{ minWidth: 0, flex: 1 }}>
-          {header.csF2SubcategoryLanguage}
-        </Typography>
-        <IconButton size="small" onClick={() => setCollapsed(c => !c)}>
-          {collapsed ? <ExpandMoreIcon/> : <ExpandLessIcon/>}
-        </IconButton>
-      </Paper>
-
-      {!collapsed && (
-        <Box
-          sx={{
-            display: 'grid',
-            gridTemplateColumns: { xs: '1fr', xl: 'minmax(720px, 3fr) minmax(320px, 1fr)' },
-            gap: 2, mb: 2,
-          }}
-        >
-          {/* Left cluster */}
-          <Box
-            sx={{
-              minWidth: 0,
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, minmax(220px, 1fr))',
-              gap: 2
-            }}
-          >
-            <Card title="FUNCTION">
-              <TitleAndText title={header.functionName} text={header.functionLanguage} />
-            </Card>
-            <Card title="CATEGORY">
-              <TitleAndText title={header.categoryName} text={header.categoryLanguage} />
-            </Card>
-            <Card title="CSF 2.0 SUBCATEGORY">
-              <TitleAndText title={header.csF2SubcategoryName} text={header.csF2SubcategoryLanguage} />
-              {(owners.length || custodians.length) && (
-                <>
-                  <Divider sx={{ my: 1 }} />
-                  <Typography variant="overline" sx={{ color: 'text.secondary' }}>OWNER / CUSTODIAN</Typography>
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: .5 }}>
-                    {owners.map((n, i) => <Chip key={`o-${i}`} label={`Owner: ${n}`} size="small" />)}
-                    {custodians.map((n, i) => <Chip key={`c-${i}`} label={`Custodian: ${n}`} size="small" />)}
-                  </Stack>
-                </>
-              )}
-            </Card>
-
-            <Box sx={{ gridColumn: '1 / span 2' }}>
-              <ExpandableText title="CHANGE SUMMARY" text={header.changeSummary} />
-            </Box>
-            <Box>
-              <ExpandableText title="IMPLEMENTATION EXAMPLES" text={header.implementationExamples} />
-            </Box>
-          </Box>
-
-          {/* Right: associated CSF 1.1 */}
-          <Card title="ASSOCIATED 1.1 SUBCATEGORIES">
-            {assoc.length === 0 ? (
-              <Typography variant="body2" color="text.disabled">None.</Typography>
-            ) : (
-              <Box component="ul" sx={{ pl: 3, m: 0 }}>
-                {assoc.map(a => (
-                  <li key={a.id}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: .25 }}>{a.name}</Typography>
-                    <Typography variant="body2" color="text.secondary">{a.lang}</Typography>
-                  </li>
-                ))}
-              </Box>
-            )}
-          </Card>
-        </Box>
-      )}
     </Box>
   );
 }

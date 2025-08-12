@@ -8,9 +8,6 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon  from '@mui/icons-material/ExpandLess';
 import OpenInNewIcon   from '@mui/icons-material/OpenInNew';
 
-// use the shared atom (no duplicates)
-import ExpandableText from '../atoms/ExpandableText';
-
 const Card = ({ title, children, sx }) => (
   <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, ...sx }}>
     <Typography variant="overline" sx={{ letterSpacing: .6, color: 'text.secondary' }}>
@@ -29,38 +26,72 @@ const TitleAndText = ({ title, text }) => (
 
 const splitCsv = (csv) => (csv || '').split(',').map(s => s.trim()).filter(Boolean);
 
-// open long text in a NEW TAB (no modal)
+// minimal HTML escaper for the new-window writer
 const escapeHtml = (s = '') =>
   s.replace(/[&<>"']/g, c => ({'&':'&nbsp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c));
+
 function openTextInNewWindow(title, text) {
+  // must run directly in the click handler to avoid popup blockers
   const win = window.open('', '_blank', 'noopener,noreferrer');
-  if (!win) return;
+  if (!win) return; // blocked
   const html = `
-    <!doctype html><html><head><meta charset="utf-8"/>
-    <title>${escapeHtml(title)}</title>
-    <style>
-      body{font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;margin:24px;line-height:1.6;color:#1D2939}
-      h2{margin:0 0 12px;font-size:20px;font-weight:800}
-      pre{white-space:pre-wrap;word-wrap:break-word;margin:0}
-    </style></head><body>
-      <h2>${escapeHtml(title)}</h2>
-      <pre>${escapeHtml(text || '—')}</pre>
-    </body></html>`;
-  win.document.open(); win.document.write(html); win.document.close();
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8"/>
+        <title>${escapeHtml(title)}</title>
+        <style>
+          :root { color-scheme: light; }
+          body {
+            font-family: Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+            margin: 24px; line-height: 1.6; color: #1D2939;
+          }
+          h2 { margin: 0 0 12px; font-size: 20px; font-weight: 800; }
+          pre { white-space: pre-wrap; word-wrap: break-word; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <h2>${escapeHtml(title)}</h2>
+        <pre>${escapeHtml(text || '—')}</pre>
+      </body>
+    </html>`;
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
 }
 
-// render up to N chips then a “+X more”
-function renderNameChips(names, prefix, max = 3) {
-  if (!names?.length) return null;
-  const shown = names.slice(0, max);
-  const extra = names.length - shown.length;
+function ExpandableText({ title, text, maxLines = 4 }) {
+  const [expanded, setExpanded] = React.useState(false);
   return (
-    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-      {shown.map((n, i) => (
-        <Chip key={`${prefix}-${i}`} size="small" label={`${prefix}: ${n}`} />
-      ))}
-      {extra > 0 && <Chip size="small" variant="outlined" label={`+${extra} more`} />}
-    </Stack>
+    <Card title={title}>
+      <Box sx={{
+        position: 'relative',
+        ...(expanded ? {} : {
+          display: '-webkit-box',
+          WebkitLineClamp: maxLines,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden'
+        })
+      }}>
+        <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+          {text || '—'}
+        </Typography>
+      </Box>
+      <Stack direction="row" spacing={1} sx={{ mt: .75 }}>
+        <Button size="small" onClick={() => setExpanded(v => !v)}>
+          {expanded ? 'Show less' : 'Show more'}
+        </Button>
+        {!!text && (
+          <Button
+            size="small"
+            endIcon={<OpenInNewIcon fontSize="small" />}
+            onClick={() => openTextInNewWindow(title, text)}
+          >
+            Open in new window
+          </Button>
+        )}
+      </Stack>
+    </Card>
   );
 }
 
@@ -85,26 +116,20 @@ export default function RightHeaderComposite({ header, associatedRows, ownerCsv,
 
   return (
     <Box>
-      {/* One-line summary: Subcategory + Owner/Custodian chips — collapsible */}
+      {/* one-line summary, collapsible */}
       <Paper
         variant="outlined"
-        sx={{ p: 1, borderRadius: 2, mb: 1 }}
-        onClick={() => setCollapsed(c => !c)}
+        sx={{ p: 1, borderRadius: 2, mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}
       >
-        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Typography variant="subtitle1" sx={{ fontWeight: 800, mr: 1 }}>
-            {header.csF2SubcategoryName}
-          </Typography>
-          {renderNameChips(owners, 'Owner')}
-          {renderNameChips(custodians, 'Custodian')}
-          <Box sx={{ flex: 1 }} />
-          <IconButton
-            size="small"
-            onClick={(e) => { e.stopPropagation(); setCollapsed(c => !c); }}
-          >
-            {collapsed ? <ExpandMoreIcon/> : <ExpandLessIcon/>}
-          </IconButton>
-        </Stack>
+        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+          {header.csF2SubcategoryName}
+        </Typography>
+        <Typography variant="body2" color="text.secondary" noWrap sx={{ minWidth: 0, flex: 1 }}>
+          {header.csF2SubcategoryLanguage}
+        </Typography>
+        <IconButton size="small" onClick={() => setCollapsed(c => !c)}>
+          {collapsed ? <ExpandMoreIcon/> : <ExpandLessIcon/>}
+        </IconButton>
       </Paper>
 
       {!collapsed && (
@@ -144,33 +169,11 @@ export default function RightHeaderComposite({ header, associatedRows, ownerCsv,
               )}
             </Card>
 
-            {/* Long texts — use shared atom; add "Open in new window" beneath each */}
             <Box sx={{ gridColumn: '1 / span 2' }}>
-              <ExpandableText title="CHANGE SUMMARY" text={header.changeSummary} maxLines={4} />
-              {!!header.changeSummary && (
-                <Button
-                  size="small"
-                  sx={{ mt: .75 }}
-                  endIcon={<OpenInNewIcon fontSize="small" />}
-                  onClick={() => openTextInNewWindow('Change Summary', header.changeSummary)}
-                >
-                  Open in new window
-                </Button>
-              )}
+              <ExpandableText title="CHANGE SUMMARY" text={header.changeSummary} />
             </Box>
-
             <Box>
-              <ExpandableText title="IMPLEMENTATION EXAMPLES" text={header.implementationExamples} maxLines={4} />
-              {!!header.implementationExamples && (
-                <Button
-                  size="small"
-                  sx={{ mt: .75 }}
-                  endIcon={<OpenInNewIcon fontSize="small" />}
-                  onClick={() => openTextInNewWindow('Implementation Examples', header.implementationExamples)}
-                >
-                  Open in new window
-                </Button>
-              )}
+              <ExpandableText title="IMPLEMENTATION EXAMPLES" text={header.implementationExamples} />
             </Box>
           </Box>
 

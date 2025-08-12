@@ -1,240 +1,231 @@
+// src/features/attributeMapping/components/organisms/RightHeaderComposite.jsx
 import * as React from 'react';
 import {
-  Box, Paper, Stack, Tabs, Tab, Typography, Divider
+  Box, Paper, Grid, Stack, Typography, Chip, Collapse, IconButton, Button,
+  Dialog, DialogTitle, DialogContent, Divider, Tooltip
 } from '@mui/material';
+import { ExpandLess, ExpandMore, OpenInNew } from '@mui/icons-material';
 
-import AttributeFilterBar from '../components/molecules/AttributeFilterBar';
-import CsfTree from '../components/organisms/CsfTree';
-import SubcategoryHeader from '../components/organisms/SubcategoryHeader';
+/** Small helper: "Show more" with dialog */
+function ExpandableText({ title, text, previewChars = 260 }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const [openDlg, setOpenDlg] = React.useState(false);
 
-import { fetchAttributeFeed } from '../api/attributeApi';
-import { normalizeHeaders, normalizeRows } from '../utils/normalizeFeed';
-import { TwoPane } from '../../../ui/layout/TwoPane';
-import BusyOverlay from '../../../ui/feedback/BusyOverlay';
-import { useToast } from '../../../ui/feedback/useToast';
+  if (!text) return null;
+  const isLong = text.length > previewChars;
+  const preview = isLong && !expanded ? text.slice(0, previewChars) + '…' : text;
 
-const INITIAL_FILTERS = {
-  functionIds: [],
-  categoryIds: [],
-  subcatIds: [],
-  ownerNames: [],
-  custodianNames: [],
-  maturity: [],
-  finalOnly: false,
-  search: ''
-};
+  return (
+    <Box>
+      <Typography variant="overline" color="text.secondary">{title}</Typography>
+      <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>{preview}</Typography>
 
-export default function AttributeMappingPage() {
-  const { toastError } = useToast();
+      {isLong && (
+        <Stack direction="row" spacing={1} sx={{ mt: 0.75 }}>
+          <Button size="small" onClick={() => setExpanded(v => !v)}>
+            {expanded ? 'Show less' : 'Show more'}
+          </Button>
+          <Button size="small" endIcon={<OpenInNew fontSize="small" />} onClick={() => setOpenDlg(true)}>
+            Open in dialog
+          </Button>
+        </Stack>
+      )}
 
-  const [filters, setFilters] = React.useState(INITIAL_FILTERS);
-  const [loading, setLoading] = React.useState(false);
+      <Dialog open={openDlg} onClose={() => setOpenDlg(false)} maxWidth="md" fullWidth>
+        <DialogTitle>{title}</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>{text}</Typography>
+        </DialogContent>
+      </Dialog>
+    </Box>
+  );
+}
 
-  const [headers, setHeaders] = React.useState([]); // normalized
-  const [rows, setRows]       = React.useState([]); // normalized
+export default function RightHeaderComposite({
+  header,            // normalized header for active org + subcat
+  associatedRows,    // ALL rows for the selected subcat (all orgs). We’ll distill 1.1 list from this
+  ownerCsv,          // owners for active org/subcat (string, comma-separated)
+  custodianCsv       // custodians for active org/subcat (string, comma-separated)
+}) {
+  const [open, setOpen] = React.useState(true);
 
-  const [selectedSubcatId, setSelectedSubcatId] = React.useState(null);
+  if (!header) return null;
 
-  // Active org tab (derived from headers for selected subcat)
-  const [activeOrgId, setActiveOrgId] = React.useState(null);
-
-  // Fetch feed whenever filters change
-  React.useEffect(() => {
-    let ignore = false;
-
-    (async () => {
-      setLoading(true);
-      try {
-        const data = await fetchAttributeFeed({
-          functionIds:    filters.functionIds,
-          categoryIds:    filters.categoryIds,
-          subcatIds:      filters.subcatIds,
-          ownerNames:     filters.ownerNames,
-          custodianNames: filters.custodianNames,
-          maturity:       filters.maturity,
-          finalOnly:      filters.finalOnly,
-          search:         filters.search
-        });
-
-        if (ignore) return;
-
-        const nh = normalizeHeaders(data.headers || []);
-        const nr = normalizeRows(data.rows || []);
-        setHeaders(nh);
-        setRows(nr);
-
-        // Choose a subcat if none selected or selection no longer present
-        const allSubIds = Array.from(new Set(nh.map(h => String(h.csF2SubcategoryID))));
-        if (!selectedSubcatId || !allSubIds.includes(String(selectedSubcatId))) {
-          setSelectedSubcatId(allSubIds.length ? allSubIds[0] : null);
-        }
-      } catch (err) {
-        if (!ignore) toastError('Failed to load data');
-        // console.error(err);
-      } finally {
-        if (!ignore) setLoading(false);
-      }
-    })();
-
-    return () => { ignore = true; };
-  }, [filters, toastError]); // eslint-disable-line
-
-  // Build org tabs for the selected subcategory
-  const orgTabs = React.useMemo(() => {
-    if (!selectedSubcatId) return [];
-    const map = new Map();
-    headers
-      .filter(h => String(h.csF2SubcategoryID) === String(selectedSubcatId))
-      .forEach(h => { if (!map.has(h.orgID)) map.set(h.orgID, h.orgName); });
-    return Array.from(map, ([id, name]) => ({ id, name }));
-  }, [headers, selectedSubcatId]);
-
-  // Keep active org valid
-  React.useEffect(() => {
-    if (!orgTabs.length) {
-      setActiveOrgId(null);
-      return;
-    }
-    if (!activeOrgId || !orgTabs.some(t => String(t.id) === String(activeOrgId))) {
-      setActiveOrgId(orgTabs[0].id);
-    }
-  }, [orgTabs, activeOrgId]);
-
-  // Header for active org + selected subcat
-  const activeHeader = React.useMemo(() => {
-    if (!activeOrgId || !selectedSubcatId) return null;
-    return headers.find(h =>
-      String(h.orgID) === String(activeOrgId) &&
-      String(h.csF2SubcategoryID) === String(selectedSubcatId)
-    ) || null;
-  }, [headers, activeOrgId, selectedSubcatId]);
-
-  // Associated CSF 1.1 list for the selected subcat (distinct by name+lang)
-  const associated11 = React.useMemo(() => {
-    if (!selectedSubcatId) return [];
+  // Distinct associated CSF 1.1 subcategories (name + language)
+  const assoc11 = React.useMemo(() => {
     const seen = new Set();
-    const list = [];
-    rows.forEach(r => {
-      if (String(r.csF2SubcategoryID) !== String(selectedSubcatId)) return;
-      if (!r.csF1SubcategoryID) return; // skip customs
+    const out = [];
+    (associatedRows || []).forEach(r => {
+      if (!r.csF1SubcategoryID) return;
       const key = `${r.csF1SubcategoryName}|${r.csF1SubcategoryLanguage}`;
       if (!seen.has(key)) {
         seen.add(key);
-        list.push({ name: r.csF1SubcategoryName, language: r.csF1SubcategoryLanguage });
+        out.push({ name: r.csF1SubcategoryName, language: r.csF1SubcategoryLanguage });
       }
     });
-    return list;
-  }, [rows, selectedSubcatId]);
+    return out;
+  }, [associatedRows]);
 
-  // Attribute rows visible for the active org + subcat
-  const visibleRows = React.useMemo(() => {
-    if (!activeOrgId || !selectedSubcatId) return [];
-    return rows.filter(r =>
-      String(r.orgID) === String(activeOrgId) &&
-      String(r.csF2SubcategoryID) === String(selectedSubcatId)
-    );
-  }, [rows, activeOrgId, selectedSubcatId]);
+  const owners = (ownerCsv || '')
+    .split(',')
+    .map(x => x.trim())
+    .filter(Boolean);
 
-  /* ================== RENDER ================== */
-
-  const leftPane = (
-    <Box sx={{ p: 0.5 }}>
-      <CsfTree
-        headers={headers}
-        selectedSubcatID={selectedSubcatId}
-        onSelectSubcat={(id) => setSelectedSubcatId(id)}
-        maxHeight="calc(100vh - 260px)"
-      />
-    </Box>
-  );
-
-  const rightPane = (
-    <Box sx={{ p: 0.5 }}>
-      {/* Org tabs */}
-      <Paper variant="outlined" sx={{ mb: 2, borderRadius: 2 }}>
-        <Tabs
-          value={activeOrgId ?? false}
-          onChange={(_, v) => setActiveOrgId(v)}
-          variant="scrollable"
-          scrollButtons="auto"
-          sx={{ px: 1 }}
-        >
-          {orgTabs.map(t => (
-            <Tab key={t.id} value={t.id} label={t.name} />
-          ))}
-        </Tabs>
-      </Paper>
-
-      {/* Header – compact, side-by-side, collapsible */}
-      <Box sx={{ mb: 2 }}>
-        <SubcategoryHeader header={activeHeader} associated={associated11} />
-      </Box>
-
-      {/* Attributes table placeholder (next phase we’ll do the full table w/ ML color bands) */}
-      <Paper variant="outlined" sx={{ borderRadius: 2 }}>
-        <Box sx={{ p: 1.5 }}>
-          <Typography variant="subtitle1" fontWeight={800}>
-            Attributes ({visibleRows.length})
-          </Typography>
-        </Box>
-        <Divider />
-        <Box sx={{ p: 2 }}>
-          {visibleRows.length === 0 ? (
-            <Typography variant="body2" color="text.secondary">
-              No attributes for this selection yet.
-            </Typography>
-          ) : (
-            <Box component="table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign:'left', padding:'8px' }}>#</th>
-                  <th style={{ textAlign:'left', padding:'8px' }}>Attribute</th>
-                  <th style={{ textAlign:'left', padding:'8px' }}>ML</th>
-                  <th style={{ textAlign:'left', padding:'8px' }}>NIST 1.1</th>
-                  <th style={{ textAlign:'left', padding:'8px' }}>Status</th>
-                  <th style={{ textAlign:'left', padding:'8px' }}>2025 Attestation</th>
-                  <th style={{ textAlign:'left', padding:'8px' }}>2024 Assess</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((r, idx) => (
-                  <tr key={`${r.ent_Subcat_Attr || 'C'}-${idx}`} style={{ borderTop:'1px solid rgba(0,0,0,.08)' }}>
-                    <td style={{ padding:'8px' }}>{r.attributeNum ?? r.customAttributeNum ?? '—'}</td>
-                    <td style={{ padding:'8px', whiteSpace:'pre-wrap' }}>{r.attributeDefinition || r.customAttributeDefinition || '—'}</td>
-                    <td style={{ padding:'8px' }}>{r.maturityLevel ?? '—'}</td>
-                    <td style={{ padding:'8px' }}>{r.csF1SubcategoryName || '—'}</td>
-                    <td style={{ padding:'8px' }}>{r.selectionStatus || '—'}</td>
-                    <td style={{ padding:'8px' }}>{r.selectionAttestation || r.customAttributeAttestation || '—'}</td>
-                    <td style={{ padding:'8px' }}>{r.assessScore2024 ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </Box>
-          )}
-        </Box>
-      </Paper>
-    </Box>
-  );
+  const custodians = (custodianCsv || '')
+    .split(',')
+    .map(x => x.trim())
+    .filter(Boolean);
 
   return (
-    <Box sx={{ px: { xs: 1, md: 2 }, py: 2 }}>
-      {/* Reusable filter bar (spacious) */}
-      <Box sx={{ mb: 2 }}>
-        <AttributeFilterBar
-          value={filters}
-          onChange={setFilters}
-          onExport={() => {/* wire export later */}}
-        />
+    <Paper variant="outlined" sx={{ borderRadius: 2 }}>
+      {/* Collapsible bar shows only CSF 2.0 subcat + language when closed */}
+      <Box
+        sx={{
+          px: 1.25, py: 1,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          borderBottom: open ? '1px solid rgba(0,0,0,0.08)' : 'none',
+          cursor: 'pointer'
+        }}
+        onClick={() => setOpen(v => !v)}
+      >
+        <Stack spacing={0}>
+          <Typography variant="subtitle1" fontWeight={800}>
+            {header.csF2SubcategoryName}
+          </Typography>
+          {!open && (
+            <Typography variant="body2" color="text.secondary" noWrap title={header.csF2SubcategoryLanguage}>
+              {header.csF2SubcategoryLanguage}
+            </Typography>
+          )}
+        </Stack>
+        <IconButton size="small" onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}>
+          {open ? <ExpandLess /> : <ExpandMore />}
+        </IconButton>
       </Box>
 
-      <TwoPane
-        left={leftPane}
-        right={rightPane}
-        leftWidth={{ xs: '100%', lg: 430 }}
-        gap={2}
-      />
+      <Collapse in={open} unmountOnExit>
+        <Box sx={{ p: { xs: 1.25, md: 1.75 } }}>
+          <Grid container spacing={2}>
+            {/* Left 3 cards in a row (responsive) */}
+            <Grid item xs={12} lg={9}>
+              <Grid container spacing={2}>
+                {/* FUNCTION */}
+                <Grid item xs={12} md={4}>
+                  <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2, height: '100%' }}>
+                    <Typography variant="overline" color="text.secondary">FUNCTION</Typography>
+                    <Typography variant="h6" fontWeight={900} sx={{ mb: 0.5 }}>
+                      {header.functionName}
+                    </Typography>
+                    <Typography variant="body1" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+                      {header.functionLanguage}
+                    </Typography>
+                  </Paper>
+                </Grid>
 
-      <BusyOverlay open={loading} label="Loading…" />
-    </Box>
+                {/* CATEGORY */}
+                <Grid item xs={12} md={4}>
+                  <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2, height: '100%' }}>
+                    <Typography variant="overline" color="text.secondary">CATEGORY</Typography>
+                    <Typography variant="h6" fontWeight={900} sx={{ mb: 0.5 }}>
+                      {header.categoryName}
+                    </Typography>
+                    <Typography variant="body1" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+                      {header.categoryLanguage}
+                    </Typography>
+                  </Paper>
+                </Grid>
+
+                {/* CSF 2.0 SUBCATEGORY + Owners/Custodians */}
+                <Grid item xs={12} md={4}>
+                  <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2, height: '100%' }}>
+                    <Typography variant="overline" color="text.secondary">CSF 2.0 SUBCATEGORY</Typography>
+                    <Typography variant="h6" fontWeight={900} sx={{ mb: 0.5 }}>
+                      {header.csF2SubcategoryName}
+                    </Typography>
+                    <Typography variant="body1" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', mb: 1 }}>
+                      {header.csF2SubcategoryLanguage}
+                    </Typography>
+                    {(owners.length > 0 || custodians.length > 0) && (
+                      <Stack spacing={1} sx={{ mt: 0.25 }}>
+                        {owners.length > 0 && (
+                          <Stack direction="row" spacing={1} flexWrap="wrap">
+                            <Typography variant="overline" color="text.secondary">OWNER</Typography>
+                            {owners.map((n, i) => (
+                              <Chip key={`own-${i}`} size="small" variant="outlined" label={n} />
+                            ))}
+                          </Stack>
+                        )}
+                        {custodians.length > 0 && (
+                          <Stack direction="row" spacing={1} flexWrap="wrap">
+                            <Typography variant="overline" color="text.secondary">CUSTODIAN</Typography>
+                            {custodians.map((n, i) => (
+                              <Chip key={`cus-${i}`} size="small" variant="outlined" label={n} />
+                            ))}
+                          </Stack>
+                        )}
+                      </Stack>
+                    )}
+                  </Paper>
+                </Grid>
+
+                {/* Change Summary / Implementation Examples */}
+                <Grid item xs={12} md={6}>
+                  <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2, height: '100%' }}>
+                    <ExpandableText title="CHANGE SUMMARY" text={header.changeSummary || ''} />
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2, height: '100%' }}>
+                    <ExpandableText title="IMPLEMENTATION EXAMPLES" text={header.implementationExamples || ''} />
+                    {/* Optional helper link if you add it to header later */}
+                    {header.helperLink && (
+                      <Box sx={{ mt: 1 }}>
+                        <Tooltip title="Opens in a new tab">
+                          <Button
+                            href={header.helperLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            size="small"
+                            endIcon={<OpenInNew fontSize="small" />}
+                          >
+                            Link to Helper Document
+                          </Button>
+                        </Tooltip>
+                      </Box>
+                    )}
+                  </Paper>
+                </Grid>
+              </Grid>
+            </Grid>
+
+            {/* Right card: Associated 1.1 subcategories */}
+            <Grid item xs={12} lg={3}>
+              <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2, height: '100%' }}>
+                <Typography variant="overline" color="text.secondary">
+                  ASSOCIATED 1.1 SUBCATEGORIES
+                </Typography>
+                <Divider sx={{ my: 1 }} />
+                {assoc11.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">None</Typography>
+                ) : (
+                  <Box component="ul" sx={{ pl: 2, m: 0 }}>
+                    {assoc11.map((s, i) => (
+                      <li key={i} style={{ marginBottom: 8 }}>
+                        <Typography variant="body1" fontWeight={700}>{s.name}</Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+                          {s.language}
+                        </Typography>
+                      </li>
+                    ))}
+                  </Box>
+                )}
+              </Paper>
+            </Grid>
+          </Grid>
+        </Box>
+      </Collapse>
+    </Paper>
   );
 }

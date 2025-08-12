@@ -1,25 +1,257 @@
+// src/features/attributeMapping/pages/AttributeMappingPage.js
 import * as React from 'react';
-import { Box } from '@mui/material';
+import { Box, Typography, Stack, Button, Card, CardContent } from '@mui/material';
 
-export default function TwoPane({ left, right, leftWidth = 380 }) {
+import AttributeFilterBar from '../components/molecules/AttributeFilterBar';
+import TwoPane from '../../../ui/layout/TwoPane';
+import BusyOverlay from '../../../ui/feedback/BusyOverlay';
+
+import CsfTree from '../components/organisms/CsfTree';
+import HeaderInfoPanel from '../components/organisms/HeaderInfoPanel';
+import AssociatedCsf11Panel from '../components/organisms/AssociatedCsf11Panel';
+import OrgTabs from '../components/molecules/OrgTabs';
+import AttributeGroupTable from '../components/organisms/AttributeGroupTable';
+import AddCustomAttributePanel from '../components/molecules/AddCustomAttributePanel';
+import CollapsibleText from '../components/molecules/CollapsibleText';
+
+import { fetchAttributeFeed } from '../api/attributeApi';
+import { exportRowsAsCsv } from '../../../ui/data/csvExport';
+import { normalizeHeaders, normalizeRows } from '../utils/normalizeFeed';
+
+// No Org filter by design. These match AttributeFilterBar.
+const initialFilters = {
+  functionIds: [],
+  categoryIds: [],
+  subcatIds: [],
+  ownerNames: [],
+  custodianNames: [],
+  maturity: [],
+  finalOnly: false,
+  search: ''
+};
+
+export default function AttributeMappingPage() {
+  // filters & data
+  const [filters, setFilters] = React.useState(initialFilters);
+  const [headers, setHeaders] = React.useState([]);
+  const [rows, setRows] = React.useState([]);
+
+  // selection state
+  const [selectedSubcatID, setSelectedSubcatID] = React.useState(null);
+  const [activeOrgID, setActiveOrgID] = React.useState(null);
+
+  // loading flags
+  const [initialLoading, setInitialLoading] = React.useState(true);
+  const [loadingHeaders, setLoadingHeaders] = React.useState(false);
+  const [loadingRows, setLoadingRows] = React.useState(false);
+
+  // view mode: browse (full-width tree) vs detail (two-pane)
+  const mode = selectedSubcatID ? 'detail' : 'browse';
+
+  // ---------------- Loaders ----------------
+  const loadHeaders = React.useCallback(async () => {
+    setLoadingHeaders(true);
+    try {
+      // Headers only: pass filters; no orgIds by design (tabs show all orgs)
+      const resp = await fetchAttributeFeed({
+        functionIds:  filters.functionIds,
+        categoryIds:  filters.categoryIds,
+        subcatIds:    filters.subcatIds,
+        ownerNames:   filters.ownerNames,
+        custodianNames: filters.custodianNames,
+        maturity:     filters.maturity,
+        finalOnly:    filters.finalOnly,
+        search:       filters.search
+      });
+      setHeaders(normalizeHeaders(resp.headers || []));
+    } finally {
+      setLoadingHeaders(false);
+      if (initialLoading) setInitialLoading(false);
+    }
+  }, [filters, initialLoading]);
+
+  const loadRowsForSubcat = React.useCallback(async (subcatID) => {
+    if (!subcatID) { setRows([]); return; }
+    setLoadingRows(true);
+    try {
+      const resp = await fetchAttributeFeed({
+        functionIds:  filters.functionIds,
+        categoryIds:  filters.categoryIds,
+        subcatIds:    [subcatID],             // rows for selected subcat only
+        ownerNames:   filters.ownerNames,
+        custodianNames: filters.custodianNames,
+        maturity:     filters.maturity,
+        finalOnly:    filters.finalOnly,
+        search:       filters.search
+      });
+      setRows(normalizeRows(resp.rows || []));
+    } finally {
+      setLoadingRows(false);
+    }
+  }, [filters]);
+
+  // On filter change → refresh headers only
+  React.useEffect(() => { loadHeaders(); }, [
+    filters.functionIds, filters.categoryIds, filters.subcatIds,
+    filters.ownerNames, filters.custodianNames, filters.maturity,
+    filters.finalOnly, filters.search, loadHeaders
+  ]);
+
+  // On subcategory select → load rows
+  React.useEffect(() => { loadRowsForSubcat(selectedSubcatID); }, [selectedSubcatID, loadRowsForSubcat]);
+
+  // ---------------- Derived data for detail pane ----------------
+  // Orgs available as tabs for the selected subcategory (from headers)
+  const orgsForTabs = React.useMemo(() => {
+    if (!selectedSubcatID) return [];
+    const m = new Map();
+    headers
+      .filter(h => h.csF2SubcategoryID === selectedSubcatID)
+      .forEach(h => m.set(h.orgID, { orgID: h.orgID, orgName: h.orgName }));
+    return Array.from(m.values()).sort((a,b) => a.orgID - b.orgID);
+  }, [headers, selectedSubcatID]);
+
+  // Ensure an active org exists
+  React.useEffect(() => {
+    if (!orgsForTabs.length) { setActiveOrgID(null); return; }
+    if (!activeOrgID || !orgsForTabs.some(o => o.orgID === activeOrgID)) {
+      setActiveOrgID(orgsForTabs[0].orgID);
+    }
+  }, [orgsForTabs, activeOrgID]);
+
+  // Header record for the right pane (prefer one matching active org)
+  const selectedHeader = React.useMemo(() => {
+    if (!selectedSubcatID) return null;
+    return (
+      headers.find(h => h.csF2SubcategoryID === selectedSubcatID && h.orgID === activeOrgID) ||
+      headers.find(h => h.csF2SubcategoryID === selectedSubcatID) || null
+    );
+  }, [headers, selectedSubcatID, activeOrgID]);
+
+  // Rows scoped to selected subcat and active org
+  const rowsForSelected = React.useMemo(
+    () => rows.filter(r => r.csF2SubcategoryID === selectedSubcatID),
+    [rows, selectedSubcatID]
+  );
+  const rowsForActiveOrg = React.useMemo(
+    () => rowsForSelected.filter(r => r.orgID === activeOrgID),
+    [rowsForSelected, activeOrgID]
+  );
+
+  // Owner/Custodian change with the active org tab
+  const ownerCsv = React.useMemo(() => {
+    const h = headers.find(x => x.csF2SubcategoryID === selectedSubcatID && x.orgID === activeOrgID);
+    return h?.owner || '';
+  }, [headers, selectedSubcatID, activeOrgID]);
+
+  const custodianCsv = React.useMemo(() => {
+    const h = headers.find(x => x.csF2SubcategoryID === selectedSubcatID && x.orgID === activeOrgID);
+    return h?.custodian || '';
+  }, [headers, selectedSubcatID, activeOrgID]);
+
+  // ---------------- Handlers ----------------
+  const handleSelectSubcat = (id) => setSelectedSubcatID(id);
+  const handleBack = () => setSelectedSubcatID(null);
+  const handleExport = () => rows?.length && exportRowsAsCsv(rows, 'csf-attribute-rows.csv');
+
+  // ---------------- Render ----------------
   return (
-    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: `${leftWidth}px 1fr` }, gap: 2 }}>
-      <Box
-        sx={{
-          height: { xs: 'auto', md: 'calc(100vh - 190px)' },
-          overflow: { xs: 'visible', md: 'auto' }
-        }}
-      >
-        {left}
-      </Box>
-      <Box
-        sx={{
-          height: { xs: 'auto', md: 'calc(100vh - 190px)' },
-          overflow: { xs: 'visible', md: 'auto' }
-        }}
-      >
-        {right}
-      </Box>
+    <Box sx={{ px: { xs: 1, md: 2 }, pb: 3 }}>
+      <AttributeFilterBar value={filters} onChange={setFilters} onExport={handleExport} />
+
+      {mode === 'browse' ? (
+        // FULL-WIDTH TREE (independently scrollable)
+        <Box sx={{ mt: 1 }}>
+          <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+            CSF 2.0 Structure
+          </Typography>
+          <CsfTree headers={headers} onSelectSubcat={handleSelectSubcat} selectedSubcatID={null} />
+          {loadingHeaders && (
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display:'block' }}>
+              Loading…
+            </Typography>
+          )}
+        </Box>
+      ) : (
+        // TWO-PANE DETAIL: left tree + right detail. Both panes scroll independently.
+        <TwoPane
+          left={
+            <>
+              <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+                <Button size="small" onClick={handleBack}>← Back</Button>
+                <Typography variant="subtitle2" color="text.secondary">CSF 2.0 Structure</Typography>
+              </Stack>
+              <CsfTree
+                headers={headers}
+                onSelectSubcat={handleSelectSubcat}
+                selectedSubcatID={selectedSubcatID}
+                maxHeight="calc(100vh - 210px)"
+              />
+            </>
+          }
+          right={
+            !selectedHeader ? (
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                {loadingRows ? 'Loading…' : 'Select a subcategory from the left to view details.'}
+              </Typography>
+            ) : (
+              <>
+                {/* Sticky header card to keep context while scrolling long lists */}
+                <HeaderInfoPanel
+                  header={selectedHeader}
+                  ownerCsv={ownerCsv}
+                  custodianCsv={custodianCsv}
+                />
+
+                {/* Collapsible long texts */}
+                <Card variant="outlined" sx={{ mb: 2 }}>
+                  <CardContent>
+                    <Stack direction={{ xs:'column', md:'row' }} spacing={2} useFlexGap>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <CollapsibleText
+                          title="Change Summary"
+                          text={selectedHeader.changeSummary}
+                          lines={6}
+                        />
+                      </Box>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <CollapsibleText
+                          title="Implementation Examples"
+                          text={selectedHeader.implementationExamples}
+                          lines={6}
+                        />
+                      </Box>
+                    </Stack>
+                  </CardContent>
+                </Card>
+
+                {/* Associated 1.1 list */}
+                <AssociatedCsf11Panel rows={rowsForSelected} />
+
+                {/* Org tabs + attribute groups */}
+                <OrgTabs
+                  orgs={orgsForTabs}
+                  activeOrgID={activeOrgID}
+                  editableOrgID={activeOrgID}   // future: wire auth for edit perms
+                  onChange={setActiveOrgID}
+                />
+
+                <AttributeGroupTable rows={rowsForActiveOrg} />
+
+                {/* Placeholder for future create; stays in the right-pane scroll area */}
+                <AddCustomAttributePanel
+                  orgName={orgsForTabs.find(x => x.orgID === activeOrgID)?.orgName}
+                  subcatName={selectedHeader.csF2SubcategoryName}
+                  editable={false}
+                />
+              </>
+            )
+          }
+        />
+      )}
+
+      {/* Only on first page mount */}
+      <BusyOverlay open={initialLoading} />
     </Box>
   );
 }

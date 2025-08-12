@@ -1,56 +1,59 @@
-// Generic CSV builder (UTF-8 BOM for Excel), reusable across pages
-function downloadBlob(text, filename) {
-  const blob = new Blob(["\uFEFF" + text], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename || "export.csv";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+// Normalize headers/rows from the API into a consistent camelCase shape
+const pick = (o, keys) => keys.find(k => o[k] !== undefined) ? o[keys.find(k => o[k] !== undefined)] : undefined;
+
+export function normalizeHeaders(headers = []) {
+  return headers.map(h => ({
+    orgID:                  pick(h, ['orgID','OrgID']),
+    orgName:                pick(h, ['orgName','OrgName']),
+    functionID:             pick(h, ['functionID','FunctionID']),
+    functionName:           pick(h, ['functionName','FunctionName']),
+    functionLanguage:       pick(h, ['functionLanguage','FunctionLanguage']),
+    categoryID:             pick(h, ['categoryID','CategoryID']),
+    categoryName:           pick(h, ['categoryName','CategoryName']),
+    categoryLanguage:       pick(h, ['categoryLanguage','CategoryLanguage']),
+    csF2SubcategoryID:      pick(h, ['csF2SubcategoryID','CSF2SubcategoryID','csf2SubcategoryID','CSF2SubcategoryId','csf2SubcategoryId']),
+    csF2SubcategoryName:    pick(h, ['csF2SubcategoryName','CSF2SubcategoryName']),
+    csF2SubcategoryLanguage:pick(h, ['csF2SubcategoryLanguage','CSF2SubcategoryLanguage']),
+    changeSummary:          pick(h, ['changeSummary','ChangeSummary']),
+    implementationExamples: pick(h, ['implementationExamples','ImplementationExamples']),
+    owner:                  pick(h, ['owner','Owner']),
+    custodian:              pick(h, ['custodian','Custodian']),
+    keptCount:              pick(h, ['keptCount','KeptCount']) ?? 0,
+    removedCount:           pick(h, ['removedCount','RemovedCount']) ?? 0,
+    customCount:            pick(h, ['customCount','CustomCount']) ?? 0,
+  }));
 }
 
-function escapeCsv(val) {
-  if (val === null || val === undefined) return "";
-  const s = String(val);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-// Generic: export array of objects using a column spec
-export function exportAsCsv(data, columns, filename = "export.csv") {
-  const header = columns.map(c => escapeCsv(c.header)).join(",");
-  const lines = (data || []).map(row =>
-    columns.map(c => {
-      const raw = typeof c.value === "function" ? c.value(row) : row[c.key];
-      return escapeCsv(raw);
-    }).join(",")
-  );
-  downloadBlob([header, ...lines].join("\n"), filename);
-}
-
-/**
- * Page-specific wrapper for Attribute Mapping rows.
- * Expects the feed "rows" (FeedRowDto[]).
- */
-export function exportRowsAsCsv(rows, filename = "csf-attribute-rows.csv") {
-  const cols = [
-    { header: "Org",              key: "OrgName" },
-    { header: "Function",         key: "FunctionName" },
-    { header: "Category",         key: "CategoryName" },
-    { header: "CSF 2.0 Subcat",   key: "CSF2SubcategoryName" },
-    { header: "CSF 1.1 Subcat",   key: "CSF1SubcategoryName" },        // empty for customs
-    { header: "Maturity",         key: "MaturityLevel" },
-    { header: "Attribute #",      key: "AttributeNum" },               // canonical number in feed
-    {
-      header: "Definition",
-      value: (r) => r.CustomAttributeDefinition ?? r.AttributeDefinition ?? ""
-    },
-    { header: "2024 Assess Score", key: "AssessScore2024" },
-    { header: "Status",            key: "SelectionStatus" },           // Keep/Remove/null
-    { header: "Attestation 2025",  key: "SelectionAttestation" },      // Meet/Partial/DoesNotMeet/null
-    { header: "Owner(s)",          key: "Owner" },
-    { header: "Custodian(s)",      key: "Custodian" }
-  ];
-  exportAsCsv(rows, cols, filename);
+export function normalizeRows(rows = []) {
+  return rows.map(r => ({
+    orgID:                  pick(r, ['orgID','OrgID']),
+    orgName:                pick(r, ['orgName','OrgName']),
+    functionID:             pick(r, ['functionID','FunctionID']),
+    functionName:           pick(r, ['functionName','FunctionName']),
+    functionLanguage:       pick(r, ['functionLanguage','FunctionLanguage']),
+    categoryID:             pick(r, ['categoryID','CategoryID']),
+    categoryName:           pick(r, ['categoryName','CategoryName']),
+    categoryLanguage:       pick(r, ['categoryLanguage','CategoryLanguage']),
+    csF2SubcategoryID:      pick(r, ['csF2SubcategoryID','CSF2SubcategoryID','csf2SubcategoryID','CSF2SubcategoryId','csf2SubcategoryId']),
+    csF2SubcategoryName:    pick(r, ['csF2SubcategoryName','CSF2SubcategoryName']),
+    csF2SubcategoryLanguage:pick(r, ['csF2SubcategoryLanguage','CSF2SubcategoryLanguage']),
+    changeSummary:          pick(r, ['changeSummary','ChangeSummary']),
+    implementationExamples: pick(r, ['implementationExamples','ImplementationExamples']),
+    csF1SubcategoryID:      pick(r, ['csF1SubcategoryID','CSF1SubcategoryID']),
+    csF1SubcategoryName:    pick(r, ['csF1SubcategoryName','CSF1SubcategoryName']),
+    csF1SubcategoryLanguage:pick(r, ['csF1SubcategoryLanguage','CSF1SubcategoryLanguage']),
+    ent_Subcat_Attr:        pick(r, ['ent_Subcat_Attr','Ent_Subcat_Attr']),
+    maturityLevel:          pick(r, ['maturityLevel','MaturityLevel']),
+    attributeNum:           pick(r, ['attributeNum','AttributeNum']),
+    attributeDefinition:    pick(r, ['attributeDefinition','AttributeDefinition']),
+    assessScore2024:        pick(r, ['assessScore2024','AssessScore2024']),
+    selectionStatus:        pick(r, ['selectionStatus','SelectionStatus']),
+    selectionAttestation:   pick(r, ['selectionAttestation','SelectionAttestation']),
+    customAttributeNum:     pick(r, ['customAttributeNum','CustomAttributeNum']),
+    customAttributeDefinition: pick(r, ['customAttributeDefinition','CustomAttributeDefinition']),
+    customAttributeAttestation: pick(r, ['customAttributeAttestation','CustomAttributeAttestation']),
+    owner:                  pick(r, ['owner','Owner','subcatOwner']),
+    custodian:              pick(r, ['custodian','Custodian','subcatCustodian']),
+    ent_Subcat_Attr_CSF2:   pick(r, ['ent_Subcat_Attr_CSF2','Ent_Subcat_Attr_CSF2']),
+  }));
 }

@@ -1,268 +1,42 @@
 import * as React from 'react';
-import { Box, Typography } from '@mui/material';
-import AttributeFilterBar from '../components/molecules/AttributeFilterBar';
-import TwoPane from '../../../ui/layout/TwoPane';
-import BusyOverlay from '../../../ui/feedback/BusyOverlay';
-import CsfTree from '../components/organisms/CsfTree';
-import HeaderInfoPanel from '../components/organisms/HeaderInfoPanel';
-import { fetchAttributeFeed } from '../api/attributeApi';
-import { exportRowsAsCsv } from '../../../ui/data/csvExport';
-import { normalizeHeaders, normalizeRows } from '../utils/normalizeFeed';
+import { Card, CardContent, Typography, List, ListItem, ListItemText } from '@mui/material';
 
-const initialFilters = {
-  orgIds: [], functionIds: [], categoryIds: [], subcatIds: [],
-  ownerNames: [], custodianNames: [], maturity: [], finalOnly: false, search: ''
-};
-
-export default function AttributeMappingPage() {
-  const [filters, setFilters] = React.useState(initialFilters);
-  const [loading, setLoading] = React.useState(false);
-  const [headers, setHeaders] = React.useState([]); // normalized camelCase
-  const [rows, setRows] = React.useState([]);
-  const [selectedSubcatID, setSelectedSubcatID] = React.useState(null);
-
-  const loadFeed = React.useCallback(async (withRows = false, subcatIDs = []) => {
-    setLoading(true);
-    try {
-      const resp = await fetchAttributeFeed({
-        orgIds: filters.orgIds,
-        functionIds: filters.functionIds,
-        categoryIds: filters.categoryIds,
-        subcatIds: withRows ? (subcatIDs?.length ? subcatIDs : filters.subcatIds) : [],
-        ownerNames: filters.ownerNames,
-        custodianNames: filters.custodianNames,
-        maturity: filters.maturity,
-        finalOnly: filters.finalOnly,
-        search: filters.search
-      });
-      setHeaders(normalizeHeaders(resp.headers || []));
-      setRows(normalizeRows(resp.rows || []));
-    } finally {
-      setLoading(false);
-    }
-  }, [filters]);
-
-  React.useEffect(() => { loadFeed(false); }, [loadFeed]);
-
-  const handleSelectSubcat = async (id) => {
-    setSelectedSubcatID(id);
-    const nextSubcats = Array.from(new Set([id]));
-    setFilters(f => ({ ...f, subcatIds: nextSubcats }));
-    await loadFeed(true, nextSubcats);
-  };
-
-  const selectedHeader = React.useMemo(() => {
-    if (!selectedSubcatID) return null;
-    return headers.find(h => h.csF2SubcategoryID === selectedSubcatID) || null;
-  }, [headers, selectedSubcatID]);
-
-  const ownerCsv = React.useMemo(() => {
-    if (!selectedHeader) return '';
-    const firstOrgId = filters.orgIds?.[0];
-    const byOrg = headers.filter(h => h.csF2SubcategoryID === selectedSubcatID && (!firstOrgId || h.orgID === firstOrgId));
-    return (byOrg[0]?.owner) || selectedHeader.owner || '';
-  }, [headers, selectedHeader, selectedSubcatID, filters.orgIds]);
-
-  const custCsv = React.useMemo(() => {
-    if (!selectedHeader) return '';
-    const firstOrgId = filters.orgIds?.[0];
-    const byOrg = headers.filter(h => h.csF2SubcategoryID === selectedSubcatID && (!firstOrgId || h.orgID === firstOrgId));
-    return (byOrg[0]?.custodian) || selectedHeader.custodian || '';
-  }, [headers, selectedHeader, selectedSubcatID, filters.orgIds]);
-
-  const handleExport = async () => {
-    if (!rows?.length) return;
-    exportRowsAsCsv(rows, 'csf-attribute-rows.csv');
-  };
-
-  return (
-    <Box sx={{ px: { xs: 1, md: 2 }, pb: 3 }}>
-      <AttributeFilterBar
-        value={filters}
-        onChange={(v) => { setFilters(v); setSelectedSubcatID(null); }}
-        onExport={handleExport}
-      />
-
-      <TwoPane
-        left={
-          <>
-            <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-              CSF 2.0 Structure
-            </Typography>
-            <CsfTree
-              headers={headers}
-              onSelectSubcat={handleSelectSubcat}
-              selectedSubcatID={selectedSubcatID}
-            />
-          </>
-        }
-        right={
-          <>
-            {selectedHeader ? (
-              <HeaderInfoPanel
-                header={selectedHeader}
-                ownerCsv={ownerCsv}
-                custodianCsv={custCsv}
-              />
-            ) : (
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Select a subcategory from the left to view details.
-              </Typography>
-            )}
-            {/* Phase 4: attribute rows & editing */}
-          </>
-        }
-      />
-
-      <BusyOverlay open={loading} />
-    </Box>
-  );
-}
-
-
-
-
-----
-
-
-import * as React from 'react';
-import TreeAccordion from '../../../../ui/patterns/TreeAccordion';
-import FunctionBadge from '../atoms/FunctionBadge';
-
-export default function CsfTree({ headers = [], onSelectSubcat, selectedSubcatID }) {
-  const nodes = React.useMemo(() => {
-    const funcMap = new Map();
-
-    headers.forEach(h => {
-      if (!funcMap.has(h.functionID)) {
-        funcMap.set(h.functionID, {
-          id: `F-${h.functionID}`,
-          label: h.functionName,
-          sublabel: h.functionLanguage || '',
-          children: new Map()
-        });
-      }
-      const f = funcMap.get(h.functionID);
-
-      if (!f.children.has(h.categoryID)) {
-        f.children.set(h.categoryID, {
-          id: `C-${h.categoryID}`,
-          label: h.categoryName,
-          sublabel: h.categoryLanguage || '',
-          children: new Map()
-        });
-      }
-      const c = f.children.get(h.categoryID);
-
-      if (!c.children.has(h.csF2SubcategoryID)) {
-        c.children.set(h.csF2SubcategoryID, {
-          id: h.csF2SubcategoryID,
-          label: h.csF2SubcategoryName,
-          sublabel: h.csF2SubcategoryLanguage || ''
+/** Dedupes rows into unique CSF 1.1 subcats (ignores ID=0 customs). */
+export default function AssociatedCsf11Panel({ rows = [] }) {
+  const items = React.useMemo(() => {
+    const map = new Map();
+    rows.forEach(r => {
+      if (!r.csF1SubcategoryID || r.csF1SubcategoryID === 0) return;
+      if (!map.has(r.csF1SubcategoryID)) {
+        map.set(r.csF1SubcategoryID, {
+          id: r.csF1SubcategoryID,
+          name: r.csF1SubcategoryName,
+          language: r.csF1SubcategoryLanguage
         });
       }
     });
-
-    return Array.from(funcMap.values()).map(f => ({
-      id: f.id,
-      label: f.label,
-      sublabel: f.sublabel,
-      children: Array.from(f.children.values()).map(c => ({
-        id: c.id,
-        label: c.label,
-        sublabel: c.sublabel,
-        children: Array.from(c.children.values())
-      }))
-    }));
-  }, [headers]);
+    return Array.from(map.values());
+  }, [rows]);
 
   return (
-    <TreeAccordion
-      nodes={nodes}
-      selectedId={selectedSubcatID}
-      onSelect={onSelectSubcat}
-      renderAdornment={(node, level) => level === 0 ? <FunctionBadge functionName={node.label} /> : null}
-    />
-  );
-}
----
-
-
-import * as React from 'react';
-import { Card, CardContent, Typography, Box, Stack, Chip } from '@mui/material';
-import FunctionBadge from '../atoms/FunctionBadge';
-
-export default function HeaderInfoPanel({ header, ownerCsv, custodianCsv }) {
-  if (!header) return null;
-
-  return (
-    <Card variant="outlined" sx={{ mb: 2 }}>
+    <Card variant="outlined">
       <CardContent>
-        <Stack spacing={1.25}>
-          <Box>
-            <Box sx={{ display: 'flex', alignItems: 'center' }}>
-              <FunctionBadge functionName={header.functionName} size={18} />
-              <Typography variant="h6" sx={{ ml: .5 }}>{header.functionName}</Typography>
-            </Box>
-            {header.functionLanguage && (
-              <Typography variant="body2" color="text.secondary">
-                {header.functionLanguage}
-              </Typography>
-            )}
-          </Box>
-
-          <Box>
-            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-              {header.categoryName}
-            </Typography>
-            {header.categoryLanguage && (
-              <Typography variant="body2" color="text.secondary">
-                {header.categoryLanguage}
-              </Typography>
-            )}
-          </Box>
-
-          <Box>
-            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-              {header.csF2SubcategoryName}
-            </Typography>
-            {header.csF2SubcategoryLanguage && (
-              <Typography variant="body2" color="text.secondary">
-                {header.csF2SubcategoryLanguage}
-              </Typography>
-            )}
-          </Box>
-
-          {header.changeSummary && (
-            <Box>
-              <Typography variant="overline" color="text.secondary">Change Summary</Typography>
-              <Typography variant="body2">{header.changeSummary}</Typography>
-            </Box>
-          )}
-
-          {header.implementationExamples && (
-            <Box>
-              <Typography variant="overline" color="text.secondary">Implementation Examples</Typography>
-              <Typography variant="body2">{header.implementationExamples}</Typography>
-            </Box>
-          )}
-
-          {(ownerCsv || custodianCsv) && (
-            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ pt: .5 }}>
-              {ownerCsv?.split(',').filter(Boolean).map(n => (
-                <Chip key={`owner-${n}`} label={`Owner: ${n}`} size="small" />
-              ))}
-              {custodianCsv?.split(',').filter(Boolean).map(n => (
-                <Chip key={`cust-${n}`} label={`Custodian: ${n}`} size="small" variant="outlined" />
-              ))}
-            </Stack>
-          )}
-        </Stack>
+        <Typography variant="overline" color="text.secondary">Associated 1.1 Subcategories</Typography>
+        {items.length === 0 ? (
+          <Typography variant="body2" sx={{ mt: 1 }}>None — new in CSF 2.0.</Typography>
+        ) : (
+          <List dense>
+            {items.map(it => (
+              <ListItem key={it.id} disableGutters sx={{ alignItems: 'flex-start' }}>
+                <ListItemText
+                  primary={<Typography variant="body2" sx={{ fontWeight: 600 }}>{it.name}</Typography>}
+                  secondary={it.language ? <Typography variant="caption" color="text.secondary">{it.language}</Typography> : null}
+                />
+              </ListItem>
+            ))}
+          </List>
+        )}
       </CardContent>
     </Card>
   );
 }
-
-
-
-

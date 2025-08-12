@@ -1,24 +1,10 @@
 import * as React from 'react';
-import { Box } from '@mui/material';
-import { FUNCTION_COLORS, getFunctionCode } from '../../utils/csf2';
+import { Backdrop, CircularProgress } from '@mui/material';
 
-export default function FunctionBadge({ functionName, size = 16 }) {
-  const code = getFunctionCode(functionName);
-  const color = code && FUNCTION_COLORS[code] ? FUNCTION_COLORS[code] : { bg: '#E0E0E0', shadow: '0px 4px 10px rgba(0,0,0,0.1)' };
-
+export default function BusyOverlay({ open }) {
   return (
-    <Box
-      component="span"
-      sx={{
-        display: 'inline-block',
-        width: size,
-        height: size,
-        borderRadius: '4px',
-        backgroundColor: color.bg,
-        boxShadow: color.shadow,
-        mr: 1,
-        verticalAlign: 'middle',
-      }}
-    />
+    <Backdrop open={!!open} sx={{ zIndex: (t) => t.zIndex.drawer + 10 }}>
+      <CircularProgress />
+    </Backdrop>
   );
 }

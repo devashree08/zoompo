@@ -1,260 +1,196 @@
 // src/features/attributeMapping/components/organisms/RightHeaderComposite.jsx
 import * as React from 'react';
 import {
-  Box, Paper, Grid, Typography, Chip, Stack,
-  IconButton, Collapse, Divider, Tooltip, Dialog, DialogTitle,
-  DialogContent, DialogActions
+  Box, Paper, Typography, Chip, Button, IconButton,
+  Stack, Divider
 } from '@mui/material';
-import { ExpandLess, ExpandMore, OpenInNew } from '@mui/icons-material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon  from '@mui/icons-material/ExpandLess';
+import OpenInNewIcon   from '@mui/icons-material/OpenInNew';
+
+// use the shared atom (no duplicates)
 import ExpandableText from '../atoms/ExpandableText';
 
-/**
- * Compact, side-by-side header for execs:
- *  - Three cards in a responsive grid:
- *    [Function + Category + CSF2 Subcategory (+ owner/custodian)]  |  [Change Summary + Implementation Examples]  |  [Associated 1.1 Subcategories]
- *  - Collapsible: when collapsed, only CSF2 Subcategory + language shows.
- *  - Owners/Custodians change with active org (caller passes ownerCsv/custodianCsv for the active tab).
- *
- * Props:
- *  - header: normalized header row for selected subcat/org
- *  - associatedRows: all rows for the selected subcat (across orgs); used to compute unique 1.1 mappings
- *  - ownerCsv, custodianCsv: comma-separated names for the active org
- */
-export default function RightHeaderComposite({
-  header,
-  associatedRows = [],
-  ownerCsv = '',
-  custodianCsv = ''
-}) {
-  const [open, setOpen] = React.useState(true);
-  const toggle = () => setOpen(v => !v);
+const Card = ({ title, children, sx }) => (
+  <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, ...sx }}>
+    <Typography variant="overline" sx={{ letterSpacing: .6, color: 'text.secondary' }}>
+      {title}
+    </Typography>
+    {children}
+  </Paper>
+);
 
-  // Build Associated 1.1 list (unique by id > 0)
+const TitleAndText = ({ title, text }) => (
+  <Box>
+    <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: .25 }}>{title}</Typography>
+    <Typography variant="body2" color="text.secondary">{text || '—'}</Typography>
+  </Box>
+);
+
+const splitCsv = (csv) => (csv || '').split(',').map(s => s.trim()).filter(Boolean);
+
+// open long text in a NEW TAB (no modal)
+const escapeHtml = (s = '') =>
+  s.replace(/[&<>"']/g, c => ({'&':'&nbsp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c));
+function openTextInNewWindow(title, text) {
+  const win = window.open('', '_blank', 'noopener,noreferrer');
+  if (!win) return;
+  const html = `
+    <!doctype html><html><head><meta charset="utf-8"/>
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body{font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;margin:24px;line-height:1.6;color:#1D2939}
+      h2{margin:0 0 12px;font-size:20px;font-weight:800}
+      pre{white-space:pre-wrap;word-wrap:break-word;margin:0}
+    </style></head><body>
+      <h2>${escapeHtml(title)}</h2>
+      <pre>${escapeHtml(text || '—')}</pre>
+    </body></html>`;
+  win.document.open(); win.document.write(html); win.document.close();
+}
+
+// render up to N chips then a “+X more”
+function renderNameChips(names, prefix, max = 3) {
+  if (!names?.length) return null;
+  const shown = names.slice(0, max);
+  const extra = names.length - shown.length;
+  return (
+    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+      {shown.map((n, i) => (
+        <Chip key={`${prefix}-${i}`} size="small" label={`${prefix}: ${n}`} />
+      ))}
+      {extra > 0 && <Chip size="small" variant="outlined" label={`+${extra} more`} />}
+    </Stack>
+  );
+}
+
+export default function RightHeaderComposite({ header, associatedRows, ownerCsv, custodianCsv }) {
+  const [collapsed, setCollapsed] = React.useState(false);
+  if (!header) return null;
+
+  // distinct 1.1 mappings
   const assoc = React.useMemo(() => {
-    const map = new Map();
-    for (const r of associatedRows) {
+    const m = new Map();
+    (associatedRows || []).forEach(r => {
       const id = r.csF1SubcategoryID;
-      if (!id || id === 0) continue;
-      if (!map.has(id)) {
-        map.set(id, {
-          id,
-          name: r.csF1SubcategoryName,
-          lang: r.csF1SubcategoryLanguage
-        });
+      if (id && Number(id) !== 0 && !m.has(id)) {
+        m.set(id, { id, name: r.csF1SubcategoryName, lang: r.csF1SubcategoryLanguage });
       }
-    }
-    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+    });
+    return [...m.values()];
   }, [associatedRows]);
 
-  const owners = (ownerCsv || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-  const custodians = (custodianCsv || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  // Dialog for full text (if user wants a true full-screen read)
-  const [dialog, setDialog] = React.useState({ open: false, title: '', text: '' });
-  const openDialog = (title, text) => setDialog({ open: true, title, text });
-  const closeDialog = () => setDialog({ open: false, title: '', text: '' });
-
-  const openInNewTab = (title, text) => {
-    const html = `<!doctype html><title>${escapeHtml(title)}</title>
-      <style>body{font-family:Inter,system-ui,Segoe UI,Arial,sans-serif;padding:24px;line-height:1.6;}</style>
-      <h2>${escapeHtml(title)}</h2><pre style="white-space:pre-wrap">${escapeHtml(text || '')}</pre>`;
-    const blob = new Blob([html], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank', 'noopener');
-  };
+  const owners = splitCsv(ownerCsv);
+  const custodians = splitCsv(custodianCsv);
 
   return (
-    <Paper variant="outlined" sx={{ p: 2, mb: 2, borderRadius: 2 }}>
-      {/* Collapse bar (always visible) */}
-      <Box
-        onClick={toggle}
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          cursor: 'pointer',
-          mb: open ? 2 : 0
-        }}
+    <Box>
+      {/* One-line summary: Subcategory + Owner/Custodian chips — collapsible */}
+      <Paper
+        variant="outlined"
+        sx={{ p: 1, borderRadius: 2, mb: 1 }}
+        onClick={() => setCollapsed(c => !c)}
       >
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="overline" color="text.secondary">
-            CSF 2.0 Subcategory
-          </Typography>
-          <Typography variant="h6" fontWeight={800} noWrap>
+        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Typography variant="subtitle1" sx={{ fontWeight: 800, mr: 1 }}>
             {header.csF2SubcategoryName}
           </Typography>
-          {!open && (
-            <Typography
-              variant="body2"
-              color="text.secondary"
-              sx={{ display: { xs: 'none', sm: 'block' } }}
-              noWrap
-              title={header.csF2SubcategoryLanguage}
-            >
-              {header.csF2SubcategoryLanguage}
-            </Typography>
-          )}
-        </Box>
-        <IconButton size="small" onClick={(e) => { e.stopPropagation(); toggle(); }}>
-          {open ? <ExpandLess /> : <ExpandMore />}
-        </IconButton>
-      </Box>
+          {renderNameChips(owners, 'Owner')}
+          {renderNameChips(custodians, 'Custodian')}
+          <Box sx={{ flex: 1 }} />
+          <IconButton
+            size="small"
+            onClick={(e) => { e.stopPropagation(); setCollapsed(c => !c); }}
+          >
+            {collapsed ? <ExpandMoreIcon/> : <ExpandLessIcon/>}
+          </IconButton>
+        </Stack>
+      </Paper>
 
-      <Collapse in={open} timeout="auto" unmountOnExit>
-        <Grid
-          container
-          spacing={2}
+      {!collapsed && (
+        <Box
           sx={{
-            // 3 columns on lg+, 2 columns on md, stack on sm
-            gridAutoRows: '1fr'
+            display: 'grid',
+            gridTemplateColumns: { xs: '1fr', xl: 'minmax(720px, 3fr) minmax(320px, 1fr)' },
+            gap: 2, mb: 2,
           }}
         >
-          {/* Left card: Function | Category | CSF2 + owner/custodian */}
-          <Grid item xs={12} md={6} lg={6}>
-            <Paper variant="outlined" sx={{ p: 2, height: '100%', borderRadius: 2 }}>
-              {/* Function */}
-              <Section
-                title="Function"
-                name={header.functionName}
-                language={header.functionLanguage}
-              />
-              <Divider sx={{ my: 1.25 }} />
-              {/* Category */}
-              <Section
-                title="Category"
-                name={header.categoryName}
-                language={header.categoryLanguage}
-              />
-              <Divider sx={{ my: 1.25 }} />
-              {/* CSF 2.0 Subcategory */}
-              <Section
-                title="CSF 2.0 Subcategory"
-                name={header.csF2SubcategoryName}
-                language={header.csF2SubcategoryLanguage}
-              />
-
-              {/* Owners/Custodians (active org) */}
+          {/* Left cluster */}
+          <Box
+            sx={{
+              minWidth: 0,
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, minmax(220px, 1fr))',
+              gap: 2
+            }}
+          >
+            <Card title="FUNCTION">
+              <TitleAndText title={header.functionName} text={header.functionLanguage} />
+            </Card>
+            <Card title="CATEGORY">
+              <TitleAndText title={header.categoryName} text={header.categoryLanguage} />
+            </Card>
+            <Card title="CSF 2.0 SUBCATEGORY">
+              <TitleAndText title={header.csF2SubcategoryName} text={header.csF2SubcategoryLanguage} />
               {(owners.length || custodians.length) && (
                 <>
-                  <Divider sx={{ my: 1.25 }} />
-                  <Typography variant="overline" color="text.secondary">
-                    Owner / Custodian
-                  </Typography>
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
-                    {owners.map((o, i) => (
-                      <Chip key={`o-${i}`} size="small" label={`Owner: ${o}`} />
-                    ))}
-                    {custodians.map((c, i) => (
-                      <Chip key={`c-${i}`} size="small" label={`Custodian: ${c}`} variant="outlined" />
-                    ))}
+                  <Divider sx={{ my: 1 }} />
+                  <Typography variant="overline" sx={{ color: 'text.secondary' }}>OWNER / CUSTODIAN</Typography>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: .5 }}>
+                    {owners.map((n, i) => <Chip key={`o-${i}`} label={`Owner: ${n}`} size="small" />)}
+                    {custodians.map((n, i) => <Chip key={`c-${i}`} label={`Custodian: ${n}`} size="small" />)}
                   </Stack>
                 </>
               )}
-            </Paper>
-          </Grid>
+            </Card>
 
-          {/* Middle card: Change Summary + Implementation Examples (compact with Show more) */}
-          <Grid item xs={12} md={6} lg={4}>
-            <Paper variant="outlined" sx={{ p: 2, height: '100%', borderRadius: 2 }}>
-              <Typography variant="overline" color="text.secondary">
-                Change Summary
-              </Typography>
-              <ExpandableText
-                text={header.changeSummary}
-                maxLines={6}
-                sx={{ mb: 1.5 }}
-                onOpenDialog={() => openDialog('Change Summary', header.changeSummary)}
-                onOpenNewTab={() => openInNewTab('Change Summary', header.changeSummary)}
-              />
+            {/* Long texts — use shared atom; add "Open in new window" beneath each */}
+            <Box sx={{ gridColumn: '1 / span 2' }}>
+              <ExpandableText title="CHANGE SUMMARY" text={header.changeSummary} maxLines={4} />
+              {!!header.changeSummary && (
+                <Button
+                  size="small"
+                  sx={{ mt: .75 }}
+                  endIcon={<OpenInNewIcon fontSize="small" />}
+                  onClick={() => openTextInNewWindow('Change Summary', header.changeSummary)}
+                >
+                  Open in new window
+                </Button>
+              )}
+            </Box>
 
-              <Typography variant="overline" color="text.secondary">
-                Implementation Examples
-              </Typography>
-              <ExpandableText
-                text={header.implementationExamples}
-                maxLines={6}
-                sx={{ mb: 1 }}
-                onOpenDialog={() => openDialog('Implementation Examples', header.implementationExamples)}
-                onOpenNewTab={() => openInNewTab('Implementation Examples', header.implementationExamples)}
-              />
+            <Box>
+              <ExpandableText title="IMPLEMENTATION EXAMPLES" text={header.implementationExamples} maxLines={4} />
+              {!!header.implementationExamples && (
+                <Button
+                  size="small"
+                  sx={{ mt: .75 }}
+                  endIcon={<OpenInNewIcon fontSize="small" />}
+                  onClick={() => openTextInNewWindow('Implementation Examples', header.implementationExamples)}
+                >
+                  Open in new window
+                </Button>
+              )}
+            </Box>
+          </Box>
 
-              {/* optional helper link placeholder from your feed, if any */}
-              {/* <Link href="..." target="_blank" rel="noopener">Link to Helper Document</Link> */}
-            </Paper>
-          </Grid>
-
-          {/* Right card: Associated 1.1 Subcategories */}
-          <Grid item xs={12} md={12} lg={2}>
-            <Paper variant="outlined" sx={{ p: 2, height: '100%', borderRadius: 2 }}>
-              <Typography variant="overline" color="text.secondary">
-                Associated 1.1 Subcategories
-              </Typography>
-              <Box component="ul" sx={{ pl: 2, mt: 1, mb: 0 }}>
-                {assoc.length === 0 ? (
-                  <Typography variant="body2" color="text.secondary">None</Typography>
-                ) : (
-                  assoc.map(x => (
-                    <li key={x.id} style={{ marginBottom: 8 }}>
-                      <Typography variant="body2" fontWeight={700}>
-                        {x.name}
-                      </Typography>
-                      {x.lang && (
-                        <Typography variant="body2" color="text.secondary">
-                          {x.lang}
-                        </Typography>
-                      )}
-                    </li>
-                  ))
-                )}
+          {/* Right: associated CSF 1.1 */}
+          <Card title="ASSOCIATED 1.1 SUBCATEGORIES">
+            {assoc.length === 0 ? (
+              <Typography variant="body2" color="text.disabled">None.</Typography>
+            ) : (
+              <Box component="ul" sx={{ pl: 3, m: 0 }}>
+                {assoc.map(a => (
+                  <li key={a.id}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: .25 }}>{a.name}</Typography>
+                    <Typography variant="body2" color="text.secondary">{a.lang}</Typography>
+                  </li>
+                ))}
               </Box>
-            </Paper>
-          </Grid>
-        </Grid>
-      </Collapse>
-
-      {/* Full-text dialog */}
-      <Dialog open={dialog.open} onClose={closeDialog} fullWidth maxWidth="md">
-        <DialogTitle>{dialog.title}</DialogTitle>
-        <DialogContent dividers>
-          <Typography component="pre" sx={{ whiteSpace: 'pre-wrap', m: 0 }}>
-            {dialog.text || '—'}
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <IconButton onClick={() => openInNewTab(dialog.title, dialog.text)} title="Open in new tab">
-            <OpenInNew />
-          </IconButton>
-        </DialogActions>
-      </Dialog>
-    </Paper>
-  );
-}
-
-function Section({ title, name, language }) {
-  return (
-    <Box>
-      <Typography variant="overline" color="text.secondary">{title}</Typography>
-      <Typography variant="h6" fontWeight={800} sx={{ mb: 0.25 }}>
-        {name}
-      </Typography>
-      {!!language && (
-        <Typography variant="body2" color="text.secondary">
-          {language}
-        </Typography>
+            )}
+          </Card>
+        </Box>
       )}
     </Box>
   );
-}
-
-function escapeHtml(s = '') {
-  return s
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
 }

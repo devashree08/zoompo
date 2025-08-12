@@ -1,86 +1,85 @@
 import * as React from 'react';
-import {
-  List, ListItemButton, ListItemText, Collapse, Chip, Stack, Typography
-} from '@mui/material';
-import { ExpandLess, ExpandMore } from '@mui/icons-material';
+import { Chip } from '@mui/material';
+import TreeAccordion from '../../../../ui/patterns/TreeAccordion';
+import FunctionBadge from '../atoms/FunctionBadge';
 
-function NodeRow({ node, level, selectedId, onSelect, renderAdornment, renderCounts }) {
-  const [open, setOpen] = React.useState(level < 1); // open functions by default
+export default function CsfTree({ headers = [], onSelectSubcat, selectedSubcatID, maxHeight }) {
+  // Aggregate counts per subcategory across all orgs
+  const countsBySub = React.useMemo(() => {
+    const m = new Map();
+    headers.forEach(h => {
+      const key = h.csF2SubcategoryID;
+      const acc = m.get(key) || { kept: 0, removed: 0, custom: 0 };
+      acc.kept    += Number(h.keptCount    || 0);
+      acc.removed += Number(h.removedCount || 0);
+      acc.custom  += Number(h.customCount  || 0);
+      m.set(key, acc);
+    });
+    return m;
+  }, [headers]);
 
-  const hasChildren = !!node.children?.length;
-  const isLeaf = !hasChildren;
-  const selected = String(node.id) === String(selectedId);
+  const nodes = React.useMemo(() => {
+    const funcMap = new Map();
+    headers.forEach(h => {
+      if (!funcMap.has(h.functionID)) {
+        funcMap.set(h.functionID, {
+          id: `F-${h.functionID}`,
+          label: h.functionName,
+          sublabel: h.functionLanguage || '',
+          children: new Map()
+        });
+      }
+      const f = funcMap.get(h.functionID);
 
-  const leftAdornment = renderAdornment ? renderAdornment(node, level) : null;
-  const rightAdornment = renderCounts && isLeaf ? renderCounts(node) : null;
+      if (!f.children.has(h.categoryID)) {
+        f.children.set(h.categoryID, {
+          id: `C-${h.categoryID}`,
+          label: h.categoryName,
+          sublabel: h.categoryLanguage || '',
+          children: new Map()
+        });
+      }
+      const c = f.children.get(h.categoryID);
 
-  const handleClick = () => {
-    if (isLeaf) onSelect?.(node.id);
-    else setOpen(o => !o);
-  };
+      if (!c.children.has(h.csF2SubcategoryID)) {
+        const cnt = countsBySub.get(h.csF2SubcategoryID) || { kept:0, removed:0, custom:0 };
+        c.children.set(h.csF2SubcategoryID, {
+          id: h.csF2SubcategoryID,
+          label: h.csF2SubcategoryName,
+          sublabel: h.csF2SubcategoryLanguage || '',
+          counts: cnt
+        });
+      }
+    });
+
+    return Array.from(funcMap.values()).map(f => ({
+      id: f.id,
+      label: f.label,
+      sublabel: f.sublabel,
+      children: Array.from(f.children.values()).map(c => ({
+        id: c.id,
+        label: c.label,
+        sublabel: c.sublabel,
+        children: Array.from(c.children.values()).map(s => s)
+      }))
+    }));
+  }, [headers, countsBySub]);
 
   return (
-    <>
-      <ListItemButton
-        dense
-        selected={selected}
-        onClick={handleClick}
-        sx={{ pl: 1 + level * 2 }}
-      >
-        {leftAdornment}
-        <ListItemText
-          primary={
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Typography variant={level === 0 ? 'subtitle1' : level === 1 ? 'body1' : 'body2'}>
-                {node.label}
-              </Typography>
-              {rightAdornment}
-            </Stack>
-          }
-          secondary={node.sublabel}
-          secondaryTypographyProps={{ variant: 'caption', color: 'text.secondary' }}
-        />
-        {hasChildren ? (open ? <ExpandLess /> : <ExpandMore />) : null}
-      </ListItemButton>
-      {hasChildren && (
-        <Collapse in={open} unmountOnExit timeout="auto">
-          <List disablePadding>
-            {node.children.map((child) => (
-              <NodeRow
-                key={child.id}
-                node={child}
-                level={level + 1}
-                selectedId={selectedId}
-                onSelect={onSelect}
-                renderAdornment={renderAdornment}
-                renderCounts={renderCounts}
-              />
-            ))}
-          </List>
-        </Collapse>
-      )}
-    </>
+    <div style={{ maxHeight: maxHeight || 'calc(100vh - 190px)', overflow: 'auto' }}>
+      <TreeAccordion
+        nodes={nodes}
+        selectedId={selectedSubcatID}
+        onSelect={onSelectSubcat}
+        renderAdornment={(node, level) => level === 0 ? <FunctionBadge functionName={node.label} /> : null}
+        renderCounts={(leaf) => (
+          <>
+            <Chip size="small" label={`${leaf.counts.kept} Kept`} sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }} />
+            <Chip size="small" label={`${leaf.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }} />
+            <Chip size="small" label={`${leaf.counts.custom} Custom`} sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }} />
+          </>
+        )}
+      />
+    </div>
   );
 }
-
-export default function TreeAccordion({
-  nodes = [], selectedId, onSelect,
-  renderAdornment, renderCounts
-}) {
-  return (
-    <List disablePadding>
-      {nodes.map((n) => (
-        <NodeRow
-          key={n.id}
-          node={n}
-          level={0}
-          selectedId={selectedId}
-          onSelect={onSelect}
-          renderAdornment={renderAdornment}
-          renderCounts={renderCounts}
-        />
-      ))}
-    </List>
-  );
-}
-

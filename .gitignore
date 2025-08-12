@@ -1,56 +1,193 @@
-<Paper key={f.id} variant="outlined" sx={{ mb: 2, borderRadius: 2 }}>
-  {/* Function tile: compact Name | Language on one row */}
-  <Box
-    onClick={() => toggleFunc(f.id)}
-    sx={{
-      cursor: 'pointer',
-      py: 0.75,
-      px: 1.25,
-      '&:hover': { bgcolor: 'action.hover' },
-      borderBottom: '1px solid',
-      borderColor: 'divider',
-    }}
-  >
-    {/* two columns: name (with badge) | language */}
-    <Box
-      sx={{
-        display: 'grid',
-        alignItems: 'center',
-        columnGap: 2,
-        gridTemplateColumns: { xs: '1fr', sm: 'minmax(240px, 33%) 1fr' },
-      }}
-    >
-      <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0 }}>
-        <FunctionBadge functionName={f.name} />
-        <Typography variant="subtitle1" fontWeight={800} noWrap>
-          {f.name}
-        </Typography>
+import * as React from 'react';
+import {
+  Box, Grid, Paper, Stack, Typography, Chip, Button, IconButton,
+  Collapse, Dialog, DialogTitle, DialogContent, DialogActions
+} from '@mui/material';
+import { ExpandLess, ExpandMore, OpenInNew } from '@mui/icons-material';
+
+/** Small helper: clamp preview with Show more / less */
+function ClampText({ label, text, lines = 4 }) {
+  const [open, setOpen] = React.useState(false);
+  const [dlg, setDlg]   = React.useState(false);
+
+  const openInNew = () => {
+    const w = window.open('', '_blank');
+    if (w) {
+      w.document.write(
+        `<html><head><title>${label}</title></head><body style="font: 14px/1.5 system-ui, Segoe UI, Roboto, Helvetica, Arial">
+           <h2>${label}</h2><pre style="white-space: pre-wrap">${text || ''}</pre>
+         </body></html>`
+      );
+      w.document.close();
+    }
+  };
+
+  return (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+        <Typography variant="overline" fontWeight={700}>{label}</Typography>
+        <Stack direction="row" spacing={1}>
+          <Button size="small" onClick={() => setDlg(true)} startIcon={<OpenInNew/>}>
+            Open in dialog
+          </Button>
+        </Stack>
       </Stack>
 
-      {!compactMode && (
-        <Typography
-          variant="body2"
-          color="text.secondary"
-          sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-          title={f.desc}
-        >
-          {f.desc}
+      <Box sx={{
+        position: 'relative',
+        display: '-webkit-box',
+        WebkitLineClamp: open ? 'unset' : lines,
+        WebkitBoxOrient: 'vertical',
+        overflow: 'hidden'
+      }}>
+        <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>
+          {text || '—'}
         </Typography>
-      )}
-    </Box>
-  </Box>
-
-  <Collapse in={open} unmountOnExit>
-    <Divider sx={{ mb: 1 }} />
-    {!compactMode && (
-      <Box sx={{ px: 1.25 }}>
-        <BlackHeader left="Category Name" right="Category Language" />
       </Box>
-    )}
-    <Box sx={{ p: 1.25, pt: 0.5 }}>
-      {f.cats.map((cat) => (
-        <CategoryRow key={cat.id} fId={f.id} cat={cat} />
+
+      <Button
+        size="small"
+        onClick={() => setOpen(v => !v)}
+        sx={{ mt: 1 }}
+        endIcon={open ? <ExpandLess/> : <ExpandMore/>}
+      >
+        {open ? 'Show less' : 'Show more'}
+      </Button>
+
+      <Dialog open={dlg} onClose={() => setDlg(false)} maxWidth="md" fullWidth>
+        <DialogTitle>{label}</DialogTitle>
+        <DialogContent dividers>
+          <Typography sx={{ whiteSpace: 'pre-wrap' }}>{text || '—'}</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={openInNew} startIcon={<OpenInNew/>}>Open in new window</Button>
+          <Button onClick={() => setDlg(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+    </Paper>
+  );
+}
+
+/** Pill list for Owner/Custodian (comma-separated) */
+function PersonChips({ label, csv }) {
+  const list = (csv || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (!list.length) return null;
+
+  return (
+    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+      {list.map((n, i) => (
+        <Chip key={`${label}-${i}`} label={`${label ? `${label}: ` : ''}${n}`} variant="outlined" />
       ))}
-    </Box>
-  </Collapse>
-</Paper>
+    </Stack>
+  );
+}
+
+/**
+ * Header for the selected CSF 2.0 subcategory.
+ * Props:
+ *  - header: normalized header object for the ACTIVE org & selected subcat
+ *  - associated: [{ name, language }] distinct CSF 1.1 mappings for this subcat
+ */
+export default function SubcategoryHeader({ header, associated = [] }) {
+  const [collapsed, setCollapsed] = React.useState(false);
+
+  if (!header) return null;
+
+  const {
+    functionName, functionLanguage,
+    categoryName, categoryLanguage,
+    csF2SubcategoryName, csF2SubcategoryLanguage,
+    changeSummary, implementationExamples,
+    owner, custodian,
+  } = header;
+
+  return (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+      {/* Collapsed bar */}
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: collapsed ? 0 : 1 }}>
+        <Typography variant="subtitle1" fontWeight={800}>
+          {csF2SubcategoryName}{' '}
+          <Typography component="span" variant="body2" color="text.secondary">
+            — {csF2SubcategoryLanguage}
+          </Typography>
+        </Typography>
+        <Button size="small" onClick={() => setCollapsed(v => !v)} endIcon={collapsed ? <ExpandMore/> : <ExpandLess/>}>
+          {collapsed ? 'Show header' : 'Hide header'}
+        </Button>
+      </Stack>
+
+      <Collapse in={!collapsed}>
+        <Grid container spacing={2}>
+          {/* Left 9/12: three side-by-side cards */}
+          <Grid item xs={12} md={9}>
+            <Grid container spacing={2}>
+              {/* Function */}
+              <Grid item xs={12} md={4}>
+                <Paper variant="outlined" sx={{ p: 2, height: '100%', borderRadius: 2 }}>
+                  <Typography variant="overline" fontWeight={700}>FUNCTION</Typography>
+                  <Stack direction="row" spacing={2} alignItems="flex-start" sx={{ mt: .5 }}>
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="h6" fontWeight={900}>{functionName}</Typography>
+                      <Typography variant="body2" color="text.secondary">{functionLanguage}</Typography>
+                    </Box>
+                  </Stack>
+                </Paper>
+              </Grid>
+
+              {/* Category */}
+              <Grid item xs={12} md={4}>
+                <Paper variant="outlined" sx={{ p: 2, height: '100%', borderRadius: 2 }}>
+                  <Typography variant="overline" fontWeight={700}>CATEGORY</Typography>
+                  <Typography variant="h6" fontWeight={900}>{categoryName}</Typography>
+                  <Typography variant="body2" color="text.secondary">{categoryLanguage}</Typography>
+                </Paper>
+              </Grid>
+
+              {/* CSF 2.0 Subcategory + people */}
+              <Grid item xs={12} md={4}>
+                <Paper variant="outlined" sx={{ p: 2, height: '100%', borderRadius: 2 }}>
+                  <Typography variant="overline" fontWeight={700}>CSF 2.0 SUBCATEGORY</Typography>
+                  <Typography variant="h6" fontWeight={900}>{csF2SubcategoryName}</Typography>
+                  <Typography variant="body2" color="text.secondary">{csF2SubcategoryLanguage}</Typography>
+                  <PersonChips label="Owner" csv={owner} />
+                  <PersonChips label="Custodian" csv={custodian} />
+                </Paper>
+              </Grid>
+
+              {/* Change Summary */}
+              <Grid item xs={12} md={6}>
+                <ClampText label="CHANGE SUMMARY" text={changeSummary} />
+              </Grid>
+
+              {/* Implementation Examples */}
+              <Grid item xs={12} md={6}>
+                <ClampText label="IMPLEMENTATION EXAMPLES" text={implementationExamples} />
+              </Grid>
+            </Grid>
+          </Grid>
+
+          {/* Right 3/12: Associated CSF 1.1 list */}
+          <Grid item xs={12} md={3}>
+            <Paper variant="outlined" sx={{ p: 2, height: '100%', borderRadius: 2 }}>
+              <Typography variant="overline" fontWeight={700}>ASSOCIATED 1.1 SUBCATEGORIES</Typography>
+              <Box component="ul" sx={{ mt: 1.5, pl: 3, mb: 0 }}>
+                {associated.length ? associated.map((a, i) => (
+                  <li key={i} style={{ marginBottom: 10 }}>
+                    <Typography variant="subtitle2" fontWeight={800}>{a.name}</Typography>
+                    <Typography variant="body2" color="text.secondary">{a.language}</Typography>
+                  </li>
+                )) : (
+                  <Typography variant="body2" color="text.secondary">—</Typography>
+                )}
+              </Box>
+            </Paper>
+          </Grid>
+        </Grid>
+      </Collapse>
+    </Paper>
+  );
+}

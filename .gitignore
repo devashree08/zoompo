@@ -1,18 +1,19 @@
 // src/features/attributeMapping/components/organisms/CsfTree.jsx
 import * as React from 'react';
 import {
-  Box, Paper, Stack, Typography, IconButton, Collapse, Divider, Chip,
-  List, ListItemButton, ListItemText
+  Box, Paper, Stack, Typography, IconButton, Collapse, Divider, Chip, Grid
 } from '@mui/material';
 import { ExpandMore, ExpandLess } from '@mui/icons-material';
 import FunctionBadge from '../atoms/FunctionBadge';
 
 /**
  * Left navigation tree for CSF 2.0
- * - Browse mode (no subcat selected): show labeled sections like the screenshot:
- *   CATEGORY (name + language), then SUBCATEGORY (name + language)
- * - Compact mode (subcat selected): focus on chosen subcat; Function/Category show names only,
- *   Subcategory still shows name + language. Only the owning Function/Category are opened.
+ * - Browse (no selection): Function tile + one black header "Category Name | Category Language"
+ *   then all categories; for each category, one black header "Subcategory Name | Subcategory Language"
+ *   then all subcategories.
+ * - Compact (with selection): no black headers; only Function name, Category name, and Subcategory name+language
+ *   (chips visible). Focus opens only the owning Function & Category.
+ * - Click anywhere on a function tile or category row to toggle.
  */
 export default function CsfTree({
   headers = [],
@@ -22,12 +23,12 @@ export default function CsfTree({
 }) {
   const compactMode = !!selectedSubcatID;
 
-  /* counts per subcategory */
+  // Aggregate counts by subcategory
   const countsBySub = React.useMemo(() => {
     const m = new Map();
     headers.forEach(h => {
       const id = h.csF2SubcategoryID;
-      const acc = m.get(id) || { kept:0, removed:0, custom:0 };
+      const acc = m.get(id) || { kept: 0, removed: 0, custom: 0 };
       acc.kept    += Number(h.keptCount    || 0);
       acc.removed += Number(h.removedCount || 0);
       acc.custom  += Number(h.customCount  || 0);
@@ -36,7 +37,7 @@ export default function CsfTree({
     return m;
   }, [headers]);
 
-  /* build Function -> Category -> Subcategory tree */
+  // Build Function -> Category -> Subcategory tree
   const tree = React.useMemo(() => {
     const fM = new Map();
     headers.forEach(h => {
@@ -49,44 +50,46 @@ export default function CsfTree({
 
       if (!f.cats.has(h.categoryID)) {
         f.cats.set(h.categoryID, {
-          id: h.categoryID, name: h.categoryName, desc: h.categoryLanguage || '', subs: new Map()
+          id: h.categoryID, name: h.categoryName, desc: h.categoryLanguage || '', subs: []
         });
       }
       const c = f.cats.get(h.categoryID);
 
-      if (!c.subs.has(h.csF2SubcategoryID)) {
-        c.subs.set(h.csF2SubcategoryID, {
+      // add subcategory (unique)
+      if (!c.subs.some(s => s.id === h.csF2SubcategoryID)) {
+        c.subs.push({
           id: h.csF2SubcategoryID,
           name: h.csF2SubcategoryName,
           desc: h.csF2SubcategoryLanguage || '',
-          counts: countsBySub.get(h.csF2SubcategoryID) || { kept:0, removed:0, custom:0 }
+          counts: countsBySub.get(h.csF2SubcategoryID) || { kept: 0, removed: 0, custom: 0 }
         });
       }
     });
 
     return Array.from(fM.values()).map(f => ({
       ...f,
-      cats: Array.from(f.cats.values()).map(c => ({ ...c, subs: Array.from(c.subs.values()) }))
+      cats: Array.from(f.cats.values())
     }));
   }, [headers, countsBySub]);
 
-  /* find owner function/category of selected subcat */
+  // Find owner func/cat for selected subcat
   const ownerIds = React.useMemo(() => {
     if (!selectedSubcatID) return { funcId: null, catId: null };
     for (const f of tree) {
       for (const c of f.cats) {
-        const has = c.subs.some(s => String(s.id) === String(selectedSubcatID));
-        if (has) return { funcId: f.id, catId: c.id };
+        if (c.subs.some(s => String(s.id) === String(selectedSubcatID))) {
+          return { funcId: f.id, catId: c.id };
+        }
       }
     }
     return { funcId: null, catId: null };
   }, [tree, selectedSubcatID]);
 
-  /* expand state */
+  // Expand state
   const [openFuncs, setOpenFuncs] = React.useState(new Set());
   const [openCats, setOpenCats]   = React.useState(new Set());
 
-  // focus the selected subcat: open only its function & category
+  // Focus expand when compact mode
   React.useEffect(() => {
     if (!compactMode || !ownerIds.funcId) return;
     setOpenFuncs(new Set([ownerIds.funcId]));
@@ -109,98 +112,148 @@ export default function CsfTree({
     });
   };
 
-  const SectionTitle = ({ children }) => (
-    <Typography variant="overline" sx={{ color: 'text.primary', fontWeight: 800, letterSpacing: .6 }}>
-      {children}
-    </Typography>
+  const BlackHeader = ({ left, right }) => (
+    <Box sx={{
+      bgcolor: '#111', color: '#fff', borderRadius: 1,
+      px: 1.25, py: 0.75, mb: 0.75,
+      fontWeight: 800, letterSpacing: .3
+    }}>
+      <Grid container spacing={2} alignItems="center">
+        <Grid item xs={7}><Typography variant="body2">{left}</Typography></Grid>
+        <Grid item xs={5}><Typography variant="body2">{right}</Typography></Grid>
+      </Grid>
+    </Box>
   );
+
+  const CatRow = ({ fId, cat }) => {
+    const key = `${fId}:${cat.id}`;
+    const open = openCats.has(key);
+    return (
+      <Box sx={{ mb: 1.25 }}>
+        {/* Click entire row to toggle */}
+        <Box
+          onClick={() => toggleCat(fId, cat.id)}
+          sx={{
+            cursor: 'pointer',
+            borderRadius: 1,
+            px: 1.25, py: 1,
+            '&:hover': { bgcolor: 'action.hover' },
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          }}
+        >
+          <Grid container spacing={2} alignItems="center">
+            <Grid item xs={7}>
+              <Typography variant="body1" fontWeight={700}>{cat.name}</Typography>
+            </Grid>
+            <Grid item xs={5}>
+              {!compactMode && (
+                <Typography variant="body2" color="text.secondary">{cat.desc}</Typography>
+              )}
+            </Grid>
+          </Grid>
+          <IconButton size="small" sx={{ ml: 1 }} onClick={(e) => { e.stopPropagation(); toggleCat(fId, cat.id); }}>
+            {open ? <ExpandLess/> : <ExpandMore/>}
+          </IconButton>
+        </Box>
+
+        <Collapse in={open} unmountOnExit>
+          <Divider sx={{ mb: 1 }} />
+          {/* In browse mode show the black "Subcategory Name | Subcategory Language" header */}
+          {!compactMode && <BlackHeader left="Subcategory Name" right="Subcategory Language" />}
+
+          <Box sx={{ pl: 1 }}>
+            {cat.subs.map(s => {
+              const selected = String(s.id) === String(selectedSubcatID);
+              return (
+                <Box
+                  key={s.id}
+                  onClick={() => onSelectSubcat?.(s.id)}
+                  sx={{
+                    cursor: 'pointer',
+                    borderRadius: 1,
+                    px: 1.25, py: 0.8, mb: 0.5,
+                    bgcolor: selected ? 'action.selected' : 'transparent',
+                    '&:hover': { bgcolor: selected ? 'action.selected' : 'action.hover' }
+                  }}
+                >
+                  <Grid container spacing={2} alignItems="center">
+                    <Grid item xs={7}>
+                      <Typography variant="body2" fontWeight={700}>{s.name}</Typography>
+                      {/* In compact we still show language under name; in browse it's in the right column */}
+                      {compactMode && (
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          {s.desc}
+                        </Typography>
+                      )}
+                    </Grid>
+                    <Grid item xs={5}>
+                      {!compactMode && (
+                        <Typography variant="body2" color="text.secondary">{s.desc}</Typography>
+                      )}
+                      {/* Chips always visible */}
+                      <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
+                        <Chip size="small" label={`${s.counts.kept} Kept`}    sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }}/>
+                        <Chip size="small" label={`${s.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }}/>
+                        <Chip size="small" label={`${s.counts.custom} Custom`}  sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }}/>
+                      </Stack>
+                    </Grid>
+                  </Grid>
+                </Box>
+              );
+            })}
+          </Box>
+        </Collapse>
+      </Box>
+    );
+  };
 
   return (
     <Box sx={{ maxHeight, overflow: 'auto' }}>
       {tree.map((f) => {
-        const fOpen = openFuncs.has(f.id);
+        const open = openFuncs.has(f.id);
         return (
           <Paper key={f.id} variant="outlined" sx={{ mb: 2, borderRadius: 2 }}>
-            {/* FUNCTION header (name; language only in browse mode) */}
-            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 1.25 }}>
-              <Stack direction="row" spacing={1.25} alignItems="center">
+            {/* Function tile — click body to toggle */}
+            <Box
+              onClick={() => toggleFunc(f.id)}
+              sx={{
+                cursor: 'pointer',
+                p: 1.25,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                position: 'relative'
+              }}
+            >
+              {/* colored bar + function badge + title + language */}
+              <Stack direction="row" spacing={1.25} alignItems="center" sx={{ flex: 1, minWidth: 0 }}>
                 <FunctionBadge functionName={f.name} />
-                <Typography variant="subtitle1" fontWeight={800}>{f.name}</Typography>
+                <Stack sx={{ minWidth: 0 }}>
+                  <Typography variant="subtitle1" fontWeight={800}>{f.name}</Typography>
+                  {/* Show function language line like your screenshot */}
+                  <Typography variant="body2" color="text.secondary" noWrap>
+                    {f.desc}
+                  </Typography>
+                </Stack>
               </Stack>
-              <IconButton size="small" onClick={() => toggleFunc(f.id)}>
-                {fOpen ? <ExpandLess/> : <ExpandMore/>}
+              <IconButton size="small" onClick={(e)=>{ e.stopPropagation(); toggleFunc(f.id); }}>
+                {open ? <ExpandLess/> : <ExpandMore/>}
               </IconButton>
-            </Stack>
-            {!compactMode && f.desc && (
-              <Typography variant="caption" color="text.secondary" sx={{ px: 1.5, pb: 1 }}>
-                {f.desc}
-              </Typography>
-            )}
+            </Box>
 
-            <Collapse in={fOpen} unmountOnExit>
-              <Divider />
-              <Box sx={{ p: 1.25, pt: 1 }}>
-                {f.cats.map((c) => {
-                  const key = `${f.id}:${c.id}`;
-                  const cOpen = openCats.has(key);
-                  return (
-                    <Paper key={c.id} variant="outlined" sx={{ mb: 1.25, borderRadius: 2, bgcolor: 'background.default' }}>
-                      {/* CATEGORY block */}
-                      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 1 }}>
-                        <Box sx={{ pr: 1 }}>
-                          <SectionTitle>CATEGORY</SectionTitle>
-                          <Typography variant="body1" fontWeight={800}>{c.name}</Typography>
-                          {!compactMode && c.desc ? (
-                            <Typography variant="caption" color="text.secondary">{c.desc}</Typography>
-                          ) : null}
-                        </Box>
-                        <IconButton size="small" onClick={() => toggleCat(f.id, c.id)}>
-                          {cOpen ? <ExpandLess/> : <ExpandMore/>}
-                        </IconButton>
-                      </Stack>
+            <Collapse in={open} unmountOnExit>
+              <Divider sx={{ mb: 1 }} />
+              {/* In browse view, show Category header (black bar) once per function */}
+              {!compactMode && (
+                <Box sx={{ px: 1.25 }}>
+                  <BlackHeader left="Category Name" right="Category Language" />
+                </Box>
+              )}
 
-                      <Collapse in={cOpen} unmountOnExit>
-                        <Divider />
-                        <List dense disablePadding sx={{ py: .5 }}>
-                          {c.subs.map(s => {
-                            const selected = String(s.id) === String(selectedSubcatID);
-                            const chips = (
-                              <Stack direction="row" spacing={1} sx={{ ml: 1 }}>
-                                <Chip size="small" label={`${s.counts.kept} Kept`}    sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }}/>
-                                <Chip size="small" label={`${s.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }}/>
-                                <Chip size="small" label={`${s.counts.custom} Custom`}  sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }}/>
-                              </Stack>
-                            );
-                            return (
-                              <ListItemButton
-                                key={s.id}
-                                onClick={() => onSelectSubcat?.(s.id)}
-                                selected={selected}
-                                sx={{ px: 1.25, py: 1, borderRadius: 1, mb: .5 }}
-                              >
-                                <ListItemText
-                                  primary={
-                                    <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-                                      <Box sx={{ pr: 2, flex: 1, minWidth: 0 }}>
-                                        <SectionTitle>SUBCATEGORY</SectionTitle>
-                                        <Typography variant="body2" fontWeight={800} noWrap>{s.name}</Typography>
-                                        {/* Always show subcategory language */}
-                                        <Typography variant="caption" color="text.secondary" sx={{ display:'block' }}>
-                                          {s.desc}
-                                        </Typography>
-                                      </Box>
-                                      {chips}
-                                    </Stack>
-                                  }
-                                />
-                              </ListItemButton>
-                            );
-                          })}
-                        </List>
-                      </Collapse>
-                    </Paper>
-                  );
-                })}
+              <Box sx={{ p: 1.25, pt: 0.5 }}>
+                {f.cats.map(cat => (
+                  <CatRow key={cat.id} fId={f.id} cat={cat} />
+                ))}
               </Box>
             </Collapse>
           </Paper>

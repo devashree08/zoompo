@@ -1,11 +1,15 @@
+// src/features/attributeMapping/components/organisms/RightHeaderComposite.jsx
 import * as React from 'react';
 import {
   Box, Paper, Typography, Chip, Button, IconButton,
-  Dialog, DialogTitle, DialogContent, DialogActions, Stack, Divider
+  Stack, Divider
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon  from '@mui/icons-material/ExpandLess';
 import OpenInNewIcon   from '@mui/icons-material/OpenInNew';
+
+// use the shared atom (no duplicates)
+import ExpandableText from '../atoms/ExpandableText';
 
 const Card = ({ title, children, sx }) => (
   <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, ...sx }}>
@@ -23,47 +27,42 @@ const TitleAndText = ({ title, text }) => (
   </Box>
 );
 
-function ExpandableText({ title, text, maxLines = 4 }) {
-  const [open, setOpen] = React.useState(false);
-  const [dialogOpen, setDialogOpen] = React.useState(false);
-  return (
-    <Card title={title}>
-      <Box sx={{
-        position: 'relative',
-        ...(open ? {} : {
-          display: '-webkit-box',
-          WebkitLineClamp: maxLines,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden'
-        })
-      }}>
-        <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-          {text || '—'}
-        </Typography>
-      </Box>
-      <Stack direction="row" spacing={1} sx={{ mt: .75 }}>
-        <Button size="small" onClick={() => setOpen(v => !v)}>
-          {open ? 'Show less' : 'Show more'}
-        </Button>
-        {!!text && (
-          <Button size="small" endIcon={<OpenInNewIcon fontSize="small" />} onClick={() => setDialogOpen(true)}>
-            Open dialog
-          </Button>
-        )}
-      </Stack>
+const splitCsv = (csv) => (csv || '').split(',').map(s => s.trim()).filter(Boolean);
 
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} fullWidth maxWidth="md">
-        <DialogTitle>{title}</DialogTitle>
-        <DialogContent dividers>
-          <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>{text}</Typography>
-        </DialogContent>
-        <DialogActions><Button onClick={() => setDialogOpen(false)}>Close</Button></DialogActions>
-      </Dialog>
-    </Card>
-  );
+// open long text in a NEW TAB (no modal)
+const escapeHtml = (s = '') =>
+  s.replace(/[&<>"']/g, c => ({'&':'&nbsp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c));
+function openTextInNewWindow(title, text) {
+  const win = window.open('', '_blank', 'noopener,noreferrer');
+  if (!win) return;
+  const html = `
+    <!doctype html><html><head><meta charset="utf-8"/>
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body{font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;margin:24px;line-height:1.6;color:#1D2939}
+      h2{margin:0 0 12px;font-size:20px;font-weight:800}
+      pre{white-space:pre-wrap;word-wrap:break-word;margin:0}
+    </style></head><body>
+      <h2>${escapeHtml(title)}</h2>
+      <pre>${escapeHtml(text || '—')}</pre>
+    </body></html>`;
+  win.document.open(); win.document.write(html); win.document.close();
 }
 
-const splitCsv = (csv) => (csv || '').split(',').map(s => s.trim()).filter(Boolean);
+// render up to N chips then a “+X more”
+function renderNameChips(names, prefix, max = 3) {
+  if (!names?.length) return null;
+  const shown = names.slice(0, max);
+  const extra = names.length - shown.length;
+  return (
+    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+      {shown.map((n, i) => (
+        <Chip key={`${prefix}-${i}`} size="small" label={`${prefix}: ${n}`} />
+      ))}
+      {extra > 0 && <Chip size="small" variant="outlined" label={`+${extra} more`} />}
+    </Stack>
+  );
+}
 
 export default function RightHeaderComposite({ header, associatedRows, ownerCsv, custodianCsv }) {
   const [collapsed, setCollapsed] = React.useState(false);
@@ -86,19 +85,26 @@ export default function RightHeaderComposite({ header, associatedRows, ownerCsv,
 
   return (
     <Box>
-      {/* one-line summary, collapsible */}
-      <Paper variant="outlined"
-        sx={{ p: 1, borderRadius: 2, mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}
+      {/* One-line summary: Subcategory + Owner/Custodian chips — collapsible */}
+      <Paper
+        variant="outlined"
+        sx={{ p: 1, borderRadius: 2, mb: 1 }}
+        onClick={() => setCollapsed(c => !c)}
       >
-        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-          {header.csF2SubcategoryName}
-        </Typography>
-        <Typography variant="body2" color="text.secondary" noWrap sx={{ minWidth: 0, flex: 1 }}>
-          {header.csF2SubcategoryLanguage}
-        </Typography>
-        <IconButton size="small" onClick={() => setCollapsed(c => !c)}>
-          {collapsed ? <ExpandMoreIcon/> : <ExpandLessIcon/>}
-        </IconButton>
+        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Typography variant="subtitle1" sx={{ fontWeight: 800, mr: 1 }}>
+            {header.csF2SubcategoryName}
+          </Typography>
+          {renderNameChips(owners, 'Owner')}
+          {renderNameChips(custodians, 'Custodian')}
+          <Box sx={{ flex: 1 }} />
+          <IconButton
+            size="small"
+            onClick={(e) => { e.stopPropagation(); setCollapsed(c => !c); }}
+          >
+            {collapsed ? <ExpandMoreIcon/> : <ExpandLessIcon/>}
+          </IconButton>
+        </Stack>
       </Paper>
 
       {!collapsed && (
@@ -109,7 +115,7 @@ export default function RightHeaderComposite({ header, associatedRows, ownerCsv,
             gap: 2, mb: 2,
           }}
         >
-          {/* Left: three compact cards + two expandable text cards */}
+          {/* Left cluster */}
           <Box
             sx={{
               minWidth: 0,
@@ -138,15 +144,37 @@ export default function RightHeaderComposite({ header, associatedRows, ownerCsv,
               )}
             </Card>
 
+            {/* Long texts — use shared atom; add "Open in new window" beneath each */}
             <Box sx={{ gridColumn: '1 / span 2' }}>
-              <ExpandableText title="CHANGE SUMMARY" text={header.changeSummary} />
+              <ExpandableText title="CHANGE SUMMARY" text={header.changeSummary} maxLines={4} />
+              {!!header.changeSummary && (
+                <Button
+                  size="small"
+                  sx={{ mt: .75 }}
+                  endIcon={<OpenInNewIcon fontSize="small" />}
+                  onClick={() => openTextInNewWindow('Change Summary', header.changeSummary)}
+                >
+                  Open in new window
+                </Button>
+              )}
             </Box>
+
             <Box>
-              <ExpandableText title="IMPLEMENTATION EXAMPLES" text={header.implementationExamples} />
+              <ExpandableText title="IMPLEMENTATION EXAMPLES" text={header.implementationExamples} maxLines={4} />
+              {!!header.implementationExamples && (
+                <Button
+                  size="small"
+                  sx={{ mt: .75 }}
+                  endIcon={<OpenInNewIcon fontSize="small" />}
+                  onClick={() => openTextInNewWindow('Implementation Examples', header.implementationExamples)}
+                >
+                  Open in new window
+                </Button>
+              )}
             </Box>
           </Box>
 
-          {/* Right: associated 1.1s */}
+          {/* Right: associated CSF 1.1 */}
           <Card title="ASSOCIATED 1.1 SUBCATEGORIES">
             {assoc.length === 0 ? (
               <Typography variant="body2" color="text.disabled">None.</Typography>

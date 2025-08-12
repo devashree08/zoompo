@@ -1,85 +1,49 @@
 import * as React from 'react';
-import { Chip } from '@mui/material';
-import TreeAccordion from '../../../../ui/patterns/TreeAccordion';
+import { Card, CardContent, Grid, Chip, Typography, Stack } from '@mui/material';
 import FunctionBadge from '../atoms/FunctionBadge';
 
-export default function CsfTree({ headers = [], onSelectSubcat, selectedSubcatID, maxHeight }) {
-  // Aggregate counts per subcategory across all orgs
-  const countsBySub = React.useMemo(() => {
-    const m = new Map();
-    headers.forEach(h => {
-      const key = h.csF2SubcategoryID;
-      const acc = m.get(key) || { kept: 0, removed: 0, custom: 0 };
-      acc.kept    += Number(h.keptCount    || 0);
-      acc.removed += Number(h.removedCount || 0);
-      acc.custom  += Number(h.customCount  || 0);
-      m.set(key, acc);
-    });
-    return m;
-  }, [headers]);
-
-  const nodes = React.useMemo(() => {
-    const funcMap = new Map();
-    headers.forEach(h => {
-      if (!funcMap.has(h.functionID)) {
-        funcMap.set(h.functionID, {
-          id: `F-${h.functionID}`,
-          label: h.functionName,
-          sublabel: h.functionLanguage || '',
-          children: new Map()
-        });
-      }
-      const f = funcMap.get(h.functionID);
-
-      if (!f.children.has(h.categoryID)) {
-        f.children.set(h.categoryID, {
-          id: `C-${h.categoryID}`,
-          label: h.categoryName,
-          sublabel: h.categoryLanguage || '',
-          children: new Map()
-        });
-      }
-      const c = f.children.get(h.categoryID);
-
-      if (!c.children.has(h.csF2SubcategoryID)) {
-        const cnt = countsBySub.get(h.csF2SubcategoryID) || { kept:0, removed:0, custom:0 };
-        c.children.set(h.csF2SubcategoryID, {
-          id: h.csF2SubcategoryID,
-          label: h.csF2SubcategoryName,
-          sublabel: h.csF2SubcategoryLanguage || '',
-          counts: cnt
-        });
-      }
-    });
-
-    return Array.from(funcMap.values()).map(f => ({
-      id: f.id,
-      label: f.label,
-      sublabel: f.sublabel,
-      children: Array.from(f.children.values()).map(c => ({
-        id: c.id,
-        label: c.label,
-        sublabel: c.sublabel,
-        children: Array.from(c.children.values()).map(s => s)
-      }))
-    }));
-  }, [headers, countsBySub]);
+export default function HeaderInfoPanel({ header, ownerCsv, custodianCsv }) {
+  const owners = (ownerCsv || '').split(',').map(s => s.trim()).filter(Boolean);
+  const custodians = (custodianCsv || '').split(',').map(s => s.trim()).filter(Boolean);
 
   return (
-    <div style={{ maxHeight: maxHeight || 'calc(100vh - 190px)', overflow: 'auto' }}>
-      <TreeAccordion
-        nodes={nodes}
-        selectedId={selectedSubcatID}
-        onSelect={onSelectSubcat}
-        renderAdornment={(node, level) => level === 0 ? <FunctionBadge functionName={node.label} /> : null}
-        renderCounts={(leaf) => (
-          <>
-            <Chip size="small" label={`${leaf.counts.kept} Kept`} sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }} />
-            <Chip size="small" label={`${leaf.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }} />
-            <Chip size="small" label={`${leaf.counts.custom} Custom`} sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }} />
-          </>
-        )}
-      />
-    </div>
+    <Card variant="outlined" sx={{ mb: 2, position:'sticky', top: 8, zIndex: 1 }}>
+      <CardContent>
+        <Grid container spacing={2}>
+          <Grid item xs={12} md={8}>
+            <Typography variant="overline" color="text.secondary">Function</Typography>
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+              <FunctionBadge functionName={header.functionName} />
+              <Typography variant="h6">{header.functionName}</Typography>
+            </Stack>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              {header.functionLanguage}
+            </Typography>
+
+            <Typography variant="overline" color="text.secondary">Category</Typography>
+            <Typography variant="subtitle1" fontWeight={600}>{header.categoryName}</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              {header.categoryLanguage}
+            </Typography>
+
+            <Typography variant="overline" color="text.secondary">CSF 2.0 Subcategory</Typography>
+            <Typography variant="subtitle1" fontWeight={600}>{header.csF2SubcategoryName}</Typography>
+            <Typography variant="body2" color="text.secondary">{header.csF2SubcategoryLanguage}</Typography>
+          </Grid>
+
+          <Grid item xs={12} md={4}>
+            <Typography variant="overline" color="text.secondary">Owner / Custodian</Typography>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb:1 }}>
+              {owners.length ? owners.map(n => <Chip key={n} size="small" label={`Owner: ${n}`} />)
+                             : <Typography variant="body2" color="text.secondary">—</Typography>}
+            </Stack>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              {custodians.length ? custodians.map(n => <Chip key={n} size="small" label={`Custodian: ${n}`} />)
+                                 : <Typography variant="body2" color="text.secondary">—</Typography>}
+            </Stack>
+          </Grid>
+        </Grid>
+      </CardContent>
+    </Card>
   );
 }

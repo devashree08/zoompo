@@ -1,71 +1,16 @@
 import * as React from 'react';
-import {
-  Card, CardContent, Typography, Table, TableHead, TableRow, TableCell,
-  TableBody, Box
-} from '@mui/material';
+import { Card, CardContent, Typography, Alert } from '@mui/material';
 
-const tint = (ml) => ml === 4 ? { background: 'rgba(255, 193, 7, .10)' } // amber
-                             : { background: 'rgba(25, 118, 210, .08)' }; // blue
-
-export default function AttributeGroupTable({ rows = [] }) {
-  // Group by 1.1 subcat (0 => Custom)
-  const groups = React.useMemo(() => {
-    const m = new Map();
-    rows.forEach(r => {
-      const key = r.csF1SubcategoryID || 0;
-      const groupKey = key === 0 ? 'Custom Attributes' : `Mapped from ${r.csF1SubcategoryName}`;
-      if (!m.has(groupKey)) m.set(groupKey, []);
-      m.get(groupKey).push(r);
-    });
-    // sort within group by ML, then AttributeNum
-    const sorted = [];
-    m.forEach((arr, key) => {
-      arr.sort((a,b) => (a.maturityLevel - b.maturityLevel) || (a.attributeNum - b.attributeNum));
-      sorted.push({ key, rows: arr });
-    });
-    return sorted;
-  }, [rows]);
-
+export default function AddCustomAttributePanel({ orgName, subcatName, editable = false }) {
   return (
     <Card variant="outlined" sx={{ mb: 2 }}>
       <CardContent>
-        {groups.map(g => (
-          <Box key={g.key} sx={{ mb: 3 }}>
-            <Typography variant="subtitle2" sx={{ mb: .5 }}>
-              {g.key}
-            </Typography>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell width={56}>#</TableCell>
-                  <TableCell>Attribute</TableCell>
-                  <TableCell width={56}>ML</TableCell>
-                  <TableCell width={120}>NIST 1.1</TableCell>
-                  <TableCell width={140}>Status</TableCell>
-                  <TableCell width={160}>2025 Attestation</TableCell>
-                  <TableCell width={120}>2024 Assess</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {g.rows.map(r => {
-                  const attrText = r.attributeDefinition ?? r.customAttributeDefinition ?? '';
-                  const assess2024 = r.assessScore2024 ?? r.assessorScore2024 ?? null;
-                  return (
-                    <TableRow key={`${r.orgID}-${r.csF2SubcategoryID}-${r.maturityLevel}-${r.attributeNum}`} sx={tint(r.maturityLevel)}>
-                      <TableCell>{r.attributeNum}</TableCell>
-                      <TableCell>{attrText}</TableCell>
-                      <TableCell>{r.maturityLevel}</TableCell>
-                      <TableCell>{r.csF1SubcategoryName || '—'}</TableCell>
-                      <TableCell>{r.selectionStatus || '—'}</TableCell>
-                      <TableCell>{r.selectionAttestation || r.customAttributeAttestation || '—'}</TableCell>
-                      <TableCell>{assess2024 ?? '—'}</TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </Box>
-        ))}
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Add Custom Attribute — {orgName || ''} / {subcatName || ''}
+        </Typography>
+        {editable
+          ? <Alert severity="info">Editing to be wired in Phase 4.</Alert>
+          : <Alert severity="info">Read-only preview. Editing arrives in Phase 4.</Alert>}
       </CardContent>
     </Card>
   );

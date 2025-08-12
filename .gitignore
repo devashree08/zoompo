@@ -1,26 +1,105 @@
 import * as React from 'react';
-import { Tabs, Tab, Box, Chip } from '@mui/material';
+import {
+  Box, Card, CardContent, Typography,
+  Table, TableHead, TableRow, TableCell, TableBody, Stack, Chip, Select, MenuItem
+} from '@mui/material';
 
-export default function OrgTabs({ orgs = [], activeOrgID, onChange, editableOrgID }) {
-  const idx = Math.max(0, orgs.findIndex(o => o.orgID === activeOrgID));
-  const handle = (_, i) => onChange?.(orgs[i]?.orgID);
+function groupByCsf11(rows) {
+  const map = new Map();
+  rows.forEach(r => {
+    const key = r.csF1SubcategoryID || 0;
+    if (!map.has(key)) {
+      map.set(key, {
+        id: key,
+        name: r.csF1SubcategoryID ? r.csF1SubcategoryName : 'Custom (no 1.1 mapping)',
+        rows: []
+      });
+    }
+    map.get(key).rows.push(r);
+  });
+  return Array.from(map.values())
+    .map(g => ({
+      ...g,
+      rows: g.rows.sort((a,b) => (a.maturityLevel - b.maturityLevel) || (a.attributeNum - b.attributeNum))
+    }));
+}
+
+export default function AttributeGroupTable({ rows = [], editable = false }) {
+  const groups = React.useMemo(() => groupByCsf11(rows), [rows]);
 
   return (
-    <Box sx={{ mb: 1 }}>
-      <Tabs value={idx} onChange={handle} variant="scrollable" scrollButtons="auto">
-        {orgs.map((o) => (
-          <Tab
-            key={o.orgID}
-            label={
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <span>{o.orgName}</span>
-                {o.orgID === editableOrgID ? <Chip size="small" label="editing" color="primary" /> : <Chip size="small" label="view" variant="outlined" />}
-              </Box>
-            }
-            sx={{ textTransform: 'none' }}
-          />
-        ))}
-      </Tabs>
+    <Box>
+      {groups.map(g => (
+        <Box key={g.id} sx={{ mt: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            px: 1.5, py: 1, border: '1px solid', borderColor: 'divider', borderBottom: 'none', borderRadius: '10px 10px 0 0', bgcolor: 'grey.50' }}>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>Mapped from {g.name}</Typography>
+              <Chip size="small" label="ML3 & ML4" />
+            </Stack>
+            <Typography variant="caption" color="text.secondary">{g.rows.length} attributes</Typography>
+          </Box>
+
+          <Table size="small" sx={{ border: '1px solid', borderColor: 'divider', borderRadius: '0 0 10px 10px', overflow: 'hidden' }}>
+            <TableHead>
+              <TableRow>
+                <TableCell width={60}>#</TableCell>
+                <TableCell>Attribute</TableCell>
+                <TableCell width={80}>ML</TableCell>
+                <TableCell width={120}>NIST 1.1</TableCell>
+                <TableCell width={140}>Status</TableCell>
+                <TableCell width={180}>2025 Attestation</TableCell>
+                <TableCell width={140}>2024 Assess</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {g.rows.map((r, i) => (
+                <TableRow key={`${g.id}-${r.attributeNum}-${i}`}
+                  sx={{
+                    '& td': { bgcolor: r.maturityLevel === 3 ? 'rgba(75,178,224,0.10)' : 'rgba(250,183,70,0.12)' }
+                  }}>
+                  <TableCell>{r.attributeNum}</TableCell>
+                  <TableCell>{r.customAttributeDefinition ?? r.attributeDefinition}</TableCell>
+                  <TableCell>{r.maturityLevel}</TableCell>
+                  <TableCell>{r.csF1SubcategoryID ? r.csF1SubcategoryName : ''}</TableCell>
+                  <TableCell>
+                    {editable ? (
+                      <Select size="small" value={r.selectionStatus || ''} disabled>
+                        <MenuItem value="">—</MenuItem>
+                        <MenuItem value="Keep">Keep</MenuItem>
+                        <MenuItem value="Remove">Remove</MenuItem>
+                      </Select>
+                    ) : (
+                      r.selectionStatus
+                        ? <Chip size="small" label={r.selectionStatus} color={r.selectionStatus === 'Keep' ? 'success' : 'error'} variant="outlined" />
+                        : <Typography variant="caption" color="text.secondary">—</Typography>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {editable ? (
+                      <Select size="small" value={r.selectionAttestation || ''} disabled>
+                        <MenuItem value="">—</MenuItem>
+                        <MenuItem value="Meet">Meet</MenuItem>
+                        <MenuItem value="Partial Meet">Partial Meet</MenuItem>
+                        <MenuItem value="Does Not Meet">Does Not Meet</MenuItem>
+                      </Select>
+                    ) : (
+                      r.selectionAttestation
+                        ? <Chip size="small" label={r.selectionAttestation} />
+                        : <Typography variant="caption" color="text.secondary">—</Typography>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {r.assessScore2024 != null
+                      ? <Chip size="small" label={String(r.assessScore2024)} />
+                      : <Typography variant="caption" color="text.secondary">—</Typography>}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
+      ))}
     </Box>
   );
 }

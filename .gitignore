@@ -1,92 +1,68 @@
 import * as React from 'react';
-import {
-  Accordion, AccordionSummary, AccordionDetails,
-  Typography, List, ListItemButton, ListItemText, Box
-} from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import TreeAccordion from '../../../../ui/patterns/TreeAccordion';
+import FunctionBadge from '../atoms/FunctionBadge';
 
 /**
- * Props:
- * - nodes: [{ id, label, sublabel?, children?: Node[] }]
- * - selectedId
- * - onSelect(id)
- * - renderAdornment?: (node, level) => ReactNode
- * - dense?: boolean
- * - defaultExpandedIds?: Set<string|number>
+ * headers: FeedHeaderDto[] (Result A of /feed)
+ * onSelectSubcat(id), selectedSubcatID
  */
-export default function TreeAccordion({
-  nodes = [],
-  selectedId = null,
-  onSelect,
-  renderAdornment,
-  dense = true,
-  defaultExpandedIds
-}) {
-  const [expanded, setExpanded] = React.useState(() => defaultExpandedIds ? new Set(defaultExpandedIds) : new Set());
+export default function CsfTree({ headers = [], onSelectSubcat, selectedSubcatID }) {
+  // Build nodes: Function -> Category -> Subcategory
+  const nodes = React.useMemo(() => {
+    const funcMap = new Map();
 
-  const toggle = (id) => setExpanded(prev => {
-    const next = new Set(prev);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
+    headers.forEach(h => {
+      // Function
+      if (!funcMap.has(h.FunctionID)) {
+        funcMap.set(h.FunctionID, {
+          id: `F-${h.FunctionID}`,
+          label: h.FunctionName,
+          sublabel: h.FunctionLanguage || '',
+          children: new Map()
+        });
+      }
+      const f = funcMap.get(h.FunctionID);
 
-  const renderNode = (node, level) => {
-    const hasChildren = !!(node.children && node.children.length);
-    const isExpanded = expanded.has(node.id);
+      // Category
+      if (!f.children.has(h.CategoryID)) {
+        f.children.set(h.CategoryID, {
+          id: `C-${h.CategoryID}`,
+          label: h.CategoryName,
+          sublabel: h.CategoryLanguage || '',
+          children: new Map()
+        });
+      }
+      const c = f.children.get(h.CategoryID);
 
-    if (hasChildren) {
-      return (
-        <Accordion
-          key={node.id}
-          disableGutters
-          expanded={isExpanded}
-          onChange={() => toggle(node.id)}
-          sx={{ borderTop: level === 0 ? '1px solid' : 'none', borderColor: level === 0 ? 'divider' : 'transparent', ml: level === 0 ? 0 : 2 }}
-        >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                {renderAdornment ? renderAdornment(node, level) : null}
-                <Typography variant={level === 0 ? 'subtitle1' : 'subtitle2'} sx={{ fontWeight: 600 }}>
-                  {node.label}
-                </Typography>
-              </Box>
-              {node.sublabel ? (
-                <Typography variant="caption" color="text.secondary" sx={{ mt: .25 }}>
-                  {node.sublabel}
-                </Typography>
-              ) : null}
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails sx={{ p: 0 }}>
-            <Box sx={{ width: '100%' }}>
-              {node.children.map(child => renderNode(child, level + 1))}
-            </Box>
-          </AccordionDetails>
-        </Accordion>
-      );
-    }
+      // Subcategory (leaf)
+      if (!c.children.has(h.CSF2SubcategoryID)) {
+        c.children.set(h.CSF2SubcategoryID, {
+          id: h.CSF2SubcategoryID, // numeric leaf id -> used to fetch rows
+          label: h.CSF2SubcategoryName,
+          sublabel: h.CSF2SubcategoryLanguage || ''
+        });
+      }
+    });
 
-    const selected = node.id === selectedId;
-    return (
-      <List dense={dense} disablePadding key={node.id} sx={{ ml: level === 0 ? 2 : 4 }}>
-        <ListItemButton
-          selected={selected}
-          onClick={() => onSelect?.(node.id)}
-          sx={{ py: dense ? .75 : 1, borderTop: '1px dashed', borderColor: 'divider' }}
-        >
-          <ListItemText
-            primary={<Typography variant="body2" sx={{ fontWeight: selected ? 700 : 500 }}>{node.label}</Typography>}
-            secondary={node.sublabel ? <Typography variant="caption" color="text.secondary">{node.sublabel}</Typography> : null}
-          />
-        </ListItemButton>
-      </List>
-    );
-  };
+    return Array.from(funcMap.values()).map(f => ({
+      id: f.id,
+      label: f.label,
+      sublabel: f.sublabel,
+      children: Array.from(f.children.values()).map(c => ({
+        id: c.id,
+        label: c.label,
+        sublabel: c.sublabel,
+        children: Array.from(c.children.values())
+      }))
+    }));
+  }, [headers]);
 
   return (
-    <Box sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
-      {nodes.map(n => renderNode(n, 0))}
-    </Box>
+    <TreeAccordion
+      nodes={nodes}
+      selectedId={selectedSubcatID}
+      onSelect={onSelectSubcat}
+      renderAdornment={(node, level) => level === 0 ? <FunctionBadge functionName={node.label} /> : null}
+    />
   );
 }

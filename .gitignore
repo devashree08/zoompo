@@ -1,46 +1,21 @@
 import * as React from 'react';
-import { Card, CardContent, Typography, List, ListItem, ListItemText } from '@mui/material';
+import { Tabs, Tab } from '@mui/material';
 
-export default function AssociatedCsf11Panel({ rows }) {
-  const list = React.useMemo(() => {
-    const m = new Map();
-    rows.forEach(r => {
-      if (!r.csF1SubcategoryID || r.csF1SubcategoryID === 0) return;
-      if (!m.has(r.csF1SubcategoryID)) {
-        m.set(r.csF1SubcategoryID, {
-          id: r.csF1SubcategoryID,
-          name: r.csF1SubcategoryName,
-          language: r.csF1SubcategoryLanguage
-        });
-      }
-    });
-    return Array.from(m.values());
-  }, [rows]);
-
+export default function OrgTabs({ orgs = [], activeOrgID, editableOrgID, onChange }) {
+  const value = activeOrgID ?? (orgs[0]?.orgID ?? 0);
   return (
-    <Card variant="outlined">
-      <CardContent>
-        <Typography variant="overline" color="text.secondary">
-          Associated 1.1 Subcategories
-        </Typography>
-        {list.length === 0 ? (
-          <Typography variant="body2" color="text.secondary">
-            None — new in CSF 2.0
-          </Typography>
-        ) : (
-          <List dense>
-            {list.map(x => (
-              <ListItem key={x.id} disableGutters>
-                <ListItemText
-                  primary={<Typography variant="body2" fontWeight={600}>{x.name}</Typography>}
-                  secondary={x.language}
-                  secondaryTypographyProps={{ variant: 'caption', color: 'text.secondary' }}
-                />
-              </ListItem>
-            ))}
-          </List>
-        )}
-      </CardContent>
-    </Card>
+    <Tabs
+      value={value}
+      onChange={(_, v) => onChange?.(v)}
+      sx={{ mb: 1, '& .MuiTab-root': { textTransform: 'none' } }}
+    >
+      {orgs.map(o => (
+        <Tab
+          key={o.orgID}
+          value={o.orgID}
+          label={`${o.orgName}${o.orgID === editableOrgID ? ' (editing)' : ' (view only)'}`}
+        />
+      ))}
+    </Tabs>
   );
 }

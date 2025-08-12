@@ -1,141 +1,67 @@
-import React from 'react';
-import { Box } from '@mui/material';
-import { FilterBar } from '../../../../ui/patterns/FilterBar';
-import MultiSelectSearch from '../../../../ui/core/MultiSelectSearch';
-import Switch from '../../../../ui/core/Switch';
-import { fetchAttributeFilterLookups } from '../../api/attributeApi';
-import { ensureSelected, MATURITY_OPTIONS } from '../../utils/filters';
+// src/ui/core/MultiSelectSearch.jsx
+import * as React from 'react';
+import { Autocomplete, TextField, Checkbox, Chip } from '@mui/material';
 
-// Safe getters for mixed casing keys coming from .NET JSON
-const get = (o, keys) => keys.find(k => o[k] !== undefined) ? o[keys.find(k => o[k] !== undefined)] : undefined;
+export default function MultiSelectSearch({
+  label,
+  value = [],
+  options = [],          // [{ value, label }]
+  onChange,
+  placeholder = 'Select…',
+  disabled = false,
+  limitTags = 3,
+  ...props
+}) {
+  const valueObjects = React.useMemo(() => {
+    const byValue = new Map(options.map(o => [o.value, o]));
+    return value.map(v => byValue.get(v)).filter(Boolean);
+  }, [value, options]);
 
-export default function AttributeFilterBar({ value, onChange, onExport }) {
-  const [opts, setOpts] = React.useState({
-    orgs: [], functions: [], categories: [], subcategories: [], owners: [], custodians: []
-  });
+  const handleChange = (_, selectedOptions) => {
+    onChange?.(selectedOptions.map(o => o.value));
+  };
 
-  // Load cross-filtered lookups
-  React.useEffect(() => {
-    let ignore = false;
-    (async () => {
-      const data = await fetchAttributeFilterLookups({
-        orgIds: value.orgIds,
-        functionIds: value.functionIds,
-        categoryIds: value.categoryIds,
-        subcatIds: value.subcatIds,
-        ownerNames: value.ownerNames,
-        custodianNames: value.custodianNames,
-      });
-      if (ignore) return;
-
-      // Map with robust key fallbacks (prevents “only 1 subcat” due to casing mismatches)
-      const orgs = (data.orgs || []).map(x => ({
-        value: get(x, ['orgID','OrgID','orgId']),
-        label: get(x, ['orgName','OrgName'])
-      })).filter(o => o.value != null);
-
-      const functions = (data.functions || []).map(x => ({
-        value: get(x, ['functionID','FunctionID','functionId']),
-        label: get(x, ['functionName','FunctionName'])
-      })).filter(o => o.value != null);
-
-      const categories = (data.categories || []).map(x => ({
-        value: get(x, ['categoryID','CategoryID','categoryId']),
-        label: get(x, ['categoryName','CategoryName'])
-      })).filter(o => o.value != null);
-
-      const subcategories = (data.subcategories || []).map(x => ({
-        value: get(x, [
-          'csF2SubcategoryID','CSF2SubcategoryID','csf2SubcategoryID',
-          'csF2SubcategoryId','CSF2SubcategoryId','subcategoryID','SubcategoryID','subcategoryId'
-        ]),
-        label: get(x, ['subcategoryName','SubcategoryName'])
-      })).filter(o => o.value != null);
-
-      const owners = (data.owners || []).map(x => ({
-        value: get(x, ['fullName','FullName']),
-        label: get(x, ['fullName','FullName'])
-      })).filter(o => !!o.value);
-
-      const custodians = (data.custodians || []).map(x => ({
-        value: get(x, ['fullName','FullName']),
-        label: get(x, ['fullName','FullName'])
-      })).filter(o => !!o.value);
-
-      setOpts({ orgs, functions, categories, subcategories, owners, custodians });
-    })();
-    return () => { ignore = true; };
-  }, [
-    value.orgIds, value.functionIds, value.categoryIds,
-    value.subcatIds, value.ownerNames, value.custodianNames
-  ]);
-
-  const filtersLayout = (
-    <Box
-      sx={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-        gap: 1.5,
-        alignItems: 'center',
-      }}
-    >
-      <MultiSelectSearch
-        label="Organizations"
-        value={value.orgIds}
-        options={ensureSelected(opts.orgs, value.orgIds)}
-        onChange={(v) => onChange({ ...value, orgIds: v })}
-      />
-      <MultiSelectSearch
-        label="Functions"
-        value={value.functionIds}
-        options={ensureSelected(opts.functions, value.functionIds)}
-        onChange={(v) => onChange({ ...value, functionIds: v })}
-      />
-      <MultiSelectSearch
-        label="Categories"
-        value={value.categoryIds}
-        options={ensureSelected(opts.categories, value.categoryIds)}
-        onChange={(v) => onChange({ ...value, categoryIds: v })}
-      />
-      <MultiSelectSearch
-        label="Subcategories"
-        value={value.subcatIds}
-        options={ensureSelected(opts.subcategories, value.subcatIds)}
-        onChange={(v) => onChange({ ...value, subcatIds: v })}
-      />
-      <MultiSelectSearch
-        label="Owners"
-        value={value.ownerNames}
-        options={ensureSelected(opts.owners, value.ownerNames)}
-        onChange={(v) => onChange({ ...value, ownerNames: v })}
-      />
-      <MultiSelectSearch
-        label="Custodians"
-        value={value.custodianNames}
-        options={ensureSelected(opts.custodians, value.custodianNames)}
-        onChange={(v) => onChange({ ...value, custodianNames: v })}
-      />
-      <MultiSelectSearch
-        label="Maturity"
-        value={value.maturity}
-        options={ensureSelected(MATURITY_OPTIONS, value.maturity)}
-        onChange={(v) => onChange({ ...value, maturity: v })}
-      />
-      <Switch
-        label="Final view (hide Removed)"
-        checked={!!value.finalOnly}
-        onChange={(checked) => onChange({ ...value, finalOnly: checked })}
-      />
-    </Box>
-  );
+  const renderTags = (selected, getTagProps) => {
+    if (!selected?.length) return null;
+    if (selected.length > limitTags) {
+      const first = selected[0];
+      return [
+        <Chip key={first.value} label={first.label} size="small" color="primary"
+              {...getTagProps({ index: 0 })} sx={{ mr: .5 }} />,
+        <Chip key="more" label={`${selected.length - 1} more`} size="small" sx={{ mr: .5 }} />
+      ];
+    }
+    return selected.map((opt, i) => (
+      <Chip key={opt.value} label={opt.label} size="small" color="primary"
+            {...getTagProps({ index: i })} sx={{ mr: .5 }} />
+    ));
+  };
 
   return (
-    <FilterBar
-      filtersLeft={filtersLayout}
-      searchValue={value.search}
-      onSearchChange={(s) => onChange({ ...value, search: s })}
-      onExport={onExport}
-      exportLabel="Export"
+    <Autocomplete
+      multiple
+      disableCloseOnSelect
+      options={options}
+      value={valueObjects}
+      onChange={handleChange}
+      getOptionLabel={(o) => o?.label ?? ''}
+      isOptionEqualToValue={(o, v) => o.value === v.value}
+      filterSelectedOptions={false}
+      renderOption={(props2, option, { selected }) => (
+        <li {...props2}>
+          <Checkbox checked={selected} sx={{ mr: 1 }} />
+          {option.label}
+        </li>
+      )}
+      renderTags={renderTags}
+      limitTags={limitTags}
+      ListboxProps={{ style: { maxHeight: 360 } }}
+      fullWidth
+      disabled={disabled}
+      renderInput={(params) => (
+        <TextField {...params} size="small" label={label} placeholder={placeholder} />
+      )}
+      {...props}
     />
   );
 }

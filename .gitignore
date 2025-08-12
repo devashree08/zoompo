@@ -1,19 +1,21 @@
 // src/features/attributeMapping/components/organisms/CsfTree.jsx
 import * as React from 'react';
 import {
-  Box, Paper, Stack, Typography, IconButton, Collapse, Divider, Chip, Grid
+  Box, Paper, Stack, Typography, IconButton, Collapse, Divider, Chip
 } from '@mui/material';
 import { ExpandMore, ExpandLess } from '@mui/icons-material';
 import FunctionBadge from '../atoms/FunctionBadge';
 
 /**
  * Left navigation tree for CSF 2.0
- * - Browse (no selection): Function tile + one black header "Category Name | Category Language"
- *   then all categories; for each category, one black header "Subcategory Name | Subcategory Language"
- *   then all subcategories.
- * - Compact (with selection): no black headers; only Function name, Category name, and Subcategory name+language
- *   (chips visible). Focus opens only the owning Function & Category.
- * - Click anywhere on a function tile or category row to toggle.
+ * Browse (no selection):
+ *  - Function tile with Name | Language on one row
+ *  - Black header: "Category Name | Category Language", then categories in two columns
+ *  - For each category: Black header: "Subcategory Name | Subcategory Language", then subs in two columns
+ *
+ * Compact (after choosing a subcategory):
+ *  - No black headers, only Function name > Category name
+ *  - Subcategory name + language + chips (language shown under the name)
  */
 export default function CsfTree({
   headers = [],
@@ -55,7 +57,6 @@ export default function CsfTree({
       }
       const c = f.cats.get(h.categoryID);
 
-      // add subcategory (unique)
       if (!c.subs.some(s => s.id === h.csF2SubcategoryID)) {
         c.subs.push({
           id: h.csF2SubcategoryID,
@@ -72,7 +73,7 @@ export default function CsfTree({
     }));
   }, [headers, countsBySub]);
 
-  // Find owner func/cat for selected subcat
+  // Auto-expand owner func/cat for the selected subcat (compact mode)
   const ownerIds = React.useMemo(() => {
     if (!selectedSubcatID) return { funcId: null, catId: null };
     for (const f of tree) {
@@ -85,11 +86,9 @@ export default function CsfTree({
     return { funcId: null, catId: null };
   }, [tree, selectedSubcatID]);
 
-  // Expand state
   const [openFuncs, setOpenFuncs] = React.useState(new Set());
   const [openCats, setOpenCats]   = React.useState(new Set());
 
-  // Focus expand when compact mode
   React.useEffect(() => {
     if (!compactMode || !ownerIds.funcId) return;
     setOpenFuncs(new Set([ownerIds.funcId]));
@@ -112,53 +111,56 @@ export default function CsfTree({
     });
   };
 
+  // Shared two-column grid (Name | Language) for expanded mode
+  const twoCol = {
+    display: 'grid',
+    columnGap: 16,
+    // side-by-side from small screens up; stack only on very narrow view
+    gridTemplateColumns: { xs: '1fr', sm: 'minmax(260px, 40%) 1fr' }
+  };
+
   const BlackHeader = ({ left, right }) => (
     <Box sx={{
       bgcolor: '#111', color: '#fff', borderRadius: 1,
-      px: 1.25, py: 0.75, mb: 0.75,
-      fontWeight: 800, letterSpacing: .3
+      px: 1.25, py: 0.75, mb: 0.75, fontWeight: 800, letterSpacing: .3
     }}>
-      <Grid container spacing={2} alignItems="center">
-        <Grid item xs={7}><Typography variant="body2">{left}</Typography></Grid>
-        <Grid item xs={5}><Typography variant="body2">{right}</Typography></Grid>
-      </Grid>
+      <Box sx={{ ...twoCol }}>
+        <Typography variant="body2">{left}</Typography>
+        <Typography variant="body2">{right}</Typography>
+      </Box>
     </Box>
   );
 
-  const CatRow = ({ fId, cat }) => {
-    const key = `${fId}:${cat.id}`;
+  const CategoryRow = ({ fId, cat }) => {
+    const key  = `${fId}:${cat.id}`;
     const open = openCats.has(key);
     return (
       <Box sx={{ mb: 1.25 }}>
-        {/* Click entire row to toggle */}
+        {/* Entire row toggles */}
         <Box
           onClick={() => toggleCat(fId, cat.id)}
           sx={{
             cursor: 'pointer',
             borderRadius: 1,
             px: 1.25, py: 1,
-            '&:hover': { bgcolor: 'action.hover' },
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            '&:hover': { bgcolor: 'action.hover' }
           }}
         >
-          <Grid container spacing={2} alignItems="center">
-            <Grid item xs={7}>
-              <Typography variant="body1" fontWeight={700}>{cat.name}</Typography>
-            </Grid>
-            <Grid item xs={5}>
-              {!compactMode && (
-                <Typography variant="body2" color="text.secondary">{cat.desc}</Typography>
-              )}
-            </Grid>
-          </Grid>
-          <IconButton size="small" sx={{ ml: 1 }} onClick={(e) => { e.stopPropagation(); toggleCat(fId, cat.id); }}>
-            {open ? <ExpandLess/> : <ExpandMore/>}
-          </IconButton>
+          <Box sx={compactMode ? {} : twoCol}>
+            <Typography variant="body1" fontWeight={700}>{cat.name}</Typography>
+            {!compactMode && (
+              <Typography variant="body2" color="text.secondary">{cat.desc}</Typography>
+            )}
+          </Box>
+          <Box sx={{ textAlign: 'right' }}>
+            <IconButton size="small" onClick={(e) => { e.stopPropagation(); toggleCat(fId, cat.id); }}>
+              {open ? <ExpandLess/> : <ExpandMore/>}
+            </IconButton>
+          </Box>
         </Box>
 
         <Collapse in={open} unmountOnExit>
           <Divider sx={{ mb: 1 }} />
-          {/* In browse mode show the black "Subcategory Name | Subcategory Language" header */}
           {!compactMode && <BlackHeader left="Subcategory Name" right="Subcategory Language" />}
 
           <Box sx={{ pl: 1 }}>
@@ -176,28 +178,30 @@ export default function CsfTree({
                     '&:hover': { bgcolor: selected ? 'action.selected' : 'action.hover' }
                   }}
                 >
-                  <Grid container spacing={2} alignItems="center">
-                    <Grid item xs={7}>
+                  {/* two-column for expanded; compact shows language under name */}
+                  {!compactMode ? (
+                    <Box sx={twoCol}>
                       <Typography variant="body2" fontWeight={700}>{s.name}</Typography>
-                      {/* In compact we still show language under name; in browse it's in the right column */}
-                      {compactMode && (
-                        <Typography variant="caption" color="text.secondary" display="block">
-                          {s.desc}
-                        </Typography>
-                      )}
-                    </Grid>
-                    <Grid item xs={5}>
-                      {!compactMode && (
+                      <Box>
                         <Typography variant="body2" color="text.secondary">{s.desc}</Typography>
-                      )}
-                      {/* Chips always visible */}
+                        <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
+                          <Chip size="small" label={`${s.counts.kept} Kept`}    sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }}/>
+                          <Chip size="small" label={`${s.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }}/>
+                          <Chip size="small" label={`${s.counts.custom} Custom`}  sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }}/>
+                        </Stack>
+                      </Box>
+                    </Box>
+                  ) : (
+                    <Box>
+                      <Typography variant="body2" fontWeight={700}>{s.name}</Typography>
+                      <Typography variant="caption" color="text.secondary" display="block">{s.desc}</Typography>
                       <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
                         <Chip size="small" label={`${s.counts.kept} Kept`}    sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }}/>
                         <Chip size="small" label={`${s.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }}/>
                         <Chip size="small" label={`${s.counts.custom} Custom`}  sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }}/>
                       </Stack>
-                    </Grid>
-                  </Grid>
+                    </Box>
+                  )}
                 </Box>
               );
             })}
@@ -213,7 +217,7 @@ export default function CsfTree({
         const open = openFuncs.has(f.id);
         return (
           <Paper key={f.id} variant="outlined" sx={{ mb: 2, borderRadius: 2 }}>
-            {/* Function tile — click body to toggle */}
+            {/* Function tile: Name | Language on one row */}
             <Box
               onClick={() => toggleFunc(f.id)}
               sx={{
@@ -222,20 +226,21 @@ export default function CsfTree({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                position: 'relative'
               }}
             >
-              {/* colored bar + function badge + title + language */}
-              <Stack direction="row" spacing={1.25} alignItems="center" sx={{ flex: 1, minWidth: 0 }}>
-                <FunctionBadge functionName={f.name} />
-                <Stack sx={{ minWidth: 0 }}>
-                  <Typography variant="subtitle1" fontWeight={800}>{f.name}</Typography>
-                  {/* Show function language line like your screenshot */}
-                  <Typography variant="body2" color="text.secondary" noWrap>
-                    {f.desc}
-                  </Typography>
-                </Stack>
-              </Stack>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Box sx={{ ...twoCol, alignItems: 'center' }}>
+                  <Stack direction="row" spacing={1.25} alignItems="center">
+                    <FunctionBadge functionName={f.name} />
+                    <Typography variant="subtitle1" fontWeight={800}>{f.name}</Typography>
+                  </Stack>
+                  {!compactMode && (
+                    <Typography variant="body2" color="text.secondary">
+                      {f.desc}
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
               <IconButton size="small" onClick={(e)=>{ e.stopPropagation(); toggleFunc(f.id); }}>
                 {open ? <ExpandLess/> : <ExpandMore/>}
               </IconButton>
@@ -243,16 +248,14 @@ export default function CsfTree({
 
             <Collapse in={open} unmountOnExit>
               <Divider sx={{ mb: 1 }} />
-              {/* In browse view, show Category header (black bar) once per function */}
               {!compactMode && (
                 <Box sx={{ px: 1.25 }}>
                   <BlackHeader left="Category Name" right="Category Language" />
                 </Box>
               )}
-
               <Box sx={{ p: 1.25, pt: 0.5 }}>
                 {f.cats.map(cat => (
-                  <CatRow key={cat.id} fId={f.id} cat={cat} />
+                  <CategoryRow key={cat.id} fId={f.id} cat={cat} />
                 ))}
               </Box>
             </Collapse>

@@ -1,132 +1,131 @@
 import * as React from 'react';
 import {
-  Box, Collapse, Divider, IconButton, List, ListItemButton,
-  ListItemText, Stack, Typography, Chip
+  Box, Grid, Card, CardContent, Typography, Stack, Chip, Button, Collapse, Dialog, DialogTitle, DialogContent
 } from '@mui/material';
-import { ExpandMore, ExpandLess } from '@mui/icons-material';
 import FunctionBadge from '../atoms/FunctionBadge';
+import AssociatedCsf11Panel from './AssociatedCsf11Panel';
 
-/** Clear, non-sticky, collapsible tree: Function → Category → Subcategory */
-export default function CsfTree({ headers = [], onSelectSubcat, selectedSubcatID, maxHeight }) {
-  const countsBySub = React.useMemo(() => {
-    const m = new Map();
-    headers.forEach(h => {
-      const id = h.csF2SubcategoryID;
-      const acc = m.get(id) || { kept: 0, removed: 0, custom: 0 };
-      acc.kept    += Number(h.keptCount    || 0);
-      acc.removed += Number(h.removedCount || 0);
-      acc.custom  += Number(h.customCount  || 0);
-      m.set(id, acc);
-    });
-    return m;
-  }, [headers]);
+function LongTextDialog({ open, title, text, onClose }) {
+  const openNewWindow = () => {
+    const w = window.open('', '_blank');
+    if (w) {
+      w.document.write(`<pre style="white-space:pre-wrap;font-family:system-ui,Segoe UI,Arial;padding:16px">${(text||'').replaceAll('<','&lt;')}</pre>`);
+      w.document.close();
+    }
+  };
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+      <DialogTitle sx={{ pr: 2 }}>
+        {title}
+        <Button size="small" sx={{ ml: 2 }} onClick={openNewWindow}>Open in new window</Button>
+      </DialogTitle>
+      <DialogContent dividers>
+        <Typography whiteSpace="pre-wrap">{text || '—'}</Typography>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
-  const tree = React.useMemo(() => {
-    const fM = new Map();
-    headers.forEach(h => {
-      if (!fM.has(h.functionID)) {
-        fM.set(h.functionID, { id: h.functionID, name: h.functionName, desc: h.functionLanguage || '', cats: new Map() });
-      }
-      const f = fM.get(h.functionID);
-      if (!f.cats.has(h.categoryID)) {
-        f.cats.set(h.categoryID, { id: h.categoryID, name: h.categoryName, desc: h.categoryLanguage || '', subs: new Map() });
-      }
-      const c = f.cats.get(h.categoryID);
-      if (!c.subs.has(h.csF2SubcategoryID)) {
-        c.subs.set(h.csF2SubcategoryID, {
-          id: h.csF2SubcategoryID,
-          name: h.csF2SubcategoryName,
-          desc: h.csF2SubcategoryLanguage || '',
-          counts: countsBySub.get(h.csF2SubcategoryID) || { kept:0, removed:0, custom:0 }
-        });
-      }
-    });
-    return Array.from(fM.values()).map(f => ({
-      ...f,
-      cats: Array.from(f.cats.values()).map(c => ({ ...c, subs: Array.from(c.subs.values()) }))
-    }));
-  }, [headers, countsBySub]);
+export default function RightHeaderComposite({
+  header,
+  associatedRows = [],
+  ownerCsv = '',
+  custodianCsv = '',
+  defaultCollapsed = false
+}) {
+  const [open, setOpen] = React.useState(!defaultCollapsed);
+  const [showChange, setShowChange] = React.useState(false);
+  const [showImpl, setShowImpl] = React.useState(false);
 
-  const [openFuncs, setOpenFuncs] = React.useState(() => new Set());
-  const [openCats, setOpenCats]   = React.useState(() => new Set());
-  React.useEffect(() => {
-    if (tree.length && openFuncs.size === 0) setOpenFuncs(new Set([tree[0].id]));
-  }, [tree]); // eslint-disable-line
+  const owners = (ownerCsv || '').split(',').map(s => s.trim()).filter(Boolean);
+  const custodians = (custodianCsv || '').split(',').map(s => s.trim()).filter(Boolean);
 
-  const toggleFunc = (id) => setOpenFuncs(s => { const n=new Set(s); n.has(id)?n.delete(id):n.add(id); return n; });
-  const toggleCat  = (fid, cid) => setOpenCats(s => { const key=`${fid}:${cid}`; const n=new Set(s); n.has(key)?n.delete(key):n.add(key); return n; });
+  const short = (txt, n = 6) => {
+    if (!txt) return '—';
+    const lines = txt.split(/\r?\n/);
+    if (lines.length <= n) return txt;
+    return lines.slice(0, n).join('\n') + '\n…';
+  };
 
   return (
-    <Box sx={{ maxHeight: maxHeight || 'calc(100vh - 200px)', overflow: 'auto' }}>
-      {tree.map((f, fi) => {
-        const fOpen = openFuncs.has(f.id);
-        return (
-          <Box key={f.id} sx={{ mb: 1.5 }}>
-            <Stack direction="row" alignItems="center" justifyContent="space-between"
-              sx={{ px: 1, py: 1, borderRadius: 1, bgcolor: 'background.paper', border: '1px solid', borderColor: 'divider' }}>
-              <Stack direction="row" spacing={1.25} alignItems="center">
-                <FunctionBadge functionName={f.name} />
-                <Box>
-                  <Typography variant="subtitle1" fontWeight={700}>{f.name}</Typography>
-                  {f.desc ? <Typography variant="caption" color="text.secondary">{f.desc}</Typography> : null}
-                </Box>
-              </Stack>
-              <IconButton size="small" onClick={() => toggleFunc(f.id)}>{fOpen ? <ExpandLess/> : <ExpandMore/>}</IconButton>
-            </Stack>
+    <Box sx={{ mb: 2 }}>
+      <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
+        <Button size="small" onClick={() => setOpen(o => !o)}>{open ? 'Hide header' : 'Show header'}</Button>
+      </Stack>
 
-            <Collapse in={fOpen} mountOnEnter unmountOnExit timeout="auto">
-              <Box sx={{ pl: 2, pt: 1 }}>
-                {f.cats.map((c, ci) => {
-                  const cKey = `${f.id}:${c.id}`;
-                  const cOpen = openCats.has(cKey);
-                  return (
-                    <Box key={c.id} sx={{ mb: 1 }}>
-                      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: .5 }}>
-                        <Box>
-                          <Typography variant="body1" fontWeight={600}>{c.name}</Typography>
-                          {c.desc ? <Typography variant="caption" color="text.secondary">{c.desc}</Typography> : null}
-                        </Box>
-                        <IconButton size="small" onClick={() => toggleCat(f.id, c.id)}>
-                          {cOpen ? <ExpandLess/> : <ExpandMore/>}
-                        </IconButton>
-                      </Stack>
+      <Collapse in={open} timeout="auto" unmountOnExit>
+        <Grid container spacing={2}>
+          {/* LEFT: Function / Category / CSF2 Subcategory + Owners/Custodians + texts (with dialogs) */}
+          <Grid item xs={12} md={8}>
+            <Card variant="outlined">
+              <CardContent>
+                <Typography variant="overline" color="text.secondary">Function</Typography>
+                <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+                  <FunctionBadge functionName={header.functionName} />
+                  <Typography variant="h6" fontWeight={800}>{header.functionName}</Typography>
+                </Stack>
+                {header.functionLanguage && (
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                    {header.functionLanguage}
+                  </Typography>
+                )}
 
-                      <Collapse in={cOpen} timeout="auto" unmountOnExit>
-                        <List dense disablePadding sx={{ mt: .5 }}>
-                          {c.subs.map((s) => {
-                            const selected = String(s.id) === String(selectedSubcatID);
-                            return (
-                              <ListItemButton key={s.id} onClick={() => onSelectSubcat?.(s.id)} selected={selected}
-                                sx={{ borderRadius: 1, mb: .25, pl: 1 }}>
-                                <ListItemText
-                                  primary={
-                                    <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
-                                      <Typography variant="body2" fontWeight={600}>{s.name}</Typography>
-                                      <Chip size="small" label={`${s.counts.kept} Kept`} sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }}/>
-                                      <Chip size="small" label={`${s.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }}/>
-                                      <Chip size="small" label={`${s.counts.custom} Custom`} sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }}/>
-                                    </Stack>
-                                  }
-                                  secondary={s.desc}
-                                  secondaryTypographyProps={{ variant:'caption', color:'text.secondary' }}
-                                />
-                              </ListItemButton>
-                            );
-                          })}
-                        </List>
-                      </Collapse>
+                <Typography variant="overline" color="text.secondary">Category</Typography>
+                <Typography variant="h6" fontWeight={800}>{header.categoryName}</Typography>
+                {header.categoryLanguage && (
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                    {header.categoryLanguage}
+                  </Typography>
+                )}
 
-                      {(ci < f.cats.length - 1) && <Divider sx={{ mt: 1, mb: 1 }} />}
-                    </Box>
-                  );
-                })}
-              </Box>
-            </Collapse>
+                <Typography variant="overline" color="text.secondary">CSF 2.0 Subcategory</Typography>
+                <Typography variant="h6" fontWeight={800}>{header.csF2SubcategoryName}</Typography>
+                {header.csF2SubcategoryLanguage && (
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                    {header.csF2SubcategoryLanguage}
+                  </Typography>
+                )}
 
-            {(fi < tree.length - 1) && <Divider sx={{ mt: 1.5 }} />}
-          </Box>
-        );
-      })}
+                <Typography variant="overline" color="text.secondary">Owner / Custodian</Typography>
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
+                  {owners.length ? owners.map(n => <Chip key={`own-${n}`} size="small" label={`Owner: ${n}`} />)
+                                 : <Typography variant="body2" color="text.secondary">—</Typography>}
+                </Stack>
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
+                  {custodians.length ? custodians.map(n => <Chip key={`cus-${n}`} size="small" label={`Custodian: ${n}`} />)
+                                     : <Typography variant="body2" color="text.secondary">—</Typography>}
+                </Stack>
+
+                <Grid container spacing={2}>
+                  <Grid item xs={12} md={6}>
+                    <Typography variant="overline" color="text.secondary">Change Summary</Typography>
+                    <Typography whiteSpace="pre-wrap" sx={{ mb: 1 }}>
+                      {short(header.changeSummary)}
+                    </Typography>
+                    <Button size="small" onClick={() => setShowChange(true)}>Show more</Button>
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <Typography variant="overline" color="text.secondary">Implementation Examples</Typography>
+                    <Typography whiteSpace="pre-wrap" sx={{ mb: 1 }}>
+                      {short(header.implementationExamples)}
+                    </Typography>
+                    <Button size="small" onClick={() => setShowImpl(true)}>Show more</Button>
+                  </Grid>
+                </Grid>
+              </CardContent>
+            </Card>
+          </Grid>
+
+          {/* RIGHT: Associated 1.1 Subcategories */}
+          <Grid item xs={12} md={4}>
+            <AssociatedCsf11Panel rows={associatedRows} />
+          </Grid>
+        </Grid>
+      </Collapse>
+
+      {/* Dialogs */}
+      <LongTextDialog open={showChange} title="Change Summary" text={header.changeSummary} onClose={() => setShowChange(false)} />
+      <LongTextDialog open={showImpl}   title="Implementation Examples" text={header.implementationExamples} onClose={() => setShowImpl(false)} />
     </Box>
   );
 }

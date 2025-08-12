@@ -1,203 +1,31 @@
-// src/features/attributeMapping/components/organisms/RightHeaderComposite.jsx
-import * as React from 'react';
-import {
-  Box, Paper, Typography, Chip, IconButton,
-  Stack, Divider
-} from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import ExpandLessIcon  from '@mui/icons-material/ExpandLess';
-import ExpandableText from '../atoms/ExpandableText'; // reuse the shared atom (no duplicates)
+// src/features/attributeMapping/api/selectionApi.js
+import api from '../../../lib/axiosClient';
 
-/* -------------------- helpers -------------------- */
-
-const Card = ({ title, children, sx }) => (
-  <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, ...sx }}>
-    <Typography variant="overline" sx={{ letterSpacing: .6, color: 'text.secondary' }}>
-      {title}
-    </Typography>
-    {children}
-  </Paper>
-);
-
-const TitleAndText = ({ title, text }) => (
-  <Box>
-    <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: .25 }}>{title}</Typography>
-    <Typography variant="body2" color="text.secondary">{text || '—'}</Typography>
-  </Box>
-);
-
-const splitCsv = (csv) => (csv || '').split(',').map(s => s.trim()).filter(Boolean);
-
-function renderNameChips(names, prefix, max = 3) {
-  if (!names?.length) return null;
-  const shown = names.slice(0, max);
-  const extra = names.length - shown.length;
-  return (
-    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-      {shown.map((n, i) => (
-        <Chip key={`${prefix}-${i}`} size="small" label={`${prefix}: ${n}`} />
-      ))}
-      {extra > 0 && <Chip size="small" variant="outlined" label={`+${extra} more`} />}
-    </Stack>
-  );
-}
-
-// Safer than about:blank + document.write; less likely to be blocked.
-function openHtmlInNewWindow(title, text) {
-  const safe = (s = '') =>
-    s.replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-  const html = `<!doctype html>
-<html><head><meta charset="utf-8"/>
-<title>${safe(title)}</title>
-<style>
-  body{font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;margin:24px;line-height:1.6;color:#1D2939}
-  h2{margin:0 0 12px;font-size:20px;font-weight:800}
-  pre{white-space:pre-wrap;word-wrap:break-word;margin:0}
-</style></head><body>
-  <h2>${safe(title)}</h2>
-  <pre>${safe(text || '—')}</pre>
-</body></html>`;
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener,noreferrer');
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-}
-
-/* -------------------- component -------------------- */
-
-export default function RightHeaderComposite({
-  header,
-  associatedRows,
-  ownerCsv,
-  custodianCsv
+/**
+ * Save Keep/Remove and/or Attestation for one attribute row.
+ * Backend endpoint you asked for: /api/selection/save
+ * Payload uses the same ID fields already present in normalized rows.
+ */
+export async function saveSelection({
+  orgID,
+  csF2SubcategoryID,
+  csF1SubcategoryID,
+  maturityLevel,
+  attributeNum,
+  selectionStatus,        // 'Keep' | 'Remove' | null
+  selectionAttestation,   // 'Meet' | 'Partial Meet' | 'Does Not Meet' | null
 }) {
-  const [collapsed, setCollapsed] = React.useState(false);
-  if (!header) return null;
+  const payload = {
+    orgID,
+    csF2SubcategoryID,
+    csF1SubcategoryID: csF1SubcategoryID ?? 0,
+    maturityLevel,
+    attributeNum,
+    selectionStatus,
+    selectionAttestation,
+  };
 
-  // distinct associated 1.1 subcategories
-  const assoc = React.useMemo(() => {
-    const m = new Map();
-    (associatedRows || []).forEach(r => {
-      const id = r.csF1SubcategoryID;
-      if (id && Number(id) !== 0 && !m.has(id)) {
-        m.set(id, { id, name: r.csF1SubcategoryName, lang: r.csF1SubcategoryLanguage });
-      }
-    });
-    return [...m.values()];
-  }, [associatedRows]);
-
-  const owners = splitCsv(ownerCsv);
-  const custodians = splitCsv(custodianCsv);
-
-  return (
-    <Box>
-      {/* One-line summary: Subcategory + Owner/Custodian chips — collapsible */}
-      <Paper
-        variant="outlined"
-        sx={{ p: 1, borderRadius: 2, mb: 1 }}
-        onClick={() => setCollapsed(c => !c)}
-      >
-        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Typography variant="subtitle1" sx={{ fontWeight: 800, mr: 1 }}>
-            {header.csF2SubcategoryName}
-          </Typography>
-          {renderNameChips(owners, 'Owner')}
-          {renderNameChips(custodians, 'Custodian')}
-          <Box sx={{ flex: 1 }} />
-          <IconButton
-            size="small"
-            onClick={(e) => { e.stopPropagation(); setCollapsed(c => !c); }}
-          >
-            {collapsed ? <ExpandMoreIcon/> : <ExpandLessIcon/>}
-          </IconButton>
-        </Stack>
-      </Paper>
-
-      {!collapsed && (
-        <Box
-          sx={{
-            display: 'grid',
-            gridTemplateColumns: { xs: '1fr', xl: 'minmax(720px, 3fr) minmax(320px, 1fr)' },
-            gap: 2,
-            mb: 2,
-          }}
-        >
-          {/* Left cluster: 3 compact cards + 2 long-text sections */}
-          <Box
-            sx={{
-              minWidth: 0,
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, minmax(220px, 1fr))',
-              gap: 2
-            }}
-          >
-            <Card title="FUNCTION">
-              <TitleAndText title={header.functionName} text={header.functionLanguage} />
-            </Card>
-
-            <Card title="CATEGORY">
-              <TitleAndText title={header.categoryName} text={header.categoryLanguage} />
-            </Card>
-
-            <Card title="CSF 2.0 SUBCATEGORY">
-              <TitleAndText title={header.csF2SubcategoryName} text={header.csF2SubcategoryLanguage} />
-              {(owners.length || custodians.length) && (
-                <>
-                  <Divider sx={{ my: 1 }} />
-                  <Typography variant="overline" sx={{ color: 'text.secondary' }}>
-                    OWNER / CUSTODIAN
-                  </Typography>
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: .5 }}>
-                    {owners.map((n, i) => <Chip key={`o-${i}`} label={`Owner: ${n}`} size="small" />)}
-                    {custodians.map((n, i) => <Chip key={`c-${i}`} label={`Custodian: ${n}`} size="small" />)}
-                  </Stack>
-                </>
-              )}
-            </Card>
-
-            {/* Keep these inside the same Box columns; no CSS/layout changes requested */}
-            <Box sx={{ gridColumn: '1 / span 2' }}>
-              <Card title="CHANGE SUMMARY">
-                <ExpandableText
-                  text={header.changeSummary}
-                  maxLines={4}
-                  onOpenDialog={() => openHtmlInNewWindow('Change Summary', header.changeSummary)}
-                />
-              </Card>
-            </Box>
-
-            <Box>
-              <Card title="IMPLEMENTATION EXAMPLES">
-                <ExpandableText
-                  text={header.implementationExamples}
-                  maxLines={4}
-                  onOpenDialog={() => openHtmlInNewWindow('Implementation Examples', header.implementationExamples)}
-                />
-              </Card>
-            </Box>
-          </Box>
-
-          {/* Right column: associated CSF 1.1 subcategories */}
-          <Card title="ASSOCIATED 1.1 SUBCATEGORIES">
-            {assoc.length === 0 ? (
-              <Typography variant="body2" color="text.disabled">None.</Typography>
-            ) : (
-              <Box component="ul" sx={{ pl: 3, m: 0 }}>
-                {assoc.map(a => (
-                  <li key={a.id}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: .25 }}>
-                      {a.name}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {a.lang}
-                    </Typography>
-                  </li>
-                ))}
-              </Box>
-            )}
-          </Card>
-        </Box>
-      )}
-    </Box>
-  );
+  // POST because we’re writing data.
+  const { data } = await api.post('/api/selection/save', payload);
+  return data; // assume { ok:true } or the updated row
 }

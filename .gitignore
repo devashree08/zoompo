@@ -1,70 +1,54 @@
-<Paper key={f.id} variant="outlined" sx={{ mb: 1.25, borderRadius: 2, overflow: 'hidden' }}>
-  {/* Function row: compact, bordered, left colored rail */}
+<Paper key={f.id} variant="outlined" sx={{ mb: 2, borderRadius: 2 }}>
+  {/* Function tile: compact Name | Language on one row */}
   <Box
     onClick={() => toggleFunc(f.id)}
     sx={{
-      position: 'relative',
       cursor: 'pointer',
+      py: 0.75,
       px: 1.25,
-      py: 1,                                 // compact height
+      '&:hover': { bgcolor: 'action.hover' },
       borderBottom: '1px solid',
       borderColor: 'divider',
-      '&:hover': { bgcolor: 'action.hover' },
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
     }}
   >
-    {/* colored rail */}
+    {/* two columns: name (with badge) | language */}
     <Box
       sx={{
-        position: 'absolute',
-        left: 0, top: 0, bottom: 0,
-        width: 6,
-        bgcolor: getFuncColor(f.name),
+        display: 'grid',
+        alignItems: 'center',
+        columnGap: 2,
+        gridTemplateColumns: { xs: '1fr', sm: 'minmax(240px, 33%) 1fr' },
       }}
-    />
-    <Box sx={{ flex: 1, minWidth: 0, pl: 1.25 /* space after rail */ }}>
-      <Box
-        sx={{
-          display: 'grid',
-          columnGap: 16,
-          gridTemplateColumns: { xs: '1fr', sm: 'minmax(260px, 40%) 1fr' },
-          alignItems: 'center',
-        }}
-      >
-        <Typography variant="subtitle1" fontWeight={800}>
+    >
+      <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0 }}>
+        <FunctionBadge functionName={f.name} />
+        <Typography variant="subtitle1" fontWeight={800} noWrap>
           {f.name}
         </Typography>
-        {!compactMode && (
-          <Typography variant="body2" color="text.secondary" noWrap sx={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {f.desc}
-          </Typography>
-        )}
-      </Box>
+      </Stack>
+
+      {!compactMode && (
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          title={f.desc}
+        >
+          {f.desc}
+        </Typography>
+      )}
     </Box>
-    <IconButton size="small" onClick={(e)=>{ e.stopPropagation(); toggleFunc(f.id); }}>
-      {open ? <ExpandLess/> : <ExpandMore/>}
-    </IconButton>
   </Box>
 
   <Collapse in={open} unmountOnExit>
     <Divider sx={{ mb: 1 }} />
     {!compactMode && (
       <Box sx={{ px: 1.25 }}>
-        <Box sx={{
-          bgcolor: '#111', color: '#fff', borderRadius: 1,
-          px: 1.25, py: 0.75, mb: 0.75, fontWeight: 800, letterSpacing: .3,
-          display: 'grid', columnGap: 16,
-          gridTemplateColumns: { xs: '1fr', sm: 'minmax(260px, 40%) 1fr' }
-        }}>
-          <Typography variant="body2">Category Name</Typography>
-          <Typography variant="body2">Category Language</Typography>
-        </Box>
+        <BlackHeader left="Category Name" right="Category Language" />
       </Box>
     )}
     <Box sx={{ p: 1.25, pt: 0.5 }}>
-      {f.cats.map(cat => (
+      {f.cats.map((cat) => (
         <CategoryRow key={cat.id} fId={f.id} cat={cat} />
       ))}
     </Box>

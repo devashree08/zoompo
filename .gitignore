@@ -1,225 +1,149 @@
-// src/features/attributeMapping/pages/AttributeMappingPage.js
 import * as React from 'react';
-import { Box, Typography, Stack, Button } from '@mui/material';
+import {
+  Box, Paper, Stack, Typography, IconButton, Collapse, Divider, Chip, List, ListItemButton, ListItemText
+} from '@mui/material';
+import { ExpandMore, ExpandLess } from '@mui/icons-material';
+import FunctionBadge from '../atoms/FunctionBadge';
 
-import AttributeFilterBar from '../components/molecules/AttributeFilterBar';
-import TwoPane from '../../../ui/layout/TwoPane';
-import BusyOverlay from '../../../ui/feedback/BusyOverlay';
-
-import CsfTree from '../components/organisms/CsfTree';
-import RightHeaderComposite from '../components/organisms/RightHeaderComposite';
-import OrgTabs from '../components/molecules/OrgTabs';
-import AttributeGroupTable from '../components/organisms/AttributeGroupTable';
-import AddCustomAttributePanel from '../components/molecules/AddCustomAttributePanel';
-
-import { fetchAttributeFeed } from '../api/attributeApi';
-import { exportRowsAsCsv } from '../../../ui/data/csvExport';
-import { normalizeHeaders, normalizeRows } from '../utils/normalizeFeed';
-
-// Filters (no Org filter by design)
-const initialFilters = {
-  functionIds: [],
-  categoryIds: [],
-  subcatIds: [],
-  ownerNames: [],
-  custodianNames: [],
-  maturity: [],
-  finalOnly: false,
-  search: ''
+const funcColor = (name='') => {
+  if (name.includes('(GV)')) return '#f9f49d';
+  if (name.includes('(ID)')) return '#4bb2e0';
+  if (name.includes('(PR)')) return '#918cea';
+  if (name.includes '(DE)') return '#fab746';
+  if (name.includes('(RS)')) return '#e57676';
+  if (name.includes('(RC)')) return '#7df59f';
+  return '#cfd8dc';
 };
 
-export default function AttributeMappingPage() {
-  // filters & data
-  const [filters, setFilters] = React.useState(initialFilters);
-  const [headers, setHeaders] = React.useState([]);
-  const [rows, setRows] = React.useState([]);
-
-  // selection state
-  const [selectedSubcatID, setSelectedSubcatID] = React.useState(null);
-  const [activeOrgID, setActiveOrgID] = React.useState(null);
-
-  // loading flags
-  const [initialLoading, setInitialLoading] = React.useState(true);
-  const [loadingHeaders, setLoadingHeaders] = React.useState(false);
-  const [loadingRows, setLoadingRows] = React.useState(false);
-
-  const mode = selectedSubcatID ? 'detail' : 'browse';
-
-  // ------- loaders -------
-  const loadHeaders = React.useCallback(async () => {
-    setLoadingHeaders(true);
-    try {
-      const resp = await fetchAttributeFeed({
-        functionIds:  filters.functionIds,
-        categoryIds:  filters.categoryIds,
-        subcatIds:    filters.subcatIds,
-        ownerNames:   filters.ownerNames,
-        custodianNames: filters.custodianNames,
-        maturity:     filters.maturity,
-        finalOnly:    filters.finalOnly,
-        search:       filters.search
-      });
-      setHeaders(normalizeHeaders(resp.headers || []));
-    } finally {
-      setLoadingHeaders(false);
-      if (initialLoading) setInitialLoading(false);
-    }
-  }, [filters, initialLoading]);
-
-  const loadRowsForSubcat = React.useCallback(async (subcatID) => {
-    if (!subcatID) { setRows([]); return; }
-    setLoadingRows(true);
-    try {
-      const resp = await fetchAttributeFeed({
-        functionIds:  filters.functionIds,
-        categoryIds:  filters.categoryIds,
-        subcatIds:    [subcatID],   // rows only for the selected subcategory
-        ownerNames:   filters.ownerNames,
-        custodianNames: filters.custodianNames,
-        maturity:     filters.maturity,
-        finalOnly:    filters.finalOnly,
-        search:       filters.search
-      });
-      setRows(normalizeRows(resp.rows || []));
-    } finally {
-      setLoadingRows(false);
-    }
-  }, [filters]);
-
-  // refresh headers on filter change
-  React.useEffect(() => { loadHeaders(); }, [
-    filters.functionIds, filters.categoryIds, filters.subcatIds,
-    filters.ownerNames, filters.custodianNames, filters.maturity,
-    filters.finalOnly, filters.search, loadHeaders
-  ]);
-
-  // refresh rows when subcategory changes
-  React.useEffect(() => { loadRowsForSubcat(selectedSubcatID); }, [selectedSubcatID, loadRowsForSubcat]);
-
-  // ------- derived for detail pane -------
-  const orgsForTabs = React.useMemo(() => {
-    if (!selectedSubcatID) return [];
+export default function CsfTree({ headers=[], onSelectSubcat, selectedSubcatID, maxHeight }) {
+  // aggregate counts per subcat
+  const countsBySub = React.useMemo(() => {
     const m = new Map();
-    headers
-      .filter(h => h.csF2SubcategoryID === selectedSubcatID)
-      .forEach(h => m.set(h.orgID, { orgID: h.orgID, orgName: h.orgName }));
-    return Array.from(m.values()).sort((a,b) => a.orgID - b.orgID);
-  }, [headers, selectedSubcatID]);
+    headers.forEach(h => {
+      const id = h.csF2SubcategoryID;
+      const acc = m.get(id) || { kept:0, removed:0, custom:0 };
+      acc.kept    += Number(h.keptCount    || 0);
+      acc.removed += Number(h.removedCount || 0);
+      acc.custom  += Number(h.customCount  || 0);
+      m.set(id, acc);
+    });
+    return m;
+  }, [headers]);
 
+  // build Function -> Category -> Subcategory tree
+  const tree = React.useMemo(() => {
+    const fM = new Map();
+    headers.forEach(h => {
+      if (!fM.has(h.functionID)) {
+        fM.set(h.functionID, { id:h.functionID, name:h.functionName, desc:h.functionLanguage||'', cats:new Map() });
+      }
+      const f = fM.get(h.functionID);
+
+      if (!f.cats.has(h.categoryID)) {
+        f.cats.set(h.categoryID, { id:h.categoryID, name:h.categoryName, desc:h.categoryLanguage||'', subs:new Map() });
+      }
+      const c = f.cats.get(h.categoryID);
+
+      if (!c.subs.has(h.csF2SubcategoryID)) {
+        c.subs.set(h.csF2SubcategoryID, {
+          id:h.csF2SubcategoryID,
+          name:h.csF2SubcategoryName,
+          desc:h.csF2SubcategoryLanguage||'',
+          counts: countsBySub.get(h.csF2SubcategoryID) || { kept:0, removed:0, custom:0 }
+        });
+      }
+    });
+
+    return Array.from(fM.values()).map(f => ({
+      ...f,
+      cats: Array.from(f.cats.values()).map(c => ({ ...c, subs: Array.from(c.subs.values()) }))
+    }));
+  }, [headers, countsBySub]);
+
+  // expand state: one function open at a time by default
+  const [openFunc, setOpenFunc] = React.useState(null);
+  const [openCats, setOpenCats] = React.useState(new Set());
   React.useEffect(() => {
-    if (!orgsForTabs.length) { setActiveOrgID(null); return; }
-    if (!activeOrgID || !orgsForTabs.some(o => o.orgID === activeOrgID)) {
-      setActiveOrgID(orgsForTabs[0].orgID);
-    }
-  }, [orgsForTabs, activeOrgID]);
+    if (openFunc == null && tree.length) setOpenFunc(tree[0].id);
+  }, [tree, openFunc]);
 
-  const selectedHeader = React.useMemo(() => {
-    if (!selectedSubcatID) return null;
-    return (
-      headers.find(h => h.csF2SubcategoryID === selectedSubcatID && h.orgID === activeOrgID) ||
-      headers.find(h => h.csF2SubcategoryID === selectedSubcatID) || null
-    );
-  }, [headers, selectedSubcatID, activeOrgID]);
-
-  const rowsForSelected = React.useMemo(
-    () => rows.filter(r => r.csF2SubcategoryID === selectedSubcatID),
-    [rows, selectedSubcatID]
-  );
-  const rowsForActiveOrg = React.useMemo(
-    () => rowsForSelected.filter(r => r.orgID === activeOrgID),
-    [rowsForSelected, activeOrgID]
-  );
-
-  const ownerCsv = React.useMemo(() => {
-    const h = headers.find(x => x.csF2SubcategoryID === selectedSubcatID && x.orgID === activeOrgID);
-    return h?.owner || '';
-  }, [headers, selectedSubcatID, activeOrgID]);
-
-  const custodianCsv = React.useMemo(() => {
-    const h = headers.find(x => x.csF2SubcategoryID === selectedSubcatID && x.orgID === activeOrgID);
-    return h?.custodian || '';
-  }, [headers, selectedSubcatID, activeOrgID]);
-
-  // ------- handlers -------
-  const handleSelectSubcat = (id) => setSelectedSubcatID(id);
-  const handleBack = () => setSelectedSubcatID(null);
-  const handleExport = () => rows?.length && exportRowsAsCsv(rows, 'csf-attribute-rows.csv');
-
-  // ------- render -------
   return (
-    <Box sx={{ px: { xs: 1, md: 2 }, pb: 3 }}>
-      <AttributeFilterBar value={filters} onChange={setFilters} onExport={handleExport} />
+    <Box sx={{ maxHeight: maxHeight || 'calc(100vh - 200px)', overflow: 'auto' }}>
+      {tree.map((f, fi) => {
+        const isOpen = openFunc === f.id;
+        return (
+          <Paper key={f.id} variant="outlined" sx={{ mb: 2, borderRadius: 2 }}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 1.25 }}>
+              <Stack direction="row" spacing={1.25} alignItems="center">
+                <Box sx={{ width:10, height:10, borderRadius: '3px', bgcolor: funcColor(f.name) }} />
+                <FunctionBadge functionName={f.name} />
+                <Box>
+                  <Typography variant="subtitle1" fontWeight={700}>{f.name}</Typography>
+                  {f.desc ? <Typography variant="caption" color="text.secondary">{f.desc}</Typography> : null}
+                </Box>
+              </Stack>
+              <IconButton size="small" onClick={() => setOpenFunc(isOpen ? null : f.id)}>
+                {isOpen ? <ExpandLess/> : <ExpandMore/>}
+              </IconButton>
+            </Stack>
 
-      {/* extra breathing room below filters */}
-      <Box sx={{ mt: 3 }}>
-        {mode === 'browse' ? (
-          <>
-            <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-              CSF 2.0 Structure
-            </Typography>
-            <CsfTree headers={headers} onSelectSubcat={handleSelectSubcat} selectedSubcatID={null} />
-            {loadingHeaders && (
-              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display:'block' }}>
-                Loading…
-              </Typography>
-            )}
-          </>
-        ) : (
-          <TwoPane
-            left={
-              <>
-                <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-                  <Button size="small" onClick={handleBack}>← Back</Button>
-                  <Typography variant="subtitle2" color="text.secondary">CSF 2.0 Structure</Typography>
-                </Stack>
-                <CsfTree
-                  headers={headers}
-                  onSelectSubcat={handleSelectSubcat}
-                  selectedSubcatID={selectedSubcatID}
-                  maxHeight="calc(100vh - 210px)"
-                />
-              </>
-            }
-            right={
-              !selectedHeader ? (
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                  {loadingRows ? 'Loading…' : 'Select a subcategory from the left to view details.'}
-                </Typography>
-              ) : (
-                <>
-                  {/* Non-sticky, collapsible header with “Show more / open in new window” dialogs */}
-                  <RightHeaderComposite
-                    header={selectedHeader}
-                    associatedRows={rowsForSelected}
-                    ownerCsv={ownerCsv}
-                    custodianCsv={custodianCsv}
-                  />
+            <Collapse in={isOpen} unmountOnExit>
+              <Divider />
+              <Box sx={{ p: 1.25, pt: 1 }}>
+                {f.cats.map((c, ci) => {
+                  const key = `${f.id}:${c.id}`;
+                  const cOpen = openCats.has(key);
+                  const toggleCat = () => setOpenCats(s => {
+                    const n=new Set(s); n.has(key)?n.delete(key):n.add(key); return n;
+                  });
 
-                  {/* Org tabs + attributes (read-only for now) */}
-                  <OrgTabs
-                    orgs={orgsForTabs}
-                    activeOrgID={activeOrgID}
-                    editableOrgID={activeOrgID}
-                    onChange={setActiveOrgID}
-                  />
+                  return (
+                    <Paper key={c.id} variant="outlined" sx={{ mb: 1.25, borderRadius: 2, bgcolor: 'background.default' }}>
+                      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 1 }}>
+                        <Box>
+                          <Typography variant="body1" fontWeight={700}>{c.name}</Typography>
+                          {c.desc ? <Typography variant="caption" color="text.secondary">{c.desc}</Typography> : null}
+                        </Box>
+                        <IconButton size="small" onClick={toggleCat}>{cOpen ? <ExpandLess/> : <ExpandMore/>}</IconButton>
+                      </Stack>
 
-                  <AttributeGroupTable rows={rowsForActiveOrg} />
-
-                  {/* Placeholder for future create (still inside right-pane scroll) */}
-                  <AddCustomAttributePanel
-                    orgName={orgsForTabs.find(x => x.orgID === activeOrgID)?.orgName}
-                    subcatName={selectedHeader.csF2SubcategoryName}
-                    editable={false}
-                  />
-                </>
-              )
-            }
-          />
-        )}
-      </Box>
-
-      {/* initial mount only */}
-      <BusyOverlay open={initialLoading} />
+                      <Collapse in={cOpen} unmountOnExit>
+                        <Divider />
+                        <List dense disablePadding sx={{ py: .5 }}>
+                          {c.subs.map(s => {
+                            const selected = String(s.id) === String(selectedSubcatID);
+                            return (
+                              <ListItemButton
+                                key={s.id}
+                                onClick={() => onSelectSubcat?.(s.id)}
+                                selected={selected}
+                                sx={{ px: 1.25, py: .75, borderRadius: 1, mb: .25 }}
+                              >
+                                <ListItemText
+                                  primary={
+                                    <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+                                      <Typography variant="body2" fontWeight={700}>{s.name}</Typography>
+                                      <Chip size="small" label={`${s.counts.kept} Kept`}    sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }}/>
+                                      <Chip size="small" label={`${s.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }}/>
+                                      <Chip size="small" label={`${s.counts.custom} Custom`}  sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }}/>
+                                    </Stack>
+                                  }
+                                  secondary={s.desc}
+                                  secondaryTypographyProps={{ variant:'caption', color:'text.secondary' }}
+                                />
+                              </ListItemButton>
+                            );
+                          })}
+                        </List>
+                      </Collapse>
+                    </Paper>
+                  );
+                })}
+              </Box>
+            </Collapse>
+          </Paper>
+        );
+      })}
     </Box>
   );
 }

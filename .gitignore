@@ -1,20 +1,31 @@
 import { createWorkbook, autoFitColumns } from '../../../ui/data/xlsx/excel';
 
-// Styles
+// ===== Styling helpers =====
 const solid = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
 const WHITE_BOLD = { color: { argb: 'FFFFFFFF' }, bold: true };
 const BOLD = { bold: true };
+const BORDER_THIN = {
+  top:    { style: 'thin', color: { argb: 'FFCBD5E1' } },
+  left:   { style: 'thin', color: { argb: 'FFCBD5E1' } },
+  bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+  right:  { style: 'thin', color: { argb: 'FFCBD5E1' } },
+};
 
-// Header fills
-const HDR_BASE_FILL   = 'FF2F3A4A'; // dark band for all headers (better for exec visuals)
-const HDR_STATUS_HINT = 'FFECFDF3'; // subtle hint for editable columns
-const HDR_ATTEST_HINT = 'FFFFFAEB';
+// Global header band color
+const HDR_BAND = 'FF2F3A4A';
 
-// Attestation deep colors
+// Attestation deep colors (for value cells)
 function colorAttestation(cell, v) {
-  if (v === 'Meet')          { cell.fill = solid('FF12B76A'); cell.font = WHITE_BOLD; }
-  else if (v === 'Partial Meet' || v === 'Partially Meet') { cell.fill = solid('FFF79009'); cell.font = { bold: true }; }
-  else if (v === 'Does Not Meet') { cell.fill = solid('FFD92D20'); cell.font = WHITE_BOLD; }
+  if (v === 'Meet') {
+    cell.fill = solid('FF12B76A');
+    cell.font = WHITE_BOLD;
+  } else if (v === 'Partial Meet' || v === 'Partially Meet') {
+    cell.fill = solid('FFF79009');
+    cell.font = { bold: true };
+  } else if (v === 'Does Not Meet') {
+    cell.fill = solid('FFD92D20');
+    cell.font = WHITE_BOLD;
+  }
 }
 
 // Excel-safe sheet names
@@ -26,12 +37,12 @@ function safeSheetName(name) {
   return cleaned || 'Org';
 }
 
-// Match UI sort: CSF2 → CSF1 (0/custom last) → baseline → custom → ML (3 then 4) → Attr#
+// UI-sort for detail rows: CSF2 → CSF1 (custom last) → baseline before custom → ML (3→4) → Attr#
 function sortRowsLikeTable(a, b) {
   if (a.csF2SubcategoryID !== b.csF2SubcategoryID)
     return a.csF2SubcategoryID - b.csF2SubcategoryID;
 
-  const aKey = a.csF1SubcategoryID || 999999;
+  const aKey = a.csF1SubcategoryID || 999999; // 0/custom last
   const bKey = b.csF1SubcategoryID || 999999;
   if (aKey !== bKey) return aKey - bKey;
 
@@ -46,7 +57,8 @@ function sortRowsLikeTable(a, b) {
   return aNum - bNum;
 }
 
-function getColumns() {
+// Attributes table columns (detail section)
+function getDetailColumns() {
   return [
     { header: 'Function',                key: 'functionName'              },
     { header: 'Function Language',       key: 'functionLanguage'          },
@@ -64,8 +76,8 @@ function getColumns() {
     { header: 'Attr #',                  key: 'attrNum'                   },
     { header: 'Attribute Definition',    key: 'attrDef'                   },
 
-    { header: 'Status',                  key: 'status'                    }, // editable
-    { header: '2025 Attestation',        key: 'attestation'               }, // editable
+    { header: 'Status',                  key: 'status'                    }, // editable in portal
+    { header: '2025 Attestation',        key: 'attestation'               }, // editable in portal
     { header: '2024 Assessor Score',     key: 'assess2024'                },
 
     { header: 'Owner(s)',                key: 'owner'                     },
@@ -73,113 +85,202 @@ function getColumns() {
   ];
 }
 
-export async function buildAttributeWorkbook({ headers = [], rows = [] }) {
+// Put thin border around every cell in a row (for the used columns)
+function borderRow(row, usedCols) {
+  for (let c = 1; c <= usedCols; c++) {
+    row.getCell(c).border = BORDER_THIN;
+  }
+}
+
+// Write a small per-org summary section (by subcategory)
+function writeSummarySection(ws, summaryRows) {
+  let r = 1;
+
+  const title = ws.getCell(r, 1);
+  title.value = 'Summary by CSF 2.0 Subcategory';
+  title.font = { bold: true, size: 12 };
+  r += 1;
+
+  // Header
+  const hdr = ws.getRow(r);
+  const hdrVals = [
+    'Function', 'Category', 'CSF 2.0 Subcategory',
+    'Kept', 'Removed', 'Custom',
+  ];
+  hdrVals.forEach((text, i) => {
+    const cell = ws.getCell(r, i + 1);
+    cell.value = text;
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.fill = solid(HDR_BAND);
+    cell.border = BORDER_THIN;
+  });
+  r += 1;
+
+  // Rows
+  summaryRows.forEach(sr => {
+    const row = ws.getRow(r);
+    row.getCell(1).value = sr.functionName;
+    row.getCell(2).value = sr.categoryName;
+    row.getCell(3).value = sr.csf2Name;
+    row.getCell(4).value = sr.keptCount || 0;
+    row.getCell(5).value = sr.removedCount || 0;
+    row.getCell(6).value = sr.customCount || 0;
+    borderRow(row, 6);
+    r += 1;
+  });
+
+  // spacer
+  r += 1;
+  return r; // next free row index
+}
+
+/**
+ * Build workbook:
+ * - one sheet per org (for ALL orgs provided), even if no data
+ * - each sheet: Summary section + Attributes table
+ * - attributes header row is frozen (sticky)
+ * - custom attribute definitions tinted; all cells bordered
+ *
+ * @param {Object} params
+ * @param {Array}  params.headers   feed headers (used for summary and context)
+ * @param {Array}  params.rows      feed rows (all subcategories, all orgs)
+ * @param {Array}  params.orgs      [{orgID, orgName}] for ALL orgs to ensure a sheet per org
+ */
+export async function buildAttributeWorkbook({ headers = [], rows = [], orgs = [] }) {
   const wb = createWorkbook();
 
-  // Group rows by org
-  const byOrg = new Map();
-  rows.forEach(r => {
-    const k = `${r.orgID}|${r.orgName}`;
-    if (!byOrg.has(k)) byOrg.set(k, []);
-    byOrg.get(k).push(r);
-  });
-
-  // Pre-index headers by (org, csf2SubcatID) for context
-  const headersIndex = new Map(); // key: `${orgID}|${csf2Id}` → header
+  // Index headers for summary lookups and row context
+  const headersByOrgSub = new Map(); // key: `${orgID}|${csf2Id}` → header
   headers.forEach(h => {
-    headersIndex.set(`${h.orgID}|${h.csF2SubcategoryID}`, h);
+    headersByOrgSub.set(`${h.orgID}|${h.csF2SubcategoryID}`, h);
   });
 
-  for (const [orgKey, orgRows] of byOrg.entries()) {
-    const [, orgName] = orgKey.split('|');
-    const ws = wb.addWorksheet(safeSheetName(orgName));
+  // Group detail rows by org
+  const rowsByOrg = new Map();
+  rows.forEach(r => {
+    const k = r.orgID;
+    if (!rowsByOrg.has(k)) rowsByOrg.set(k, []);
+    rowsByOrg.get(k).push(r);
+  });
 
-    ws.columns = getColumns();
+  // Precompute per-org summary rows from headers
+  const summaryByOrg = new Map();
+  headers.forEach(h => {
+    const list = summaryByOrg.get(h.orgID) || [];
+    list.push({
+      functionName: h.functionName,
+      categoryName: h.categoryName,
+      csf2Name:     h.csF2SubcategoryName,
+      keptCount:    h.keptCount,
+      removedCount: h.removedCount,
+      customCount:  h.customCount,
+    });
+    summaryByOrg.set(h.orgID, list);
+  });
 
-    // Frozen header row
-    ws.views = [{ state: 'frozen', ySplit: 1 }];
-    const hdr = ws.getRow(1);
-    hdr.height = 22;
-    hdr.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    hdr.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-    hdr.eachCell((cell, i) => {
-      cell.fill = solid(HDR_BASE_FILL);
-      // add thin bottom border for a crisp band
-      cell.border = { bottom: { style: 'thin', color: { argb: 'FFFFFFFF' } } };
+  // Ensure we create a sheet for every org in `orgs`
+  const uniqueOrgs = (orgs && orgs.length)
+    ? orgs
+    : Array.from(new Map(headers.map(h => [h.orgID, { orgID: h.orgID, orgName: h.orgName }])).values());
 
-      const key = ws.columns[i - 1]?.key;
-      if (key === 'status') {
-        // put a subtle underlay to hint "editable"
-        cell.note = 'Editable in portal';
-        // caller asked: headers “different and sticky”; base band is enough visually
-        // (we keep the dark band, no need to recolor the cell itself)
-      }
-      if (key === 'attestation') {
-        cell.note = 'Editable in portal';
-      }
+  for (const org of uniqueOrgs) {
+    const ws = wb.addWorksheet(safeSheetName(org.orgName));
+
+    // 1) SUMMARY SECTION (top)
+    const summaryRows = summaryByOrg.get(org.orgID) || [];
+    const nextRowStart = writeSummarySection(ws, summaryRows);
+
+    // 2) ATTRIBUTES TABLE (below)
+    ws.columns = getDetailColumns();
+
+    // Write header at row = nextRowStart
+    const hdrRow = ws.getRow(nextRowStart);
+    ws.columns.forEach((col, i) => {
+      const cell = hdrRow.getCell(i + 1);
+      cell.value = col.header;
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.fill = solid(HDR_BAND);
+      cell.border = BORDER_THIN;
     });
 
-    // Sort to match UI
-    orgRows.sort(sortRowsLikeTable);
+    // Freeze pane just below attributes header
+    ws.views = [{ state: 'frozen', ySplit: nextRowStart }];
 
-    // Add rows
-    orgRows.forEach(r => {
-      const isCustom = !!r.customAttributeDefinition;
-      const ctx = headersIndex.get(`${r.orgID}|${r.csF2SubcategoryID}`) || r;
+    const detailRows = (rowsByOrg.get(org.orgID) || []).slice().sort(sortRowsLikeTable);
 
-      const attrDef = r.attributeDefinition || r.customAttributeDefinition || '';
-      const attrNum = r.attributeNum || r.customAttributeNum || '';
-      const att     = r.selectionAttestation || r.customAttributeAttestation || '';
-      const status  = isCustom ? '' : (r.selectionStatus || '');
+    if (!detailRows.length) {
+      const r = ws.getRow(nextRowStart + 1);
+      r.getCell(1).value = 'No attribute rows under current filters.';
+      r.getCell(1).font = { italic: true, color: { argb: 'FF667085' } };
+      // give a border to first few cells so it doesn’t look odd
+      borderRow(r, Math.min(6, ws.columns.length));
+    } else {
+      detailRows.forEach(r => {
+        const isCustom = !!r.customAttributeDefinition;
+        const ctx = headersByOrgSub.get(`${r.orgID}|${r.csF2SubcategoryID}`) || r;
 
-      const row = ws.addRow({
-        functionName:             r.functionName,
-        functionLanguage:         r.functionLanguage,
-        categoryName:             r.categoryName,
-        categoryLanguage:         r.categoryLanguage,
-        csf2Name:                 r.csF2SubcategoryName,
-        csf2Lang:                 r.csF2SubcategoryLanguage,
-        changeSummary:            ctx.changeSummary || r.changeSummary,
-        implementationExamples:   ctx.implementationExamples || r.implementationExamples,
+        const attrDef = r.attributeDefinition || r.customAttributeDefinition || '';
+        const attrNum = r.attributeNum || r.customAttributeNum || '';
+        const att     = r.selectionAttestation || r.customAttributeAttestation || '';
+        const status  = isCustom ? '' : (r.selectionStatus || '');
+        const type    = isCustom ? 'Custom' : 'Baseline';
 
-        csf1Name:                 r.csF1SubcategoryName || '',
-        type:                     isCustom ? 'Custom' : 'Baseline',
-        ml:                       r.maturityLevel,
-        attrNum:                  attrNum,
-        attrDef:                  attrDef,
+        const row = ws.addRow({
+          functionName:             r.functionName,
+          functionLanguage:         r.functionLanguage,
+          categoryName:             r.categoryName,
+          categoryLanguage:         r.categoryLanguage,
+          csf2Name:                 r.csF2SubcategoryName,
+          csf2Lang:                 r.csF2SubcategoryLanguage,
+          changeSummary:            ctx.changeSummary || r.changeSummary,
+          implementationExamples:   ctx.implementationExamples || r.implementationExamples,
 
-        status:                   status,
-        attestation:              att,
-        assess2024:               r.assessScore2024 || '',
+          csf1Name:                 r.csF1SubcategoryName || '',
+          type:                     type,
 
-        owner:                    r.owner || '',
-        custodian:                r.custodian || '',
+          ml:                       r.maturityLevel, // numeric only (no “(Custom)”)
+          attrNum:                  attrNum,
+          attrDef:                  attrDef,
+
+          status:                   status,
+          attestation:              att,
+          assess2024:               r.assessScore2024 || '',
+
+          owner:                    r.owner || '',
+          custodian:                r.custodian || '',
+        });
+
+        // Borders on all cells
+        borderRow(row, ws.columns.length);
+
+        // Wrap long text
+        row.getCell('changeSummary').alignment = { wrapText: true };
+        row.getCell('implementationExamples').alignment = { wrapText: true };
+        row.getCell('attrDef').alignment = { wrapText: true };
+        row.getCell('ml').alignment = { horizontal: 'center' };
+
+        // Attestation deep color
+        colorAttestation(row.getCell('attestation'), att);
+
+        // **Custom attribute**: tint definition cell + keep borders
+        if (isCustom) {
+          // change color as requested (distinct) and keep thin border
+          row.getCell('attrDef').fill = solid('FFE6F4FF'); // light blue tint
+        }
+
+        // Status colors (baseline rows)
+        const stCell = row.getCell('status');
+        if (stCell.value === 'Keep') {
+          stCell.fill = solid('FFECFDF3'); // light green
+          stCell.font = { color: { argb: 'FF027A48' }, bold: true };
+        } else if (stCell.value === 'Remove') {
+          stCell.fill = solid('FFFEF3F2'); // light red
+          stCell.font = { color: { argb: 'FF912018' }, bold: true };
+        }
       });
-
-      // Wrap long text
-      row.getCell('changeSummary').alignment = { wrapText: true };
-      row.getCell('implementationExamples').alignment = { wrapText: true };
-      row.getCell('attrDef').alignment = { wrapText: true };
-      row.getCell('ml').alignment = { horizontal: 'center' };
-
-      // Color Status values (baseline only)
-      const stCell = row.getCell('status');
-      if (stCell.value === 'Keep') {
-        stCell.fill = solid('FFECFDF3');
-        stCell.font = { color: { argb: 'FF027A48' }, bold: true };
-      } else if (stCell.value === 'Remove') {
-        stCell.fill = solid('FFFEF3F2');
-        stCell.font = { color: { argb: 'FF912018' }, bold: true };
-      }
-
-      // Deep color for Attestation
-      colorAttestation(row.getCell('attestation'), att);
-
-      // Custom attribute: tint the definition cell
-      if (isCustom) {
-        row.getCell('attrDef').fill = solid('FFE3F2FD');
-      }
-    });
+    }
 
     autoFitColumns(ws, { min: 8, max: 100 });
   }

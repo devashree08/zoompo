@@ -1,25 +1,11 @@
-import * as React from 'react';
-
-const Ctx = React.createContext(null);
-
-export function LayoutUIProvider({ children }) {
-  const [railExpanded, setRailExpanded] = React.useState(false);
-  const [drawerOpen, setDrawerOpen]   = React.useState(false);
-
-  const value = React.useMemo(() => ({
-    railExpanded,
-    drawerOpen,
-    toggleRail: () => setRailExpanded(v => !v),
-    openDrawer:  () => setDrawerOpen(true),
-    closeDrawer: () => setDrawerOpen(false),
-    toggleDrawer: () => setDrawerOpen(v => !v),
-  }), [railExpanded, drawerOpen]);
-
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
-}
-
-export function useLayoutUI() {
-  const v = React.useContext(Ctx);
-  if (!v) throw new Error('useLayoutUI must be used inside LayoutUIProvider');
-  return v;
-}
+Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <IconButton color="inherit" onClick={toggleRail} sx={{ display: { xs: 'none', md: 'inline-flex' } }} aria-label="Toggle side rail">
+            <MenuIcon />
+          </IconButton>
+          <IconButton color="inherit" onClick={toggleDrawer} sx={{ display: { xs: 'inline-flex', md: 'none' } }} aria-label="Open navigation">
+            <MenuIcon />
+          </IconButton>
+          <IconButton color="inherit" aria-label="Account">
+            <AccountCircleIcon />
+          </IconButton>
+        </Box>

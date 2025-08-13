@@ -1,251 +1,318 @@
-// src/features/attributeMapping/pages/AttributeMappingPage.js
 import * as React from 'react';
-import { Box, Typography, Stack, Button } from '@mui/material';
+import {
+  Box, Paper, Stack, Select, MenuItem, TextField, Button, Chip,
+  IconButton, Tooltip, Divider, Typography
+} from '@mui/material';
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
+import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
+import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
+import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined';
+import { saveCustomAttribute } from '../../api/customApi';
+import useToast from '../../../../ui/feedback/useToast';
 
-import AttributeFilterBar from '../components/molecules/AttributeFilterBar';
-import TwoPane from '../../../ui/layout/TwoPane';
-import BusyOverlay from '../../../ui/feedback/BusyOverlay';
+// Keep options aligned with table
+const ATTEST_OPTIONS = ['Meet', 'Partial Meet', 'Does Not Meet'];
 
-import CsfTree from '../components/organisms/CsfTree';
-import RightHeaderComposite from '../components/organisms/RightHeaderComposite';
-import OrgTabs from '../components/molecules/OrgTabs';
-import AttributeGroupTable, { rowKey as tableRowKey } from '../components/organisms/AttributeGroupTable';
-import AddCustomAttributePanel from '../components/molecules/AddCustomAttributePanel';
+/**
+ * Props:
+ *  - orgID, orgName
+ *  - csf2SubcategoryID, subcatName
+ *  - existingRows: ALL rows for this org/subcat (unfiltered) — baseline + custom
+ *  - onAdded(newRow), onPatched(key, patch), onDeleted(key)
+ *
+ * newRow shape expected by the table:
+ * {
+ *   isCustom: true,
+ *   orgID, csF2SubcategoryID,
+ *   maturityLevel, customAttributeNum,
+ *   customAttributeDefinition, customAttributeAttestation
+ * }
+ */
+export default function AddCustomAttributePanel({
+  orgID,
+  orgName,
+  csf2SubcategoryID,
+  subcatName,
+  existingRows = [],
+  onAdded,
+  onPatched,
+  onDeleted,
+}) {
+  const { success, error } = useToast();
 
-import { fetchAttributeFeed } from '../api/attributeApi';
-import { exportRowsAsCsv } from '../../../ui/data/csvExport';
-import { normalizeHeaders, normalizeRows } from '../utils/normalizeFeed';
+  // --- compose add form ---
+  const [ml, setMl] = React.useState(3);
+  const [def, setDef] = React.useState('');
+  const [att, setAtt] = React.useState('');
+  const [adding, setAdding] = React.useState(false);
 
-const initialFilters = {
-  functionIds: [],
-  categoryIds: [],
-  subcatIds: [],
-  ownerNames: [],
-  custodianNames: [],
-  maturity: [],
-  finalOnly: false,
-  search: ''
-};
-
-const keyOf = (r) => `${r.orgID}|${r.csF2SubcategoryID}|${r.maturityLevel}|${r.customAttributeNum ?? r.attributeNum ?? '0'}`;
-
-export default function AttributeMappingPage() {
-  const [filters, setFilters] = React.useState(initialFilters);
-  const [headers, setHeaders] = React.useState([]);
-  const [rows, setRows] = React.useState([]);
-
-  const [selectedSubcatID, setSelectedSubcatID] = React.useState(null);
-  const [activeOrgID, setActiveOrgID] = React.useState(null);
-
-  const [initialLoading, setInitialLoading] = React.useState(true);
-  const [loadingHeaders, setLoadingHeaders] = React.useState(false);
-  const [loadingRows, setLoadingRows] = React.useState(false);
-
-  const mode = selectedSubcatID ? 'detail' : 'browse';
-
-  const loadHeaders = React.useCallback(async () => {
-    setLoadingHeaders(true);
-    try {
-      const resp = await fetchAttributeFeed({
-        functionIds:  filters.functionIds,
-        categoryIds:  filters.categoryIds,
-        subcatIds:    filters.subcatIds,
-        ownerNames:   filters.ownerNames,
-        custodianNames: filters.custodianNames,
-        maturity:     filters.maturity,
-        finalOnly:    filters.finalOnly,
-        search:       filters.search
-      });
-      setHeaders(normalizeHeaders(resp.headers || []));
-    } finally {
-      setLoadingHeaders(false);
-      if (initialLoading) setInitialLoading(false);
-    }
-  }, [filters, initialLoading]);
-
-  const loadRowsForSubcat = React.useCallback(async (subcatID) => {
-    if (!subcatID) { setRows([]); return; }
-    setLoadingRows(true);
-    try {
-      const resp = await fetchAttributeFeed({
-        functionIds:  filters.functionIds,
-        categoryIds:  filters.categoryIds,
-        subcatIds:    [subcatID],
-        ownerNames:   filters.ownerNames,
-        custodianNames: filters.custodianNames,
-        maturity:     filters.maturity,
-        finalOnly:    false,              // IMPORTANT: we fetch all; finalOnly handled in UI
-        search:       filters.search
-      });
-      setRows(normalizeRows(resp.rows || []));
-    } finally {
-      setLoadingRows(false);
-    }
-  }, [filters]);
-
-  React.useEffect(() => { loadHeaders(); }, [
-    filters.functionIds, filters.categoryIds, filters.subcatIds,
-    filters.ownerNames, filters.custodianNames, filters.maturity,
-    filters.finalOnly, filters.search, loadHeaders
-  ]);
-
-  React.useEffect(() => { loadRowsForSubcat(selectedSubcatID); }, [selectedSubcatID, loadRowsForSubcat]);
-
-  const orgsForTabs = React.useMemo(() => {
-    if (!selectedSubcatID) return [];
-    const m = new Map();
-    headers
-      .filter(h => h.csF2SubcategoryID === selectedSubcatID)
-      .forEach(h => m.set(h.orgID, { orgID: h.orgID, orgName: h.orgName }));
-    return Array.from(m.values()).sort((a,b) => a.orgID - b.orgID);
-  }, [headers, selectedSubcatID]);
-
-  React.useEffect(() => {
-    if (!orgsForTabs.length) { setActiveOrgID(null); return; }
-    if (!activeOrgID || !orgsForTabs.some(o => o.orgID === activeOrgID)) {
-      setActiveOrgID(orgsForTabs[0].orgID);
-    }
-  }, [orgsForTabs, activeOrgID]);
-
-  const selectedHeader = React.useMemo(() => {
-    if (!selectedSubcatID) return null;
-    return (
-      headers.find(h => h.csF2SubcategoryID === selectedSubcatID && h.orgID === activeOrgID) ||
-      headers.find(h => h.csF2SubcategoryID === selectedSubcatID) || null
-    );
-  }, [headers, selectedSubcatID, activeOrgID]);
-
-  const rowsForSelected = React.useMemo(
-    () => rows.filter(r => r.csF2SubcategoryID === selectedSubcatID),
-    [rows, selectedSubcatID]
+  // list derived purely from props (so it updates as soon as parent updates)
+  const customRows = React.useMemo(
+    () =>
+      (existingRows || []).filter(
+        r => (r.isCustom || r.customAttributeDefinition) && r.orgID === orgID && r.csF2SubcategoryID === csf2SubcategoryID
+      ),
+    [existingRows, orgID, csf2SubcategoryID]
   );
 
-  const rowsForActiveOrg = React.useMemo(
-    () => rowsForSelected.filter(r => r.orgID === activeOrgID),
-    [rowsForSelected, activeOrgID]
-  );
+  // decide next custom number (client-side) if server doesn't return one
+  const nextCustomNum = React.useCallback((mlVal) => {
+    const nums = customRows
+      .filter(r => Number(r.maturityLevel) === Number(mlVal))
+      .map(r => Number(r.customAttributeNum || 0));
+    const max = nums.length ? Math.max(...nums) : 0;
+    return max + 1;
+  }, [customRows]);
 
-  // FINAL VIEW: hide baseline "Remove" rows; customs (no Status) are kept
-  const displayRows = React.useMemo(() => {
-    if (!filters.finalOnly) return rowsForActiveOrg;
-    return rowsForActiveOrg.filter(r => (r.selectionStatus || '') !== 'Remove');
-  }, [rowsForActiveOrg, filters.finalOnly]);
+  const handleAdd = async () => {
+    if (!def.trim()) return;
+    setAdding(true);
+    const localNum = nextCustomNum(ml);
 
-  // -------- optimistic patch / add / delete from children -------
-  const onPatchRow = React.useCallback((k, patch) => {
-    setRows(prev => prev.map(r => (keyOf(r) === k ? { ...r, ...patch } : r)));
-  }, []);
+    try {
+      const resp = await saveCustomAttribute({
+        action: 'create',
+        orgId: orgID,
+        csf2SubcategoryId: csf2SubcategoryID,
+        maturityLevel: ml,
+        attributeNum: localNum,                // server can override; we’ll read back if it returns
+        attrDefinition: def.trim(),
+        attestation: att || null,
+      });
 
-  const onAddCustomRow = React.useCallback((newRow) => {
-    // Ensure the shape the table expects
-    const shaped = {
-      ...newRow,
-      isCustom: true,
-      attributeDefinition: undefined,
-      customAttributeDefinition: newRow.customAttributeDefinition ?? newRow.attrDefinition ?? newRow.attributeDefinition,
-      customAttributeAttestation: newRow.customAttributeAttestation ?? newRow.attestation ?? null,
-      attributeNum: null,
-      // customAttributeNum must exist; caller (panel) should set it
-    };
-    setRows(prev => [...prev, shaped]);
-  }, []);
+      // Prefer server’s number/echo; otherwise use our local plan
+      const serverNum = resp?.customAttributeNum ?? resp?.attributeNum ?? localNum;
+      const serverAtt = resp?.attestation ?? att || null;
+      const serverDef = resp?.customAttributeDefinition ?? resp?.attrDefinition ?? def.trim();
 
-  const onDeleteRow = React.useCallback((k) => {
-    setRows(prev => prev.filter(r => keyOf(r) !== k));
-  }, []);
+      onAdded?.({
+        isCustom: true,
+        orgID,
+        csF2SubcategoryID: csf2SubcategoryID,
+        maturityLevel: ml,
+        customAttributeNum: serverNum,
+        customAttributeDefinition: serverDef,
+        customAttributeAttestation: serverAtt,
+        // keep table happy
+        attributeNum: null,
+      });
 
-  const handleSelectSubcat = (id) => setSelectedSubcatID(id);
-  const handleBack = () => setSelectedSubcatID(null);
-  const handleExport = () => rows?.length && exportRowsAsCsv(rows, 'csf-attribute-rows.csv');
-
-  const ownerCsv = React.useMemo(() => {
-    const h = headers.find(x => x.csF2SubcategoryID === selectedSubcatID && x.orgID === activeOrgID);
-    return h?.owner || '';
-  }, [headers, selectedSubcatID, activeOrgID]);
-
-  const custodianCsv = React.useMemo(() => {
-    const h = headers.find(x => x.csF2SubcategoryID === selectedSubcatID && x.orgID === activeOrgID);
-    return h?.custodian || '';
-  }, [headers, selectedSubcatID, activeOrgID]);
+      success('Custom attribute added');
+      setDef('');
+      setAtt('');
+    } catch (e) {
+      error('Add failed');
+    } finally {
+      setAdding(false);
+    }
+  };
 
   return (
-    <Box sx={{ px: { xs: 1, md: 2 }, pb: 3 }}>
-      <AttributeFilterBar value={filters} onChange={setFilters} onExport={handleExport} />
+    <Paper variant="outlined" sx={{ mt: 2, p: 1.5 }}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+        <Typography variant="subtitle2">
+          Custom Attributes — {orgName || 'Org'} / {subcatName}
+        </Typography>
+      </Stack>
 
-      <Box sx={{ mt: 3 }}>
-        {mode === 'browse' ? (
+      {/* Add row */}
+      <Stack
+        direction={{ xs: 'column', md: 'row' }}
+        spacing={1}
+        alignItems={{ md: 'center' }}
+        sx={{ mb: 1.5 }}
+      >
+        <Select
+          size="small"
+          value={ml}
+          onChange={(e) => setMl(Number(e.target.value))}
+          sx={{ width: 140 }}
+        >
+          <MenuItem value={3}>Maturity — 3</MenuItem>
+          <MenuItem value={4}>Maturity — 4</MenuItem>
+        </Select>
+
+        <TextField
+          size="small"
+          fullWidth
+          placeholder="Attribute definition…"
+          value={def}
+          onChange={(e) => setDef(e.target.value)}
+        />
+
+        <Select
+          size="small"
+          displayEmpty
+          value={att || ''}
+          onChange={(e) => setAtt(e.target.value || '')}
+          renderValue={(v) => (v ? v : '2025 Attestation — optional')}
+          sx={{ width: { xs: '100%', md: 220 } }}
+        >
+          <MenuItem value=""><em>—</em></MenuItem>
+          {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
+        </Select>
+
+        <Button
+          variant="contained"
+          onClick={handleAdd}
+          disabled={adding || !def.trim()}
+          sx={{ minWidth: 88 }}
+        >
+          {adding ? 'Adding…' : 'Add'}
+        </Button>
+      </Stack>
+
+      <Divider sx={{ my: 1 }} />
+
+      <Typography variant="caption" color="text.secondary" sx={{ display:'block', mb: 0.5 }}>
+        Existing custom attributes
+      </Typography>
+
+      <Stack spacing={0.75}>
+        {customRows.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">No custom attributes.</Typography>
+        ) : (
+          customRows.map((r) => (
+            <CustomListItem
+              key={`${r.maturityLevel}|${r.customAttributeNum}`}
+              row={r}
+              onPatched={onPatched}
+              onDeleted={onDeleted}
+            />
+          ))
+        )}
+      </Stack>
+    </Paper>
+  );
+}
+
+/** A compact row item with inline edit controls (definition + optional attestation). */
+function CustomListItem({ row, onPatched, onDeleted }) {
+  const { success, error } = useToast();
+  const [edit, setEdit] = React.useState(false);
+  const [def, setDef] = React.useState(row.customAttributeDefinition || '');
+  const [att, setAtt] = React.useState(row.customAttributeAttestation || '');
+  const [saving, setSaving] = React.useState(false);
+
+  React.useEffect(() => {
+    setDef(row.customAttributeDefinition || '');
+    setAtt(row.customAttributeAttestation || '');
+  }, [row.customAttributeDefinition, row.customAttributeAttestation]);
+
+  const k = `${row.orgID}|${row.csF2SubcategoryID}|${row.maturityLevel}|${row.customAttributeNum}`;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await saveCustomAttribute({
+        action: 'update',
+        orgId: row.orgID,
+        csf2SubcategoryId: row.csF2SubcategoryID,
+        maturityLevel: row.maturityLevel,
+        attributeNum: row.customAttributeNum,
+        attrDefinition: def.trim(),
+        attestation: att || null,
+      });
+      onPatched?.(k, {
+        customAttributeDefinition: def.trim(),
+        customAttributeAttestation: att || null,
+      });
+      success('Updated');
+      setEdit(false);
+    } catch {
+      error('Update failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    try {
+      await saveCustomAttribute({
+        action: 'delete',
+        orgId: row.orgID,
+        csf2SubcategoryId: row.csF2SubcategoryID,
+        maturityLevel: row.maturityLevel,
+        attributeNum: row.customAttributeNum,
+      });
+      onDeleted?.(k);
+      success('Deleted');
+    } catch {
+      error('Delete failed');
+    }
+  };
+
+  return (
+    <Paper variant="outlined" sx={{ p: 1 }}>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Chip size="small" label={`ML ${row.maturityLevel}`} />
+
+        {edit ? (
           <>
-            <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-              CSF 2.0 Structure
-            </Typography>
-            <CsfTree headers={headers} onSelectSubcat={handleSelectSubcat} selectedSubcatID={null} />
-            {loadingHeaders && (
-              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display:'block' }}>
-                Loading…
-              </Typography>
-            )}
+            <TextField
+              size="small"
+              fullWidth
+              value={def}
+              onChange={(e) => setDef(e.target.value)}
+            />
+            <Select
+              size="small"
+              displayEmpty
+              value={att || ''}
+              onChange={(e) => setAtt(e.target.value || '')}
+              renderValue={(v) => (v ? v : '2025 Attestation — optional')}
+              sx={{ minWidth: 220 }}
+            >
+              <MenuItem value=""><em>—</em></MenuItem>
+              {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
+            </Select>
+
+            <Tooltip title="Save">
+              <span>
+                <IconButton size="small" onClick={save} disabled={saving || !def.trim()}>
+                  <SaveOutlinedIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+            <Tooltip title="Cancel">
+              <IconButton size="small" onClick={() => { setEdit(false); setDef(row.customAttributeDefinition || ''); setAtt(row.customAttributeAttestation || ''); }}>
+                <CloseOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
           </>
         ) : (
-          <TwoPane
-            left={
-              <>
-                <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-                  <Button size="small" onClick={handleBack}>← Back</Button>
-                  <Typography variant="subtitle2" color="text.secondary">CSF 2.0 Structure</Typography>
-                </Stack>
-                <CsfTree
-                  headers={headers}
-                  onSelectSubcat={handleSelectSubcat}
-                  selectedSubcatID={selectedSubcatID}
-                  maxHeight="calc(100vh - 210px)"
-                />
-              </>
-            }
-            right={
-              !selectedHeader ? (
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                  {loadingRows ? 'Loading…' : 'Select a subcategory from the left to view details.'}
-                </Typography>
-              ) : (
-                <>
-                  <RightHeaderComposite
-                    header={selectedHeader}
-                    associatedRows={rowsForSelected}
-                    ownerCsv={ownerCsv}
-                    custodianCsv={custodianCsv}
-                  />
+          <>
+            <Typography variant="body2" sx={{ flex: 1 }}>{row.customAttributeDefinition}</Typography>
+            {row.customAttributeAttestation ? (
+              <Chip
+                size="small"
+                label={row.customAttributeAttestation}
+                sx={(t) => ({
+                  bgcolor:
+                    row.customAttributeAttestation === 'Meet' ? t.palette.success.main :
+                    row.customAttributeAttestation === 'Partial Meet' ? t.palette.warning.main :
+                    t.palette.error.main,
+                  color: row.customAttributeAttestation === 'Partial Meet' ? t.palette.common.black : t.palette.common.white,
+                  fontWeight: 600
+                })}
+              />
+            ) : (
+              <Typography variant="body2" color="text.secondary">—</Typography>
+            )}
 
-                  <OrgTabs
-                    orgs={orgsForTabs}
-                    activeOrgID={activeOrgID}
-                    editableOrgID={activeOrgID}
-                    onChange={setActiveOrgID}
-                  />
-
-                  <AttributeGroupTable
-                    rows={displayRows}
-                    onPatchRow={onPatchRow}
-                    onDeleteRow={onDeleteRow}
-                  />
-
-                  <AddCustomAttributePanel
-                    orgID={activeOrgID}
-                    orgName={orgsForTabs.find(x => x.orgID === activeOrgID)?.orgName}
-                    csf2SubcategoryID={selectedSubcatID}
-                    subcatName={selectedHeader.csF2SubcategoryName}
-                    existingRows={rowsForActiveOrg}   // UNFILTERED so panel shows what you just added
-                    onAdded={onAddCustomRow}
-                    onPatched={onPatchRow}
-                    onDeleted={onDeleteRow}
-                  />
-                </>
-              )
-            }
-          />
+            <Tooltip title="Edit">
+              <IconButton size="small" onClick={() => setEdit(true)}>
+                <EditOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Delete">
+              <IconButton size="small" onClick={remove}>
+                <DeleteOutlineOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </>
         )}
-      </Box>
-
-      <BusyOverlay open={initialLoading} />
-    </Box>
+      </Stack>
+    </Paper>
   );
 }

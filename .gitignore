@@ -74,7 +74,7 @@ export default function AttributeGroupTable({
       });
       setStateFor(k, 'success');
       success('Saved');
-    } catch (e) {
+    } catch {
       if (onPatchRow) onPatchRow(k, r); else patchLocal(k, r);
       setStateFor(k, 'error');
       error('Save failed. Please retry.');
@@ -83,25 +83,22 @@ export default function AttributeGroupTable({
 
   return (
     <Paper variant="outlined" sx={{ mt: 2 }}>
-      <TableContainer sx={{ maxHeight, overflowY: 'auto' }}>
+      <TableContainer sx={{ maxHeight, overflow: 'auto' }}>
         <Table
           stickyHeader
           size="medium"
-          sx={{
-            tableLayout: 'fixed',
-            minWidth: 1200,
-          }}
+          sx={{ tableLayout: 'fixed' }}   // stable widths, no forced minWidth
         >
-          {/* Column plan: Attribute gets 45% (prevents vertical text), others fixed */}
+          {/* 100% budget so header/body always align */}
           <colgroup>
-            <col style={{ width: 56 }} />
-            <col style={{ width: '45%' }} />
-            <col style={{ width: 64 }} />
-            <col style={{ width: 110 }} />
-            <col style={{ width: 170 }} />
-            <col style={{ width: 220 }} />
-            <col style={{ width: 200 }} />
-            <col style={{ width: 96 }} />
+            <col style={{ width: '4%' }} />
+            <col style={{ width: '44%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '2%' }} />
           </colgroup>
 
           <TableHead>
@@ -138,24 +135,19 @@ export default function AttributeGroupTable({
 }
 
 function Row({ index, row, state, onSave }) {
+  // ML coloring as a subtle tint + inset left bar (no pseudo element)
   const mlTint = (theme) => {
     const isML4 = Number(row.maturityLevel) === 4;
     const base = isML4 ? alpha(theme.palette.warning.main, 0.06) : alpha(theme.palette.primary.main, 0.04);
-    const bar  = isML4 ? alpha(theme.palette.warning.main, 0.9)  : alpha(theme.palette.primary.main, 0.8);
+    const bar  = isML4 ? theme.palette.warning.main : theme.palette.primary.main;
     return {
-      bgcolor: base,
-      '&::before': {
-        content: '""',
-        position: 'absolute',
-        left: 0, top: 0, bottom: 0, width: 4,
-        bgcolor: bar,
-        borderTopLeftRadius: 4, borderBottomLeftRadius: 4,
-      }
+      backgroundColor: base,
+      boxShadow: `inset 4px 0 0 0 ${alpha(bar, 0.9)}`,
     };
   };
 
   return (
-    <TableRow hover sx={(t) => ({ position: 'relative', verticalAlign: 'top', ...(Number(row.maturityLevel) >= 3 ? mlTint(t) : {}) })}>
+    <TableRow hover sx={(t) => ({ verticalAlign: 'top', ...(Number(row.maturityLevel) >= 3 ? mlTint(t) : {}) })}>
       <TableCell>{index}</TableCell>
 
       <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.5, pr: 3 }}>
@@ -195,11 +187,7 @@ function Row({ index, row, state, onSave }) {
           displayEmpty
           onChange={(e) => onSave(row, { selectionAttestation: e.target.value || null })}
           renderValue={(v) => (
-            <Chip
-              size="small"
-              label={v || '—'}
-              sx={(t) => ({ ...deepChip(t, v), fontWeight: 600 })}
-            />
+            <Chip size="small" label={v || '—'} sx={(t) => ({ ...deepChip(t, v), fontWeight: 600 })} />
           )}
         >
           <MenuItem value=""><em>—</em></MenuItem>
@@ -208,14 +196,14 @@ function Row({ index, row, state, onSave }) {
       </TableCell>
 
       <TableCell>
-        {row.assessScore2024 ? (
-          <Chip size="small" label={row.assessScore2024} sx={(t) => ({ ...deepChip(t, row.assessScore2024), fontWeight: 600 })} />
-        ) : '—'}
+        {row.assessScore2024
+          ? <Chip size="small" label={row.assessScore2024} sx={(t) => ({ ...deepChip(t, row.assessScore2024), fontWeight: 600 })} />
+          : '—'}
       </TableCell>
 
       <TableCell align="center">
         {state === 'saving' ? (
-          <CircularProgress size={22} />
+          <CircularProgress size={20} />
         ) : state === 'success' ? (
           <Tooltip title="Saved"><CheckCircleRoundedIcon color="success" /></Tooltip>
         ) : state === 'error' ? (

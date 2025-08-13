@@ -1,270 +1,49 @@
-import * as React from 'react';
-import {
-  Paper, Table, TableHead, TableBody, TableRow, TableCell,
-  TableContainer, Select, MenuItem, Chip, CircularProgress, Tooltip
-} from '@mui/material';
-import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
-import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
-import { alpha } from '@mui/material/styles';
++ const keyOf = (r) => `${r.orgID}|${r.csF2SubcategoryID}|${r.maturityLevel}|${r.attributeNum}`;
 
-import { saveSelection } from '../../api/selectionApi';
-import useToast from '../../../../ui/feedback/useToast';
+@@
+   const rowsForActiveOrg = React.useMemo(
+     () => rowsForSelected.filter(r => r.orgID === activeOrgID),
+     [rowsForSelected, activeOrgID]
+   );
 
-const STATUS_OPTIONS = ['Keep', 'Remove'];
-const ATTEST_OPTIONS = ['Meet', 'Partial Meet', 'Does Not Meet'];
++  // Hide "Remove" rows when Final view is ON (custom rows have no status, so they remain)
++  const displayRows = React.useMemo(() => {
++    if (!filters.finalOnly) return rowsForActiveOrg;
++    return rowsForActiveOrg.filter(r => (r.selectionStatus || '') !== 'Remove');
++  }, [rowsForActiveOrg, filters.finalOnly]);
 
-const deepChip = (theme, v) => {
-  switch (v) {
-    case 'Meet':
-      return { bgcolor: theme.palette.success.main, color: theme.palette.common.white };
-    case 'Partial Meet':
-      return { bgcolor: theme.palette.warning.main, color: theme.palette.common.black };
-    case 'Does Not Meet':
-      return { bgcolor: theme.palette.error.main, color: theme.palette.common.white };
-    default:
-      return { bgcolor: theme.palette.grey[300], color: theme.palette.text.primary };
-  }
-};
++  // patch from child (table/custom panel) without refetch
++  const onPatchRow = React.useCallback((k, patch) => {
++    setRows(prev => prev.map(r => (keyOf(r) === k ? { ...r, ...patch } : r)));
++  }, []);
++
++  const onAddCustomRow = React.useCallback((newRow) => {
++    setRows(prev => [...prev, newRow]);
++  }, []);
++
++  const onDeleteRow = React.useCallback((k) => {
++    setRows(prev => prev.filter(r => keyOf(r) !== k));
++  }, []);
 
-const lightStatusChip = (theme, v) => {
-  if (v === 'Keep') {
-    return {
-      bgcolor: theme.palette.success.light,
-      color: theme.palette.success.dark,
-      borderColor: alpha(theme.palette.success.main, 0.4),
-    };
-  }
-  if (v === 'Remove') {
-    return {
-      bgcolor: theme.palette.error.light,
-      color: theme.palette.error.dark,
-      borderColor: alpha(theme.palette.error.main, 0.4),
-    };
-  }
-  return { bgcolor: theme.palette.grey[200], color: theme.palette.text.primary, borderColor: theme.palette.grey[300] };
-};
+@@  render right pane
+-                  <AttributeGroupTable rows={rowsForActiveOrg} />
++                  <AttributeGroupTable
++                    rows={displayRows}
++                    onPatchRow={onPatchRow}
++                  />
 
-export const rowKey = (r) => `${r.orgID}|${r.csF2SubcategoryID}|${r.maturityLevel}|${r.attributeNum}`;
-
-export default function AttributeGroupTable({
-  rows = [],
-  onPatchRow,                     // (key, patch) => void  (optional; if omitted we patch localRows)
-  maxHeight = 'calc(100vh - 420px)',
-}) {
-  const { success, error } = useToast();
-
-  // local state so UI is snappy even without parent patching
-  const [localRows, setLocalRows] = React.useState(rows);
-  React.useEffect(() => setLocalRows(rows), [rows]);
-
-  // per-row action status
-  const [actionState, setActionState] = React.useState(new Map());
-  const setStateFor = (k, v) => setActionState(prev => new Map(prev).set(k, v));
-
-  const patchLocal = React.useCallback((key, patch) => {
-    setLocalRows(prev => prev.map(r => (rowKey(r) === key ? { ...r, ...patch } : r)));
-  }, []);
-
-  const optimisticPatch = React.useCallback((r, patch) => {
-    const k = rowKey(r);
-    if (onPatchRow) onPatchRow(k, patch);
-    else patchLocal(k, patch);
-  }, [onPatchRow, patchLocal]);
-
-  const handleSave = async (r, nextPatch) => {
-    const k = rowKey(r);
-    optimisticPatch(r, nextPatch);
-    setStateFor(k, 'saving');
-
-    try {
-      await saveSelection({
-        orgID: r.orgID,
-        csF2SubcategoryID: r.csF2SubcategoryID,
-        csF1SubcategoryID: r.csF1SubcategoryID,
-        maturityLevel: r.maturityLevel,
-        attributeNum: r.attributeNum,
-        selectionStatus: nextPatch.selectionStatus ?? r.selectionStatus ?? null,
-        selectionAttestation: nextPatch.selectionAttestation ?? r.selectionAttestation ?? null,
-      });
-      setStateFor(k, 'success');
-      success('Saved');
-    } catch {
-      // revert
-      if (onPatchRow) onPatchRow(k, r);
-      else patchLocal(k, r);
-      setStateFor(k, 'error');
-      error('Save failed. Please retry.');
-    }
-  };
-
-  // Sort rows: by CSF 1.1 subcat (baseline group), then ML (3 then 4), then baseline before custom, then attribute number
-  const sortedRows = React.useMemo(() => {
-    const toNum = (v) => (v == null ? 0 : Number(v));
-    return [...localRows].sort((a, b) => {
-      const aScore = `${toNum(a.csF1SubcategoryID).toString().padStart(6, '0')}|${toNum(a.maturityLevel)}|${(a.isCustom || a.customAttributeDefinition) ? 1 : 0}|${toNum(a.customAttributeNum ?? a.attributeNum).toString().padStart(4, '0')}`;
-      const bScore = `${toNum(b.csF1SubcategoryID).toString().padStart(6, '0')}|${toNum(b.maturityLevel)}|${(b.isCustom || b.customAttributeDefinition) ? 1 : 0}|${toNum(b.customAttributeNum ?? b.attributeNum).toString().padStart(4, '0')}`;
-      return aScore.localeCompare(bScore);
-    });
-  }, [localRows]);
-
-  return (
-    <Paper variant="outlined" sx={{ mt: 2 }}>
-      <TableContainer sx={{ maxHeight, overflow: 'auto', pr: 1.5, pb: 0.5 }}>
-        <Table stickyHeader size="small" sx={{ tableLayout: 'auto' }}>
-          <colgroup>
-            <col style={{ width: '4%' }} />
-            <col style={{ width: '42%' }} />
-            <col style={{ width: '6%' }} />
-            <col style={{ width: '10%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '10%' }} />
-            <col style={{ width: '4%' }} />
-          </colgroup>
-
-          <TableHead>
-            <TableRow>
-              <TableCell>#</TableCell>
-              <TableCell>Attribute Definition</TableCell>
-              <TableCell align="center">ML</TableCell>
-              <TableCell>NIST 1.1</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell>2025 Attestation</TableCell>
-              <TableCell align="center">2024 Assessor Score</TableCell>
-              <TableCell align="center">Actions</TableCell>
-            </TableRow>
-          </TableHead>
-
-          <TableBody>
-            {sortedRows.map((r, i) => (
-              <Row
-                key={rowKey(r)}
-                index={i + 1}
-                row={r}
-                state={actionState.get(rowKey(r))}
-                onSave={handleSave}
-              />
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
-    </Paper>
-  );
-}
-
-function Row({ index, row, state, onSave }) {
-  // subtle ML tint + inset bar for ML3/4
-  const mlTint = (theme) => {
-    const isML4 = Number(row.maturityLevel) === 4;
-    const base = isML4 ? alpha(theme.palette.warning.main, 0.06) : alpha(theme.palette.primary.main, 0.04);
-    const bar  = isML4 ? theme.palette.warning.main : theme.palette.primary.main;
-    return { backgroundColor: base, boxShadow: `inset 4px 0 0 0 ${alpha(bar, 0.9)}` };
-  };
-
-  const isCustom = row.isCustom || !!row.customAttributeDefinition;
-
-  const attributeText = row.customAttributeDefinition || row.attributeDefinition || '';
-
-  return (
-    <TableRow hover sx={(t) => ({ verticalAlign: 'top', ...(Number(row.maturityLevel) >= 3 ? mlTint(t) : {}) })}>
-      <TableCell>{index}</TableCell>
-
-      <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.5, pr: 3 }}>
-        {attributeText}
-      </TableCell>
-
-      {/* ML + "Custom" chip for custom rows */}
-      <TableCell align="center">
-        {row.maturityLevel}
-        {isCustom && (
-          <Chip
-            label="Custom"
-            size="small"
-            sx={(t) => ({
-              ml: 0.75,
-              height: 20,
-              bgcolor: t.palette.info.light,
-              color: t.palette.info.dark,
-              borderRadius: 10,
-            })}
-          />
-        )}
-      </TableCell>
-
-      {/* NIST 1.1: baseline shows the CSF 1.1 mapping, custom shows "—" */}
-      <TableCell>{isCustom ? '—' : (row.csF1SubcategoryName || '—')}</TableCell>
-
-      {/* STATUS: blank for custom; editable for baseline */}
-      <TableCell>
-        {isCustom ? (
-          '—'
-        ) : (
-          <Select
-            fullWidth
-            size="small"
-            value={row.selectionStatus || ''}
-            displayEmpty
-            onChange={(e) => {
-              const v = e.target.value || null;
-              const patch = { selectionStatus: v };
-              if (v === 'Remove') patch.selectionAttestation = null; // clear attestation on Remove
-              onSave(row, patch);
-            }}
-            renderValue={(v) => (
-              <Chip size="small" label={v || '—'} variant="outlined" sx={(t) => ({ borderWidth: 1, ...lightStatusChip(t, v) })} />
-            )}
-          >
-            <MenuItem value=""><em>—</em></MenuItem>
-            {STATUS_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-          </Select>
-        )}
-      </TableCell>
-
-      {/* 2025 Attestation: chip for custom; select for baseline (disabled if Status=Remove) */}
-      <TableCell>
-        {isCustom ? (
-          row.customAttributeAttestation
-            ? <Chip size="small" label={row.customAttributeAttestation} sx={(t) => ({ ...deepChip(t, row.customAttributeAttestation), fontWeight: 600 })} />
-            : '—'
-        ) : (
-          <Select
-            fullWidth
-            size="small"
-            value={row.selectionAttestation || ''}
-            displayEmpty
-            disabled={row.selectionStatus === 'Remove'}
-            onChange={(e) => onSave(row, { selectionAttestation: e.target.value || null })}
-            renderValue={(v) => (
-              <Chip size="small" label={v || '—'} sx={(t) => ({ ...deepChip(t, v), fontWeight: 600 })} />
-            )}
-          >
-            <MenuItem value=""><em>—</em></MenuItem>
-            {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-          </Select>
-        )}
-      </TableCell>
-
-      {/* 2024 Assessor Score: chip if present */}
-      <TableCell align="center">
-        {row.assessScore2024
-          ? <Chip size="small" label={row.assessScore2024} sx={(t) => ({ ...deepChip(t, row.assessScore2024), fontWeight: 600 })} />
-          : '—'}
-      </TableCell>
-
-      {/* Actions: spinner / success / error */}
-      <TableCell align="center">
-        {state === 'saving' ? (
-          <CircularProgress size={20} />
-        ) : state === 'success' ? (
-          <Tooltip title="Saved">
-            <CheckCircleRoundedIcon color="success" />
-          </Tooltip>
-        ) : state === 'error' ? (
-          <Tooltip title="Save failed">
-            <CancelRoundedIcon color="error" />
-          </Tooltip>
-        ) : null}
-      </TableCell>
-    </TableRow>
-  );
-}
+-                  <AddCustomAttributePanel
+-                    orgName={orgsForTabs.find(x => x.orgID === activeOrgID)?.orgName}
+-                    subcatName={selectedHeader.csF2SubcategoryName}
+-                    editable={false}
+-                  />
++                  <AddCustomAttributePanel
++                    orgID={activeOrgID}
++                    orgName={orgsForTabs.find(x => x.orgID === activeOrgID)?.orgName}
++                    csf2SubcategoryID={selectedSubcatID}
++                    subcatName={selectedHeader.csF2SubcategoryName}
++                    existingRows={rowsForActiveOrg}
++                    onAdded={onAddCustomRow}
++                    onPatched={onPatchRow}
++                    onDeleted={onDeleteRow}
++                  />

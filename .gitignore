@@ -1,10 +1,10 @@
 import * as React from 'react';
 import {
-  AppBar, Toolbar, Box, Button, Menu, MenuItem, IconButton, Typography, Link, Fade
+  AppBar, Toolbar, Box, Button, Menu, MenuItem, IconButton, Typography, Link
 } from '@mui/material';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import AccountCircleIcon from '@mui/icons-material/AccountCircle';
-import MenuIcon from '@mui/icons-material/Menu'; // reserved for future mobile menu
+import MenuIcon from '@mui/icons-material/Menu';
 import logo from '../../assets/images/logo.svg';
 
 const MENUS = {
@@ -62,15 +62,20 @@ export default function Navbar() {
               <Button
                 color="inherit"
                 endIcon={<ArrowDropDownIcon />}
+                aria-haspopup="menu"
+                aria-controls={`${key}-menu`}
+                aria-expanded={Boolean(anchor[key]) ? 'true' : undefined}
                 onClick={(e) => openMenu(e, key)}
               >
                 {label}
               </Button>
               <Menu
+                id={`${key}-menu`}
                 anchorEl={anchor[key]}
                 open={Boolean(anchor[key])}
                 onClose={() => closeMenu(key)}
-                TransitionComponent={Fade}
+                // keep the subtle motion without deprecated TransitionComponent
+                transitionDuration={{ appear: 0, enter: 150, exit: 100 }}
                 anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
                 transformOrigin={{ vertical: 'top',    horizontal: 'left' }}
               >
@@ -96,7 +101,6 @@ export default function Navbar() {
           <IconButton color="inherit" aria-label="account">
             <AccountCircleIcon />
           </IconButton>
-          {/* Reserved for a mobile overflow menu; currently decorative */}
           <IconButton color="inherit" sx={{ display: { xs: 'inline-flex', md: 'none' } }}>
             <MenuIcon />
           </IconButton>

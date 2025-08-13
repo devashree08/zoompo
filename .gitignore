@@ -1,29 +1,3 @@
-const upsertRow = React.useCallback((newRow) => {
-  setRows(prev => {
-    const key = `${newRow.orgID}|${newRow.csF2SubcategoryID}|${newRow.maturityLevel}|${newRow.attributeNum}`;
-    const idx = prev.findIndex(r => (
-      r.orgID === newRow.orgID &&
-      r.csF2SubcategoryID === newRow.csF2SubcategoryID &&
-      r.maturityLevel === newRow.maturityLevel &&
-      r.attributeNum === newRow.attributeNum
-    ));
-    if (idx >= 0) {
-      const copy = prev.slice(); copy[idx] = { ...prev[idx], ...newRow }; return copy;
-    }
-    return [...prev, newRow].sort((a,b) =>
-      (a.maturityLevel - b.maturityLevel) || (a.attributeNum - b.attributeNum)
-    );
-  });
-}, []);
-
-const removeRow = React.useCallback((rowKeyStr) => {
-  setRows(prev => prev.filter(r =>
-    `${r.orgID}|${r.csF2SubcategoryID}|${r.maturityLevel}|${r.attributeNum}` !== rowKeyStr
-  ));
-}, []);
-
-
----
 import * as React from 'react';
 import {
   Box, Paper, Stack, TextField, Select, MenuItem, Button, Typography, IconButton, Tooltip, Dialog, DialogTitle, DialogContent, DialogActions, Chip

@@ -1,111 +1,45 @@
 import * as React from 'react';
-import {
-  AppBar, Toolbar, Box, Button, Menu, MenuItem, IconButton, Typography, Link
-} from '@mui/material';
-import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
-import AccountCircleIcon from '@mui/icons-material/AccountCircle';
-import MenuIcon from '@mui/icons-material/Menu';
-import logo from '../../assets/images/logo.svg';
+import { Box, Tooltip, IconButton, Stack } from '@mui/material';
+import { NavLink } from 'react-router-dom';
+import HomeIcon from '@mui/icons-material/Home';
+import Inventory2Icon from '@mui/icons-material/Inventory2';
+import DashboardIcon from '@mui/icons-material/Dashboard';
 
-const MENUS = {
-  looker: [
-    { text: 'CSF 1.1 to CSF 2.0 Sankey', link: 'https://looker.com' },
-    { text: '2024 Assessment Dash',       link: 'https://looker.com' },
-    { text: 'Assessor Findings',          link: 'https://looker.com' },
-  ],
-  resources: [
-    { text: 'Narrative template', link: 'https://docs.google.com' },
-    { text: 'N&A Folder',         link: 'https://docs.google.com' },
-    { text: 'Meeting Minutes',    link: 'https://drive.google.com' },
-  ],
-  contact: [
-    { text: 'Support Link', link: 'https://docs.google.com' },
-    { text: 'AD Access',    link: 'https://docs.google.com' },
-  ],
-};
+const DEFAULT_ITEMS = [
+  { label: 'Home',       icon: <HomeIcon        />, to: '/' },
+  { label: 'Readiness',  icon: <Inventory2Icon  />, to: '/readiness' },
+  { label: 'CSF Mapping',icon: <DashboardIcon   />, to: '/attributemapping' },
+];
 
-export default function Navbar() {
-  const [anchor, setAnchor] = React.useState({});
-
-  const openMenu = (e, key) => setAnchor((p) => ({ ...p, [key]: e.currentTarget }));
-  const closeMenu = (key)   => setAnchor((p) => ({ ...p, [key]: null }));
-
+export default function Sidenav({ items = DEFAULT_ITEMS }) {
   return (
-    <AppBar
-      position="sticky"
+    <Box
       sx={{
-        top: 0,
-        zIndex: (t) => t.zIndex.drawer + 1,
-        backgroundColor: '#001C4D',
-        borderRadius: 0,
+        height: '100%',
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+        pt: 1,
       }}
     >
-      <Toolbar sx={{ minHeight: 64, gap: 1, flexWrap: 'wrap' }}>
-        {/* Brand */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexGrow: 1, minWidth: 0 }}>
-          <Link href="/" underline="none" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Box component="img" src={logo} alt="logo" sx={{ width: 28, height: 28 }} />
-            <Typography variant="h6" sx={{ color: 'common.white', fontWeight: 800 }}>
-              CSF Mapping
-            </Typography>
-          </Link>
-        </Box>
-
-        {/* Center menus – hide on phones */}
-        <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 0.5 }}>
-          {[
-            { key: 'looker',    label: 'Looker Dashboard' },
-            { key: 'resources', label: 'Resources' },
-            { key: 'contact',   label: 'Contact' },
-          ].map(({ key, label }) => (
-            <React.Fragment key={key}>
-              <Button
-                color="inherit"
-                endIcon={<ArrowDropDownIcon />}
-                aria-haspopup="menu"
-                aria-controls={`${key}-menu`}
-                aria-expanded={Boolean(anchor[key]) ? 'true' : undefined}
-                onClick={(e) => openMenu(e, key)}
-              >
-                {label}
-              </Button>
-              <Menu
-                id={`${key}-menu`}
-                anchorEl={anchor[key]}
-                open={Boolean(anchor[key])}
-                onClose={() => closeMenu(key)}
-                // keep the subtle motion without deprecated TransitionComponent
-                transitionDuration={{ appear: 0, enter: 150, exit: 100 }}
-                anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-                transformOrigin={{ vertical: 'top',    horizontal: 'left' }}
-              >
-                {(MENUS[key] || []).map((item, i) => (
-                  <MenuItem
-                    key={i}
-                    component="a"
-                    href={item.link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => closeMenu(key)}
-                  >
-                    {item.text}
-                  </MenuItem>
-                ))}
-              </Menu>
-            </React.Fragment>
-          ))}
-        </Box>
-
-        {/* Right actions */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-          <IconButton color="inherit" aria-label="account">
-            <AccountCircleIcon />
-          </IconButton>
-          <IconButton color="inherit" sx={{ display: { xs: 'inline-flex', md: 'none' } }}>
-            <MenuIcon />
-          </IconButton>
-        </Box>
-      </Toolbar>
-    </AppBar>
+      <Stack spacing={1}>
+        {items.map((it) => (
+          <Tooltip key={it.to} title={it.label} placement="left">
+            <IconButton
+              component={NavLink}
+              to={it.to}
+              size="large"
+              sx={{
+                borderRadius: 2,
+                color: 'text.secondary',
+                '&.active': { bgcolor: 'action.selected', color: 'text.primary' },
+              }}
+            >
+              {it.icon}
+            </IconButton>
+          </Tooltip>
+        ))}
+      </Stack>
+    </Box>
   );
 }

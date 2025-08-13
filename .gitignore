@@ -1,182 +1,135 @@
 import * as React from 'react';
 import {
-  Paper, Box, Stack, Typography, Select, MenuItem, TextField, Button,
-  IconButton, Chip, Divider, Dialog, DialogTitle, DialogContent, DialogActions,
-  Tooltip
+  Box, Paper, Stack, Select, MenuItem, TextField, Button, Chip,
+  IconButton, Tooltip, Divider, Typography
 } from '@mui/material';
-import EditRoundedIcon from '@mui/icons-material/EditRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-
-import { saveCustom } from '../../api/customApi';
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
+import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
+import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
+import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined';
+import { saveCustomAttribute } from '../../api/customApi';
 import useToast from '../../../../ui/feedback/useToast';
 
+// Keep options aligned with table
 const ATTEST_OPTIONS = ['Meet', 'Partial Meet', 'Does Not Meet'];
 
+/**
+ * Props:
+ *  - orgID, orgName
+ *  - csf2SubcategoryID, subcatName
+ *  - existingRows: ALL rows for this org/subcat (unfiltered) — baseline + custom
+ *  - onAdded(newRow), onPatched(key, patch), onDeleted(key)
+ *
+ * newRow shape expected by the table:
+ * {
+ *   isCustom: true,
+ *   orgID, csF2SubcategoryID,
+ *   maturityLevel, customAttributeNum,
+ *   customAttributeDefinition, customAttributeAttestation
+ * }
+ */
 export default function AddCustomAttributePanel({
   orgID,
   orgName,
   csf2SubcategoryID,
   subcatName,
-  existingRows = [],        // full rows for this org + subcat (baseline + custom)
-  onAdded,                  // (newRow) => void   -> append to table
-  onPatched,                // (key, patch) => void
-  onDeleted,                // (key) => void
+  existingRows = [],
+  onAdded,
+  onPatched,
+  onDeleted,
 }) {
   const { success, error } = useToast();
 
-  // ---------- compose next attributeNum (never null) ----------
-  const nextAttrNum = React.useMemo(() => {
-    // look only at custom rows for this org + subcat
-    const candidates = existingRows
-      .filter(r => (r.orgID === orgID) && (r.csF2SubcategoryID === csf2SubcategoryID) &&
-                   (r.isCustom || r.customAttributeDefinition || r.customAttributeNum != null))
-      .map(r => Number(r.customAttributeNum ?? r.attributeNum ?? 0));
-    const max = candidates.length ? Math.max(...candidates) : 0;
-    return max + 1;
-  }, [existingRows, orgID, csf2SubcategoryID]);
-
-  // ---------- add form ----------
+  // --- compose add form ---
   const [ml, setMl] = React.useState(3);
   const [def, setDef] = React.useState('');
   const [att, setAtt] = React.useState('');
+  const [adding, setAdding] = React.useState(false);
 
-  const canAdd = def.trim().length > 0 && (ml === 3 || ml === 4);
+  // list derived purely from props (so it updates as soon as parent updates)
+  const customRows = React.useMemo(
+    () =>
+      (existingRows || []).filter(
+        r => (r.isCustom || r.customAttributeDefinition) && r.orgID === orgID && r.csF2SubcategoryID === csf2SubcategoryID
+      ),
+    [existingRows, orgID, csf2SubcategoryID]
+  );
+
+  // decide next custom number (client-side) if server doesn't return one
+  const nextCustomNum = React.useCallback((mlVal) => {
+    const nums = customRows
+      .filter(r => Number(r.maturityLevel) === Number(mlVal))
+      .map(r => Number(r.customAttributeNum || 0));
+    const max = nums.length ? Math.max(...nums) : 0;
+    return max + 1;
+  }, [customRows]);
 
   const handleAdd = async () => {
-    if (!canAdd) return;
-    const payload = {
-      action: 'add',
-      orgId: orgID,
-      csf2SubcategoryId: csf2SubcategoryID,
-      maturityLevel: ml,
-      attributeNum: nextAttrNum,
-      attrDefinition: def.trim(),      // <-- as you requested
-      attestation: att || null,
-    };
+    if (!def.trim()) return;
+    setAdding(true);
+    const localNum = nextCustomNum(ml);
 
     try {
-      const saved = await saveCustom(payload);
+      const resp = await saveCustomAttribute({
+        action: 'create',
+        orgId: orgID,
+        csf2SubcategoryId: csf2SubcategoryID,
+        maturityLevel: ml,
+        attributeNum: localNum,                // server can override; we’ll read back if it returns
+        attrDefinition: def.trim(),
+        attestation: att || null,
+      });
 
-      // construct a table row that matches AttributeGroupTable
-      const newRow = {
+      // Prefer server’s number/echo; otherwise use our local plan
+      const serverNum = resp?.customAttributeNum ?? resp?.attributeNum ?? localNum;
+      const serverAtt = resp?.attestation ?? att || null;
+      const serverDef = resp?.customAttributeDefinition ?? resp?.attrDefinition ?? def.trim();
+
+      onAdded?.({
+        isCustom: true,
         orgID,
         csF2SubcategoryID: csf2SubcategoryID,
-        csF1SubcategoryID: null,
-        csF1SubcategoryName: '',
-
         maturityLevel: ml,
-        attributeNum: nextAttrNum,      // keeps key uniqueness
+        customAttributeNum: serverNum,
+        customAttributeDefinition: serverDef,
+        customAttributeAttestation: serverAtt,
+        // keep table happy
+        attributeNum: null,
+      });
 
-        // show in “Attribute Definition”
-        attributeDefinition: def.trim(),
-
-        // no Status for custom
-        selectionStatus: null,
-
-        // 2025 Attestation column shows custom’s attestation as a chip
-        customAttributeAttestation: att || null,
-
-        // 2024 Assessor Score blank
-        assessScore2024: null,
-
-        // flags to make the table treat this as custom
-        isCustom: true,
-        customAttributeNum: nextAttrNum,
-        customAttributeDefinition: def.trim(),
-      };
-
-      onAdded?.(newRow);
       success('Custom attribute added');
-      // reset form
       setDef('');
       setAtt('');
     } catch (e) {
-      error('Failed to add custom attribute');
+      error('Add failed');
+    } finally {
+      setAdding(false);
     }
   };
-
-  // ---------- edit dialog ----------
-  const [editOpen, setEditOpen] = React.useState(false);
-  const [editRow, setEditRow]   = React.useState(null);
-  const [editDef, setEditDef]   = React.useState('');
-  const [editAtt, setEditAtt]   = React.useState('');
-
-  const startEdit = (row) => {
-    setEditRow(row);
-    setEditDef(row.customAttributeDefinition || row.attributeDefinition || '');
-    setEditAtt(row.customAttributeAttestation || '');
-    setEditOpen(true);
-  };
-
-  const saveEdit = async () => {
-    if (!editRow) return;
-    try {
-      await saveCustom({
-        action: 'update',
-        orgId: editRow.orgID,
-        csf2SubcategoryId: editRow.csF2SubcategoryID,
-        maturityLevel: editRow.maturityLevel,
-        attributeNum: editRow.customAttributeNum ?? editRow.attributeNum,
-        attrDefinition: editDef.trim(),
-        attestation: editAtt || null,
-      });
-
-      onPatched?.(
-        `${editRow.orgID}|${editRow.csF2SubcategoryID}|${editRow.maturityLevel}|${editRow.attributeNum}`,
-        {
-          attributeDefinition: editDef.trim(),
-          customAttributeDefinition: editDef.trim(),
-          customAttributeAttestation: editAtt || null,
-        }
-      );
-      setEditOpen(false);
-      success('Custom attribute updated');
-    } catch {
-      error('Failed to update');
-    }
-  };
-
-  const remove = async (row) => {
-    try {
-      await saveCustom({
-        action: 'delete',
-        orgId: row.orgID,
-        csf2SubcategoryId: row.csF2SubcategoryID,
-        maturityLevel: row.maturityLevel,
-        attributeNum: row.customAttributeNum ?? row.attributeNum,
-      });
-      onDeleted?.(`${row.orgID}|${row.csF2SubcategoryID}|${row.maturityLevel}|${row.attributeNum}`);
-      success('Deleted');
-    } catch {
-      error('Failed to delete');
-    }
-  };
-
-  const customList = existingRows.filter(r =>
-    r.orgID === orgID &&
-    r.csF2SubcategoryID === csf2SubcategoryID &&
-    (r.isCustom || r.customAttributeDefinition || r.customAttributeNum != null)
-  );
 
   return (
-    <Paper variant="outlined" sx={{ mt: 2, p: 2 }}>
+    <Paper variant="outlined" sx={{ mt: 2, p: 1.5 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-          Custom Attributes — {orgName || '—'}
+        <Typography variant="subtitle2">
+          Custom Attributes — {orgName || 'Org'} / {subcatName}
         </Typography>
-        <Typography variant="caption" color="text.secondary">{subcatName}</Typography>
       </Stack>
 
-      {/* modern, compact input row */}
-      <Stack direction={{ xs:'column', md:'row' }} spacing={1} alignItems={{ md: 'center' }}>
+      {/* Add row */}
+      <Stack
+        direction={{ xs: 'column', md: 'row' }}
+        spacing={1}
+        alignItems={{ md: 'center' }}
+        sx={{ mb: 1.5 }}
+      >
         <Select
           size="small"
           value={ml}
           onChange={(e) => setMl(Number(e.target.value))}
           sx={{ width: 140 }}
         >
-          <MenuItem value={3}>Maturity 3</MenuItem>
-          <MenuItem value={4}>Maturity 4</MenuItem>
+          <MenuItem value={3}>Maturity — 3</MenuItem>
+          <MenuItem value={4}>Maturity — 4</MenuItem>
         </Select>
 
         <TextField
@@ -189,80 +142,177 @@ export default function AddCustomAttributePanel({
 
         <Select
           size="small"
-          value={att}
-          onChange={(e) => setAtt(e.target.value)}
           displayEmpty
-          sx={{ width: { xs:'100%', md: 220 } }}
-          renderValue={(v) => v || '2025 Attestation — optional'}
+          value={att || ''}
+          onChange={(e) => setAtt(e.target.value || '')}
+          renderValue={(v) => (v ? v : '2025 Attestation — optional')}
+          sx={{ width: { xs: '100%', md: 220 } }}
         >
           <MenuItem value=""><em>—</em></MenuItem>
           {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
         </Select>
 
-        <Button disabled={!canAdd} onClick={handleAdd}>Add</Button>
+        <Button
+          variant="contained"
+          onClick={handleAdd}
+          disabled={adding || !def.trim()}
+          sx={{ minWidth: 88 }}
+        >
+          {adding ? 'Adding…' : 'Add'}
+        </Button>
       </Stack>
 
-      <Divider sx={{ my: 2 }} />
+      <Divider sx={{ my: 1 }} />
 
-      {customList.length ? (
-        <Stack spacing={1}>
-          {customList.map(r => (
-            <Paper key={`${r.maturityLevel}-${r.customAttributeNum ?? r.attributeNum}`} variant="outlined" sx={{ p: 1, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
-                <Chip size="small" label={`ML ${r.maturityLevel}`} />
-                <Typography variant="body2" sx={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth:'60vw' }}>
-                  {r.customAttributeDefinition || r.attributeDefinition}
-                </Typography>
-                {r.customAttributeAttestation ? (
-                  <Chip size="small" label={r.customAttributeAttestation} color={
-                    r.customAttributeAttestation === 'Meet' ? 'success'
-                    : r.customAttributeAttestation === 'Partial Meet' ? 'warning' : 'error'
-                  } sx={{ ml: 1 }}/>
-                ) : null}
-              </Stack>
+      <Typography variant="caption" color="text.secondary" sx={{ display:'block', mb: 0.5 }}>
+        Existing custom attributes
+      </Typography>
 
-              <Stack direction="row" spacing={0.5}>
-                <Tooltip title="Edit">
-                  <IconButton size="small" onClick={() => startEdit(r)}><EditRoundedIcon fontSize="small" /></IconButton>
-                </Tooltip>
-                <Tooltip title="Delete">
-                  <IconButton size="small" onClick={() => remove(r)}><DeleteRoundedIcon fontSize="small" /></IconButton>
-                </Tooltip>
-              </Stack>
-            </Paper>
-          ))}
-        </Stack>
-      ) : (
-        <Typography variant="body2" color="text.secondary">No custom attributes yet.</Typography>
-      )}
+      <Stack spacing={0.75}>
+        {customRows.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">No custom attributes.</Typography>
+        ) : (
+          customRows.map((r) => (
+            <CustomListItem
+              key={`${r.maturityLevel}|${r.customAttributeNum}`}
+              row={r}
+              onPatched={onPatched}
+              onDeleted={onDeleted}
+            />
+          ))
+        )}
+      </Stack>
+    </Paper>
+  );
+}
 
-      {/* Edit dialog */}
-      <Dialog open={editOpen} onClose={() => setEditOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Edit custom attribute</DialogTitle>
-        <DialogContent sx={{ pt: 1 }}>
-          <Stack spacing={2}>
+/** A compact row item with inline edit controls (definition + optional attestation). */
+function CustomListItem({ row, onPatched, onDeleted }) {
+  const { success, error } = useToast();
+  const [edit, setEdit] = React.useState(false);
+  const [def, setDef] = React.useState(row.customAttributeDefinition || '');
+  const [att, setAtt] = React.useState(row.customAttributeAttestation || '');
+  const [saving, setSaving] = React.useState(false);
+
+  React.useEffect(() => {
+    setDef(row.customAttributeDefinition || '');
+    setAtt(row.customAttributeAttestation || '');
+  }, [row.customAttributeDefinition, row.customAttributeAttestation]);
+
+  const k = `${row.orgID}|${row.csF2SubcategoryID}|${row.maturityLevel}|${row.customAttributeNum}`;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await saveCustomAttribute({
+        action: 'update',
+        orgId: row.orgID,
+        csf2SubcategoryId: row.csF2SubcategoryID,
+        maturityLevel: row.maturityLevel,
+        attributeNum: row.customAttributeNum,
+        attrDefinition: def.trim(),
+        attestation: att || null,
+      });
+      onPatched?.(k, {
+        customAttributeDefinition: def.trim(),
+        customAttributeAttestation: att || null,
+      });
+      success('Updated');
+      setEdit(false);
+    } catch {
+      error('Update failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    try {
+      await saveCustomAttribute({
+        action: 'delete',
+        orgId: row.orgID,
+        csf2SubcategoryId: row.csF2SubcategoryID,
+        maturityLevel: row.maturityLevel,
+        attributeNum: row.customAttributeNum,
+      });
+      onDeleted?.(k);
+      success('Deleted');
+    } catch {
+      error('Delete failed');
+    }
+  };
+
+  return (
+    <Paper variant="outlined" sx={{ p: 1 }}>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Chip size="small" label={`ML ${row.maturityLevel}`} />
+
+        {edit ? (
+          <>
             <TextField
-              label="Attribute definition"
+              size="small"
               fullWidth
-              value={editDef}
-              onChange={(e) => setEditDef(e.target.value)}
+              value={def}
+              onChange={(e) => setDef(e.target.value)}
             />
             <Select
-              value={editAtt}
-              onChange={(e) => setEditAtt(e.target.value)}
+              size="small"
               displayEmpty
-              renderValue={(v) => v || '2025 Attestation — optional'}
+              value={att || ''}
+              onChange={(e) => setAtt(e.target.value || '')}
+              renderValue={(v) => (v ? v : '2025 Attestation — optional')}
+              sx={{ minWidth: 220 }}
             >
               <MenuItem value=""><em>—</em></MenuItem>
               {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
             </Select>
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setEditOpen(false)} color="inherit">Cancel</Button>
-          <Button onClick={saveEdit} disabled={!editDef.trim()}>Save</Button>
-        </DialogActions>
-      </Dialog>
+
+            <Tooltip title="Save">
+              <span>
+                <IconButton size="small" onClick={save} disabled={saving || !def.trim()}>
+                  <SaveOutlinedIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+            <Tooltip title="Cancel">
+              <IconButton size="small" onClick={() => { setEdit(false); setDef(row.customAttributeDefinition || ''); setAtt(row.customAttributeAttestation || ''); }}>
+                <CloseOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </>
+        ) : (
+          <>
+            <Typography variant="body2" sx={{ flex: 1 }}>{row.customAttributeDefinition}</Typography>
+            {row.customAttributeAttestation ? (
+              <Chip
+                size="small"
+                label={row.customAttributeAttestation}
+                sx={(t) => ({
+                  bgcolor:
+                    row.customAttributeAttestation === 'Meet' ? t.palette.success.main :
+                    row.customAttributeAttestation === 'Partial Meet' ? t.palette.warning.main :
+                    t.palette.error.main,
+                  color: row.customAttributeAttestation === 'Partial Meet' ? t.palette.common.black : t.palette.common.white,
+                  fontWeight: 600
+                })}
+              />
+            ) : (
+              <Typography variant="body2" color="text.secondary">—</Typography>
+            )}
+
+            <Tooltip title="Edit">
+              <IconButton size="small" onClick={() => setEdit(true)}>
+                <EditOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Delete">
+              <IconButton size="small" onClick={remove}>
+                <DeleteOutlineOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </>
+        )}
+      </Stack>
     </Paper>
   );
 }

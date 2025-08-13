@@ -1,178 +1,382 @@
 #!/usr/bin/env python3
-import pandas as pd
+"""
+ETL for 'mobileapps.xlsx' multi-sheet workbook.
+
+- Reads only these sheets:
+    TPD - Sugandha
+    VBG - Keith
+    VCG - Jeff
+    VGS-T - TonyKeith
+    VGS-T - TonyJeff
+    VGS-T - TonyCathy
+
+- Applies per-sheet filters (BISO / BusinessUnit variants tolerated).
+- Selects & renames specific columns.
+- Derives Is* status flags from textual statuses.
+- Produces a single aggregated CSV with the required final schema.
+
+Usage:
+    python etl_mobileapps.py --input mobileapps.xlsx --output mobileapps_master.csv
+"""
+from __future__ import annotations
+
+import argparse
+import logging
 from pathlib import Path
+from typing import Dict, Iterable, List, Optional
 
-INPUT_XLSX = "mobileapps.xlsx"
-OUTPUT_CSV = "mobileapps_master.csv"
+import pandas as pd
 
-# Columns to keep (exact names in Excel). We'll also try forgiving matching.
-COLUMNS_TO_KEEP = [
-    "VastID",
-    "Application Name in App Store",
-    "Client Type",
-    "Codebase Ownership",
-    "VMAC Team",
-    "BusinessUnit",
-    "Now Secure Scanning Status",
-    "Fortify Scan Status",
-    "Fortify Project Name",
-    "BlackDuck Status",
-    "BlackDuck Project Name",
+# ------------------------------ Config ----------------------------------------
+
+TARGET_SHEETS = [
+    "TPD - Sugandha",
+    "VBG - Keith",
+    "VCG - Jeff",
+    "VGS-T - TonyKeith",
+    "VGS-T - TonyJeff",
+    "VGS-T - TonyCathy",
 ]
 
-# Tabs and their row filters
+# Per-sheet filters
+# Interpretation:
+# - VBG - Keith: (BISO in {'Keith Huchi','Sanj H Asd'}) AND BusinessUnit == 'VBG'
+# - VCG - Jeff:  (BISO == 'Jeffrey Halt') AND (BusinessUnit in {'VCG','GTO'})
 SHEET_FILTERS = {
-    "TPD - Sugandha": {
-        "BISO": "Sugandha Venk",
-        # no Business Unit condition
-    },
-    "VBG - Keith": {
-        "BISO": "Keith Huchi",
-        "Business Unit": "VBG",
-    },
-    "VCG - Jeff": {
-        "BISO": "Jeffrey Halt",
-        "Business Unit": "VCG",
-    },
-    "VGS-T - Tony/Keith": {
-        "BISO": "Keith Hutch",
-        "Business Unit": "VBIT",
-    },
-    "VGS-T - Tony/Jeff": {
-        "BISO": "Jeffrey Halt",
-        "Business Unit": "VCIT",
-    },
-    "VGS-T - Tony/Cathy": {
-        "BISO": "Cathleen Dryer",
-        # no Business Unit condition provided
-    },
+    "TPD - Sugandha": {"BISO_eq": "Sugandha Venk"},
+    "VBG - Keith": {"BISO_in": {"Keith Huchi", "Sanj H Asd"}, "BusinessUnit_in": {"VBG"}},
+    "VCG - Jeff": {"BISO_eq": "Jeffrey Halt", "BusinessUnit_in": {"VCG", "GTO"}},
+    "VGS-T - TonyKeith": {"BISO_eq": "Keith Hutch", "BusinessUnit_in": {"VBIT"}},
+    "VGS-T - TonyJeff": {"BISO_eq": "Jeffrey Halt", "BusinessUnit_in": {"VCIT"}},
+    "VGS-T - TonyCathy": {"BISO_eq": "Cathleen Dryer"},
 }
 
-# --- Helper functions ---------------------------------------------------------
+# Source → target column mapping (with tolerated source name variants).
+# We’ll look up these source names case/space-insensitively.
+COLUMN_SYNONYMS: Dict[str, List[str]] = {
+    "VastID": ["vastid", "vast id"],
+    "ApplicationName": ["application name in app store", "app name in app store"],
+    "ClientType": ["client type"],
+    "CodebaseOwnership": ["codebase ownership"],
+    "VMACTeam": ["vmac team", "vmac"],
+    "BusinessUnit": ["business unit", "businessunit"],
+    # NowSecure can appear as "Scan" or "Scanning"
+    "NowSecureScanStatus": [
+        "now secure scan status",
+        "now secure scanning status",
+        "nowsecure scan status",
+        "nowsecure scanning status",
+    ],
+    "FortifyScanStatus": ["fortify scan status"],
+    "FortifyProjectName": ["fortify project name"],
+    "BlackDuckStatus": ["blackduck status", "black duck status"],
+    "BlackDuckProjectName": ["blackduck project name", "black duck project name"],
+    # For filtering only (not in final output)
+    "BISO": ["biso"],
+}
 
-def norm(s):
-    """Normalize strings for case/whitespace-insensitive matching."""
-    if pd.isna(s):
-        return s
-    return str(s).strip()
+# Final CSV schema (order fixed)
+FINAL_COLUMNS = [
+    "ReportMonth",
+    "VastID",
+    "ApplicationName",
+    "MetricName",
+    "BU",
+    "Tier2ManagerNm",
+    "Tier3ManagerNm",
+    "BISO",
+    "CustodianName",
+    "BUSortOrder",
+    "MetricValue",
+    "ClientType",
+    "CodebaseOwnership",
+    "VMACTeam",
+    "BusinessUnit",
+    "BaseRiskLevel",
+    "TotalProjectCount",
+    "IsNowSecureScanStatus",
+    "NowSecureScanStatus",
+    "IsFortifyScanStatus",
+    "FortifyScanStatus",
+    "FortifyProjectName",
+    "IsBlackDuckStatus",
+    "BlackDuckStatus",
+    "BlackDuckProjectName",
+    "LastUpdateDate",
+]
 
-def coalesce_business_unit_column(df):
-    """
-    Handle both 'Business Unit' and 'BusinessUnit' variants by creating a unified
-    'BusinessUnit' column if needed.
-    """
-    cols = {c.lower().strip(): c for c in df.columns}
-    bu = None
-    if "business unit" in cols:
-        bu = cols["business unit"]
-    elif "businessunit" in cols:
-        bu = cols["businessunit"]
+# Status → flag rules
+ZERO_PHRASES = [
+    "n/a 3rd party",
+    "not eligible for scans",
+    "tbd",
+    "onboarded but not scanning",
+    "pending rescan",
+    "not onboarded",
+    "onboarding",
+    "request for new",
+    "to be retired",
+]
+ONE_PHRASES = [
+    "scanning",
+    "equivalent scans performed",
+]
 
-    if bu is not None and "BusinessUnit" not in df.columns:
+
+# ------------------------------ Helpers ---------------------------------------
+
+def _normalize_key(s: str) -> str:
+    """Normalize header keys: lowercase + collapse spaces."""
+    return " ".join(str(s).lower().replace("_", " ").split())
+
+
+def _build_column_index(cols: Iterable[str]) -> Dict[str, str]:
+    """Map normalized header -> original header for forgiving lookups."""
+    out = {}
+    for c in cols:
+        out[_normalize_key(c)] = c
+    return out
+
+
+def _find_source_col(col_index: Dict[str, str], candidates: List[str]) -> Optional[str]:
+    """Find the first existing source column among candidate names."""
+    for cand in candidates:
+        norm = _normalize_key(cand)
+        if norm in col_index:
+            return col_index[norm]
+    return None
+
+
+def _status_to_flag(val: object) -> int:
+    """Return 1/0 based on textual status, per rules. Unknown → 0."""
+    if pd.isna(val):
+        return 0
+    s = " ".join(str(val).lower().split())  # collapse spaces, lowercase
+    # check 0-phrases first to avoid substring conflicts like "not scanning"
+    for phrase in ZERO_PHRASES:
+        if phrase in s:
+            return 0
+    for phrase in ONE_PHRASES:
+        if phrase in s:
+            return 1
+    return 0
+
+
+def _coalesce_business_unit(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure a 'BusinessUnit' column exists, coalescing from variants."""
+    col_index = _build_column_index(df.columns)
+    bu_src = _find_source_col(col_index, COLUMN_SYNONYMS["BusinessUnit"])
+    if bu_src and "BusinessUnit" not in df.columns:
         df = df.copy()
-        df["BusinessUnit"] = df[bu]
+        df["BusinessUnit"] = df[bu_src]
     return df
 
-def select_columns_forgiving(df, wanted):
-    """
-    Keep only wanted columns, forgiving small header differences like
-    'Business Unit' vs 'BusinessUnit'.
-    """
-    # Map lowercase stripped -> original
-    lower_map = {c.lower().strip(): c for c in df.columns}
-    selected = []
-    for col in wanted:
-        key = col.lower().strip()
-        if key in lower_map:
-            selected.append(lower_map[key])
-        else:
-            # Special-case 'BusinessUnit' to accept 'Business Unit'
-            if key == "businessunit" and "business unit" in lower_map:
-                selected.append(lower_map["business unit"])
-            else:
-                # If a column is truly missing, create it empty so the CSV schema is stable
-                df = df.copy()
-                df[col] = pd.NA
-                selected.append(col)
-    return df[selected]
 
-def apply_filters(df, filters):
+def _get_col(df: pd.DataFrame, logical_name: str) -> Optional[str]:
     """
-    Apply equality filters like {"BISO": "Name", "Business Unit": "VBG"}.
-    Be tolerant of 'Business Unit' vs 'BusinessUnit'.
+    Return the actual DataFrame column name corresponding to a logical name
+    (e.g., 'BISO', 'BusinessUnit', 'NowSecureScanStatus'), or None if not found.
     """
-    if not filters:
+    candidates = COLUMN_SYNONYMS.get(logical_name, [])
+    col_index = _build_column_index(df.columns)
+    return _find_source_col(col_index, candidates)
+
+
+def _apply_filters(df: pd.DataFrame, spec: Dict[str, object]) -> pd.DataFrame:
+    """
+    Apply a filter spec like:
+        {"BISO_eq":"X", "BISO_in":{"A","B"}, "BusinessUnit_in":{"VBG","GTO"}}
+    """
+    if df.empty:
         return df
 
-    df = coalesce_business_unit_column(df)
-    # Build a working copy of columns with normalized keys for robust lookup
-    col_map = {c.lower().strip(): c for c in df.columns}
+    df = _coalesce_business_unit(df)  # prepare BusinessUnit if needed
+    mask = pd.Series(True, index=df.index)
 
-    mask = pd.Series([True] * len(df))
-    for raw_key, expected_val in filters.items():
-        k = raw_key.lower().strip()
-        # Accept BISO, Business Unit, BusinessUnit, etc.
-        if k == "business unit":
-            # Coalesced to BusinessUnit already if present
-            lookup_key = "businessunit"
-        else:
-            lookup_key = k
+    def col_or_empty(logical: str) -> Optional[str]:
+        return _get_col(df, logical)
 
-        if lookup_key not in col_map:
-            # Column missing: nothing can match
-            return df.iloc[0:0].copy()
+    # BISO_eq
+    if "BISO_eq" in spec:
+        col = col_or_empty("BISO")
+        if not col:
+            return df.iloc[0:0]
+        exp = str(spec["BISO_eq"]).strip()
+        mask &= (df[col].astype(str).str.strip() == exp)
 
-        col = col_map[lookup_key]
-        # Normalize both sides (string compare) but preserve NaN handling
-        mask = mask & (df[col].apply(norm) == norm(expected_val))
+    # BISO_in
+    if "BISO_in" in spec:
+        col = col_or_empty("BISO")
+        if not col:
+            return df.iloc[0:0]
+        vals = {str(v).strip() for v in spec["BISO_in"]}
+        mask &= df[col].astype(str).str.strip().isin(vals)
+
+    # BusinessUnit_eq
+    if "BusinessUnit_eq" in spec:
+        bu_col = "BusinessUnit" if "BusinessUnit" in df.columns else _get_col(df, "BusinessUnit")
+        if not bu_col:
+            return df.iloc[0:0]
+        exp = str(spec["BusinessUnit_eq"]).strip()
+        mask &= (df[bu_col].astype(str).str.strip() == exp)
+
+    # BusinessUnit_in
+    if "BusinessUnit_in" in spec:
+        bu_col = "BusinessUnit" if "BusinessUnit" in df.columns else _get_col(df, "BusinessUnit")
+        if not bu_col:
+            return df.iloc[0:0]
+        vals = {str(v).strip() for v in spec["BusinessUnit_in"]}
+        mask &= df[bu_col].astype(str).str.strip().isin(vals)
+
     return df[mask]
 
-# --- Main ETL -----------------------------------------------------------------
 
-def main():
-    path = Path(INPUT_XLSX)
-    if not path.exists():
-        raise FileNotFoundError(f"Cannot find {INPUT_XLSX} in {Path.cwd()}")
+def _select_and_rename(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Select only the requested columns and rename to the standardized names.
+    Missing columns are created empty to keep a stable schema.
+    """
+    col_index = _build_column_index(df.columns)
+    out = pd.DataFrame(index=df.index)
 
-    # Read only the target sheets if present
-    xls = pd.ExcelFile(path)
+    for target, candidates in COLUMN_SYNONYMS.items():
+        if target not in {
+            # Only these go into the output dataset (others are only for filtering)
+            "VastID",
+            "ApplicationName",
+            "ClientType",
+            "CodebaseOwnership",
+            "VMACTeam",
+            "BusinessUnit",
+            "NowSecureScanStatus",
+            "FortifyScanStatus",
+            "FortifyProjectName",
+            "BlackDuckStatus",
+            "BlackDuckProjectName",
+        }:
+            continue
+
+        src = _find_source_col(col_index, candidates)
+        if src is None:
+            out[target] = pd.NA
+        else:
+            out[target] = df[src].astype(str)
+
+    return out
+
+
+def _assemble_final(master_core: pd.DataFrame) -> pd.DataFrame:
+    """
+    Given a dataframe with the 11 standardized core columns:
+        VastID, ApplicationName, ClientType, CodebaseOwnership, VMACTeam,
+        BusinessUnit, NowSecureScanStatus, FortifyScanStatus, FortifyProjectName,
+        BlackDuckStatus, BlackDuckProjectName
+
+    Build the final dataframe with the specified schema and derived flags.
+    """
+    result = pd.DataFrame(index=master_core.index)
+
+    # Required blanks / constants
+    result["ReportMonth"] = ""
+    result["VastID"] = master_core["VastID"].fillna("")
+    result["ApplicationName"] = master_core["ApplicationName"].fillna("")
+    result["MetricName"] = "Mobile Apps"
+    result["BU"] = ""
+    result["Tier2ManagerNm"] = ""
+    result["Tier3ManagerNm"] = ""
+    result["BISO"] = ""  # intentionally blank per spec (used only for filtering)
+    result["CustodianName"] = ""
+    result["BUSortOrder"] = ""
+    result["MetricValue"] = ""
+    result["ClientType"] = master_core["ClientType"].fillna("")
+    result["CodebaseOwnership"] = master_core["CodebaseOwnership"].fillna("")
+    result["VMACTeam"] = master_core["VMACTeam"].fillna("")
+    result["BusinessUnit"] = master_core["BusinessUnit"].fillna("")
+    result["BaseRiskLevel"] = ""
+    result["TotalProjectCount"] = 1
+
+    # Derived flags
+    result["IsNowSecureScanStatus"] = master_core["NowSecureScanStatus"].apply(_status_to_flag)
+    result["NowSecureScanStatus"] = master_core["NowSecureScanStatus"].fillna("")
+
+    result["IsFortifyScanStatus"] = master_core["FortifyScanStatus"].apply(_status_to_flag)
+    result["FortifyScanStatus"] = master_core["FortifyScanStatus"].fillna("")
+    result["FortifyProjectName"] = master_core["FortifyProjectName"].fillna("")
+
+    result["IsBlackDuckStatus"] = master_core["BlackDuckStatus"].apply(_status_to_flag)
+    result["BlackDuckStatus"] = master_core["BlackDuckStatus"].fillna("")
+    result["BlackDuckProjectName"] = master_core["BlackDuckProjectName"].fillna("")
+
+    result["LastUpdateDate"] = ""
+
+    # Ensure exact column order
+    return result[FINAL_COLUMNS]
+
+
+# ------------------------------ Main ------------------------------------------
+
+def run(input_xlsx: Path, output_csv: Path) -> None:
+    if not input_xlsx.exists():
+        raise FileNotFoundError(f"Input file not found: {input_xlsx}")
+
+    xls = pd.ExcelFile(input_xlsx)
     available = set(xls.sheet_names)
+    logging.info("Found sheets: %s", ", ".join(xls.sheet_names))
 
-    frames = []
-    for sheet, filters in SHEET_FILTERS.items():
+    frames: List[pd.DataFrame] = []
+
+    for sheet in TARGET_SHEETS:
         if sheet not in available:
-            print(f"[WARN] Sheet not found, skipping: {sheet}")
+            logging.warning("Sheet missing, skipping: %s", sheet)
             continue
-        df = pd.read_excel(path, sheet_name=sheet, dtype=str)  # read as strings to avoid type surprises
+
+        logging.info("Processing sheet: %s", sheet)
+        df = pd.read_excel(input_xlsx, sheet_name=sheet, dtype=str)
         if df.empty:
-            print(f"[WARN] Sheet is empty, skipping: {sheet}")
+            logging.info("Sheet is empty: %s", sheet)
             continue
 
-        # Filter rows by the requested conditions
-        filtered = apply_filters(df, filters)
-
+        # Apply filters
+        filtered = _apply_filters(df, SHEET_FILTERS.get(sheet, {}))
         if filtered.empty:
-            print(f"[INFO] No matching rows after filters for sheet: {sheet}")
+            logging.info("No rows matched filters for: %s", sheet)
             continue
 
-        # Ensure we have a unified BusinessUnit column available before selecting
-        filtered = coalesce_business_unit_column(filtered)
-        # Keep only the requested columns; create missing ones as empty so schema is stable
-        trimmed = select_columns_forgiving(filtered, COLUMNS_TO_KEEP)
+        # Select core columns & rename to canonical names
+        core = _select_and_rename(filtered)
+        if core.empty:
+            logging.info("No usable columns after selection for: %s", sheet)
+            continue
 
-        # (Optional) keep lineage
-        trimmed = trimmed.copy()
-        trimmed["SourceSheet"] = sheet
-
-        frames.append(trimmed)
+        frames.append(core)
 
     if not frames:
-        print("[INFO] No data matched across all sheets; no CSV written.")
+        logging.warning("No data matched across all sheets. No CSV written.")
         return
 
-    master = pd.concat(frames, ignore_index=True)
-    master.to_csv(OUTPUT_CSV, index=False)
-    print(f"[OK] Wrote {OUTPUT_CSV} with {len(master)} rows from {len(frames)} sheets.")
+    master_core = pd.concat(frames, ignore_index=True)
+
+    # Build final dataset with derived columns/flags
+    final_df = _assemble_final(master_core)
+
+    # Write CSV
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    final_df.to_csv(output_csv, index=False)
+    logging.info("Wrote %s with %d rows.", output_csv, len(final_df))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="ETL mobileapps workbook to master CSV.")
+    parser.add_argument("--input", type=Path, required=True, help="Path to mobileapps.xlsx")
+    parser.add_argument("--output", type=Path, required=True, help="Path to output CSV")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s: %(message)s",
+    )
+    run(args.input, args.output)
+
 
 if __name__ == "__main__":
     main()

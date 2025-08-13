@@ -1,396 +1,268 @@
 import * as React from 'react';
 import {
-  Paper, Table, TableHead, TableBody, TableRow, TableCell,
-  TableContainer, Select, MenuItem, Chip, CircularProgress, Tooltip, IconButton, TextField, Stack
+  Paper, Box, Stack, Typography, Select, MenuItem, TextField, Button,
+  IconButton, Chip, Divider, Dialog, DialogTitle, DialogContent, DialogActions,
+  Tooltip
 } from '@mui/material';
-import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
-import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
-import SaveRoundedIcon from '@mui/icons-material/SaveRounded';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
-import { alpha } from '@mui/material/styles';
+import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
 
-import { saveSelection } from '../../api/selectionApi';
-import { saveCustomAttribute } from '../../api/customApi';
+import { saveCustom } from '../../api/customApi';
 import useToast from '../../../../ui/feedback/useToast';
 
-const STATUS_OPTIONS = ['Keep', 'Remove'];
-const ATTEST_OPTIONS = ['Meet', 'Partial Meet', 'Partially Meet', 'Does Not Meet']; // accept both spellings
+const ATTEST_OPTIONS = ['Meet', 'Partial Meet', 'Does Not Meet'];
 
-const deepChip = (theme, v) => {
-  const val = (v || '').toString();
-  if (val === 'Meet')          return { bgcolor: theme.palette.success.main, color: theme.palette.common.white };
-  if (val === 'Partial Meet' || val === 'Partially Meet')
-                               return { bgcolor: theme.palette.warning.main, color: theme.palette.common.black };
-  if (val === 'Does Not Meet') return { bgcolor: theme.palette.error.main,   color: theme.palette.common.white };
-  return { bgcolor: theme.palette.grey[300], color: theme.palette.text.primary };
-};
-
-const lightStatusChip = (theme, v) => {
-  if (v === 'Keep')   return { bgcolor: theme.palette.success.light, color: theme.palette.success.dark, borderColor: alpha(theme.palette.success.main, 0.4) };
-  if (v === 'Remove') return { bgcolor: theme.palette.error.light,   color: theme.palette.error.dark,   borderColor: alpha(theme.palette.error.main, 0.4) };
-  return { bgcolor: theme.palette.grey[200], color: theme.palette.text.primary, borderColor: theme.palette.grey[300] };
-};
-
-const rowKey = (r) => `${r.orgID}|${r.csF2SubcategoryID}|${r.maturityLevel}|${r.attributeNum}`;
-const isCustom = (r) => Number(r.csF1SubcategoryID) === 0;
-
-/** Sort rule:
- *  - Baseline rows first, then customs
- *  - Within baseline: by csF1SubcategoryName (or ID), then ML (3,4), then attributeNum
- *  - Customs at the end by ML then attributeNum
- */
-function sortRows(rows) {
-  const safe = (s) => (s ?? '').toString();
-  return [...rows].sort((a, b) => {
-    const aC = isCustom(a), bC = isCustom(b);
-    if (aC !== bC) return aC ? 1 : -1;
-
-    if (!aC) {
-      // baseline grouping
-      const aK = `${safe(a.csF1SubcategoryName)}|${a.csF1SubcategoryID}`;
-      const bK = `${safe(b.csF1SubcategoryName)}|${b.csF1SubcategoryID}`;
-      if (aK !== bK) return aK.localeCompare(bK);
-    }
-
-    const ml = (a.maturityLevel - b.maturityLevel);
-    if (ml !== 0) return ml;
-    return (a.attributeNum - b.attributeNum);
-  });
-}
-
-export default function AttributeGroupTable({
-  rows = [],
-  onPatchRow,
-  maxHeight = 'calc(100vh - 420px)',
+export default function AddCustomAttributePanel({
+  orgID,
+  orgName,
+  csf2SubcategoryID,
+  subcatName,
+  existingRows = [],        // full rows for this org + subcat (baseline + custom)
+  onAdded,                  // (newRow) => void   -> append to table
+  onPatched,                // (key, patch) => void
+  onDeleted,                // (key) => void
 }) {
   const { success, error } = useToast();
 
-  const [localRows, setLocalRows] = React.useState(sortRows(rows));
-  React.useEffect(() => setLocalRows(sortRows(rows)), [rows]);
+  // ---------- compose next attributeNum (never null) ----------
+  const nextAttrNum = React.useMemo(() => {
+    // look only at custom rows for this org + subcat
+    const candidates = existingRows
+      .filter(r => (r.orgID === orgID) && (r.csF2SubcategoryID === csf2SubcategoryID) &&
+                   (r.isCustom || r.customAttributeDefinition || r.customAttributeNum != null))
+      .map(r => Number(r.customAttributeNum ?? r.attributeNum ?? 0));
+    const max = candidates.length ? Math.max(...candidates) : 0;
+    return max + 1;
+  }, [existingRows, orgID, csf2SubcategoryID]);
 
-  // action + edit state per row
-  const [actionState, setActionState] = React.useState(new Map());
-  const [editState, setEditState]     = React.useState(new Map()); // key -> {defn, att} for custom inline edit
+  // ---------- add form ----------
+  const [ml, setMl] = React.useState(3);
+  const [def, setDef] = React.useState('');
+  const [att, setAtt] = React.useState('');
 
-  const setStateFor = (k, v) => setActionState(prev => new Map(prev).set(k, v));
-  const setEditFor  = (k, v) => setEditState(prev => new Map(prev).set(k, v));
+  const canAdd = def.trim().length > 0 && (ml === 3 || ml === 4);
 
-  const patchLocal = React.useCallback((key, patch) => {
-    setLocalRows(prev => sortRows(prev.map(r => (rowKey(r) === key ? { ...r, ...patch } : r))));
-  }, []);
-
-  const optimisticPatch = React.useCallback((r, patch) => {
-    const k = rowKey(r);
-    if (onPatchRow) onPatchRow(k, patch);
-    else patchLocal(k, patch);
-  }, [onPatchRow, patchLocal]);
-
-  const handleSaveBaseline = async (r, nextPatch) => {
-    // business rule: Remove → clear attestation and disable select
-    if (nextPatch.selectionStatus === 'Remove') nextPatch.selectionAttestation = null;
-
-    const k = rowKey(r);
-    optimisticPatch(r, nextPatch);
-    setStateFor(k, 'saving');
+  const handleAdd = async () => {
+    if (!canAdd) return;
+    const payload = {
+      action: 'add',
+      orgId: orgID,
+      csf2SubcategoryId: csf2SubcategoryID,
+      maturityLevel: ml,
+      attributeNum: nextAttrNum,
+      attrDefinition: def.trim(),      // <-- as you requested
+      attestation: att || null,
+    };
 
     try {
-      await saveSelection({
-        orgID: r.orgID,
-        csF2SubcategoryID: r.csF2SubcategoryID,
-        csF1SubcategoryID: r.csF1SubcategoryID,
-        maturityLevel: r.maturityLevel,
-        attributeNum: r.attributeNum,
-        selectionStatus: nextPatch.selectionStatus ?? r.selectionStatus ?? null,
-        selectionAttestation: nextPatch.selectionAttestation ?? r.selectionAttestation ?? null,
-      });
-      setStateFor(k, 'success');
-      success('Saved');
-    } catch {
-      if (onPatchRow) onPatchRow(k, r); else patchLocal(k, r);
-      setStateFor(k, 'error');
-      error('Save failed. Please retry.');
+      const saved = await saveCustom(payload);
+
+      // construct a table row that matches AttributeGroupTable
+      const newRow = {
+        orgID,
+        csF2SubcategoryID: csf2SubcategoryID,
+        csF1SubcategoryID: null,
+        csF1SubcategoryName: '',
+
+        maturityLevel: ml,
+        attributeNum: nextAttrNum,      // keeps key uniqueness
+
+        // show in “Attribute Definition”
+        attributeDefinition: def.trim(),
+
+        // no Status for custom
+        selectionStatus: null,
+
+        // 2025 Attestation column shows custom’s attestation as a chip
+        customAttributeAttestation: att || null,
+
+        // 2024 Assessor Score blank
+        assessScore2024: null,
+
+        // flags to make the table treat this as custom
+        isCustom: true,
+        customAttributeNum: nextAttrNum,
+        customAttributeDefinition: def.trim(),
+      };
+
+      onAdded?.(newRow);
+      success('Custom attribute added');
+      // reset form
+      setDef('');
+      setAtt('');
+    } catch (e) {
+      error('Failed to add custom attribute');
     }
   };
 
-  // ---- custom inline edit / delete ----
-  const beginEditCustom = (r) => {
-    const k = rowKey(r);
-    setEditFor(k, {
-      defn: r.customAttributeDefinition || r.attributeDefinition || '',
-      att:  r.selectionAttestation || '',
-    });
+  // ---------- edit dialog ----------
+  const [editOpen, setEditOpen] = React.useState(false);
+  const [editRow, setEditRow]   = React.useState(null);
+  const [editDef, setEditDef]   = React.useState('');
+  const [editAtt, setEditAtt]   = React.useState('');
+
+  const startEdit = (row) => {
+    setEditRow(row);
+    setEditDef(row.customAttributeDefinition || row.attributeDefinition || '');
+    setEditAtt(row.customAttributeAttestation || '');
+    setEditOpen(true);
   };
-  const cancelEditCustom = (r) => setEditFor(rowKey(r), null);
 
-  const saveEditCustom = async (r) => {
-    const k = rowKey(r);
-    const ed = editState.get(k);
-    if (!ed || !ed.defn.trim()) { error('Please enter an attribute definition.'); return; }
-
-    setStateFor(k, 'saving');
+  const saveEdit = async () => {
+    if (!editRow) return;
     try {
-      await saveCustomAttribute({
+      await saveCustom({
         action: 'update',
-        orgId: r.orgID,
-        csf2SubcategoryId: r.csF2SubcategoryID,
-        maturityLevel: r.maturityLevel,
-        attributeNum: r.attributeNum,
-        attrDefinition: ed.defn.trim(),              // correct field
-        attestation: ed.att || null,
+        orgId: editRow.orgID,
+        csf2SubcategoryId: editRow.csF2SubcategoryID,
+        maturityLevel: editRow.maturityLevel,
+        attributeNum: editRow.customAttributeNum ?? editRow.attributeNum,
+        attrDefinition: editDef.trim(),
+        attestation: editAtt || null,
       });
-      patchLocal(k, {
-        customAttributeDefinition: ed.defn.trim(),
-        selectionAttestation: ed.att || null,
-      });
-      setEditFor(k, null);
-      setStateFor(k, 'success');
-      success('Updated');
+
+      onPatched?.(
+        `${editRow.orgID}|${editRow.csF2SubcategoryID}|${editRow.maturityLevel}|${editRow.attributeNum}`,
+        {
+          attributeDefinition: editDef.trim(),
+          customAttributeDefinition: editDef.trim(),
+          customAttributeAttestation: editAtt || null,
+        }
+      );
+      setEditOpen(false);
+      success('Custom attribute updated');
     } catch {
-      setStateFor(k, 'error');
-      error('Update failed');
+      error('Failed to update');
     }
   };
 
-  const deleteCustom = async (r) => {
-    const k = rowKey(r);
-    setStateFor(k, 'saving');
+  const remove = async (row) => {
     try {
-      await saveCustomAttribute({
+      await saveCustom({
         action: 'delete',
-        orgId: r.orgID,
-        csf2SubcategoryId: r.csF2SubcategoryID,
-        maturityLevel: r.maturityLevel,
-        attributeNum: r.attributeNum,
-        attrDefinition: null,
-        attestation: null,
+        orgId: row.orgID,
+        csf2SubcategoryId: row.csF2SubcategoryID,
+        maturityLevel: row.maturityLevel,
+        attributeNum: row.customAttributeNum ?? row.attributeNum,
       });
-      setLocalRows(prev => prev.filter(x => rowKey(x) !== k));
-      setStateFor(k, 'success');
+      onDeleted?.(`${row.orgID}|${row.csF2SubcategoryID}|${row.maturityLevel}|${row.attributeNum}`);
       success('Deleted');
     } catch {
-      setStateFor(k, 'error');
-      error('Delete failed');
+      error('Failed to delete');
     }
   };
 
+  const customList = existingRows.filter(r =>
+    r.orgID === orgID &&
+    r.csF2SubcategoryID === csf2SubcategoryID &&
+    (r.isCustom || r.customAttributeDefinition || r.customAttributeNum != null)
+  );
+
   return (
-    <Paper variant="outlined" sx={{ mt: 2 }}>
-      <TableContainer sx={{ maxHeight, overflow: 'auto', pr: 1.5, pb: 0.5 }}>
-        <Table stickyHeader size="small" sx={{ tableLayout: 'auto' }}>
-          <colgroup>
-            <col style={{ width: '4%'  }} />
-            <col style={{ width: '42%' }} />
-            <col style={{ width: '8%'  }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '8%'  }} />
-            <col style={{ width: '4%'  }} />
-          </colgroup>
+    <Paper variant="outlined" sx={{ mt: 2, p: 2 }}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+          Custom Attributes — {orgName || '—'}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">{subcatName}</Typography>
+      </Stack>
 
-          <TableHead>
-            <TableRow>
-              <TableCell>#</TableCell>
-              <TableCell>Attribute Definition</TableCell>
-              <TableCell align="center">ML</TableCell>
-              <TableCell>NIST 1.1</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell>2025 Attestation</TableCell>
-              <TableCell align="center">2024 Assessor Score</TableCell>
-              <TableCell align="center">Actions</TableCell>
-            </TableRow>
-          </TableHead>
+      {/* modern, compact input row */}
+      <Stack direction={{ xs:'column', md:'row' }} spacing={1} alignItems={{ md: 'center' }}>
+        <Select
+          size="small"
+          value={ml}
+          onChange={(e) => setMl(Number(e.target.value))}
+          sx={{ width: 140 }}
+        >
+          <MenuItem value={3}>Maturity 3</MenuItem>
+          <MenuItem value={4}>Maturity 4</MenuItem>
+        </Select>
 
-          <TableBody>
-            {localRows.map((r, i) => {
-              const k = rowKey(r);
-              const editing = editState.get(k);
-              const custom = isCustom(r);
-              return (
-                <TableRow
-                  key={k}
-                  hover
-                  sx={(t) => {
-                    const isML4 = Number(r.maturityLevel) === 4;
-                    const base  = isML4 ? alpha(t.palette.warning.main, 0.06) : alpha(t.palette.primary.main, 0.04);
-                    const bar   = isML4 ? t.palette.warning.main : t.palette.primary.main;
-                    return { verticalAlign: 'top', backgroundColor: base, boxShadow: `inset 4px 0 0 0 ${alpha(bar, 0.9)}` };
-                  }}
-                >
-                  <TableCell>{i + 1}</TableCell>
+        <TextField
+          size="small"
+          fullWidth
+          placeholder="Attribute definition…"
+          value={def}
+          onChange={(e) => setDef(e.target.value)}
+        />
 
-                  {/* Attribute Definition (customs use customAttributeDefinition) */}
-                  <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.5, pr: 3 }}>
-                    {custom && editing ? (
-                      <TextField
-                        size="small"
-                        fullWidth
-                        multiline minRows={2}
-                        value={editing.defn}
-                        onChange={(e) => setEditFor(k, { ...editing, defn: e.target.value })}
-                      />
-                    ) : (
-                      (r.attributeDefinition || r.customAttributeDefinition)
-                    )}
-                  </TableCell>
+        <Select
+          size="small"
+          value={att}
+          onChange={(e) => setAtt(e.target.value)}
+          displayEmpty
+          sx={{ width: { xs:'100%', md: 220 } }}
+          renderValue={(v) => v || '2025 Attestation — optional'}
+        >
+          <MenuItem value=""><em>—</em></MenuItem>
+          {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
+        </Select>
 
-                  {/* ML */}
-                  <TableCell align="center">
-                    {custom ? `${r.maturityLevel} (Custom)` : r.maturityLevel}
-                  </TableCell>
+        <Button disabled={!canAdd} onClick={handleAdd}>Add</Button>
+      </Stack>
 
-                  {/* NIST 1.1 */}
-                  <TableCell>{custom ? '—' : (r.csF1SubcategoryName || '—')}</TableCell>
+      <Divider sx={{ my: 2 }} />
 
-                  {/* Status (customs: blank & disabled) */}
-                  <TableCell>
-                    {custom ? (
-                      <Chip size="small" label="—" variant="outlined" />
-                    ) : (
-                      <Select
-                        fullWidth size="small" displayEmpty
-                        value={r.selectionStatus || ''}
-                        onChange={(e) => {
-                          const v = e.target.value || null;
-                          const patch = { selectionStatus: v };
-                          if (v === 'Remove') patch.selectionAttestation = null; // rule
-                          handleSaveBaseline(r, patch);
-                        }}
-                        renderValue={(v) => (
-                          <Chip size="small" label={v || '—'} variant="outlined" sx={(t) => ({ borderWidth: 1, ...lightStatusChip(t, v) })} />
-                        )}
-                      >
-                        <MenuItem value=""><em>—</em></MenuItem>
-                        {STATUS_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-                      </Select>
-                    )}
-                  </TableCell>
+      {customList.length ? (
+        <Stack spacing={1}>
+          {customList.map(r => (
+            <Paper key={`${r.maturityLevel}-${r.customAttributeNum ?? r.attributeNum}`} variant="outlined" sx={{ p: 1, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                <Chip size="small" label={`ML ${r.maturityLevel}`} />
+                <Typography variant="body2" sx={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth:'60vw' }}>
+                  {r.customAttributeDefinition || r.attributeDefinition}
+                </Typography>
+                {r.customAttributeAttestation ? (
+                  <Chip size="small" label={r.customAttributeAttestation} color={
+                    r.customAttributeAttestation === 'Meet' ? 'success'
+                    : r.customAttributeAttestation === 'Partial Meet' ? 'warning' : 'error'
+                  } sx={{ ml: 1 }}/>
+                ) : null}
+              </Stack>
 
-                  {/* 2025 Attestation (customs editable; baseline disabled when Remove) */}
-                  <TableCell>
-                    {custom && !editing ? (
-                      <Select
-                        fullWidth size="small" displayEmpty
-                        value={r.selectionAttestation || ''}
-                        onChange={(e) => {
-                          const v = e.target.value || null;
-                          // inline save as custom update
-                          setActionState(prev => new Map(prev).set(k, 'saving'));
-                          saveCustomAttribute({
-                            action: 'update',
-                            orgId: r.orgID,
-                            csf2SubcategoryId: r.csF2SubcategoryID,
-                            maturityLevel: r.maturityLevel,
-                            attributeNum: r.attributeNum,
-                            attrDefinition: (r.customAttributeDefinition || r.attributeDefinition || ''),
-                            attestation: v,
-                          }).then(() => {
-                            patchLocal(k, { selectionAttestation: v });
-                            setActionState(prev => new Map(prev).set(k, 'success'));
-                          }).catch(() => {
-                            setActionState(prev => new Map(prev).set(k, 'error'));
-                          });
-                        }}
-                        renderValue={(v) => (
-                          <Chip size="small" label={v || '—'} sx={(t) => ({ ...deepChip(t, v), fontWeight: 600 })} />
-                        )}
-                      >
-                        <MenuItem value=""><em>—</em></MenuItem>
-                        {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-                      </Select>
-                    ) : custom && editing ? (
-                      <Select
-                        fullWidth size="small" displayEmpty
-                        value={editing.att || ''}
-                        onChange={(e) => setEditFor(k, { ...editing, att: e.target.value })}
-                        renderValue={(v) => <Chip size="small" label={v || '—'} />}
-                      >
-                        <MenuItem value=""><em>—</em></MenuItem>
-                        {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-                      </Select>
-                    ) : (
-                      <Select
-                        fullWidth size="small" displayEmpty
-                        disabled={r.selectionStatus === 'Remove'}
-                        value={r.selectionAttestation || ''}
-                        onChange={(e) => handleSaveBaseline(r, { selectionAttestation: e.target.value || null })}
-                        renderValue={(v) => (
-                          <Chip size="small" label={v || '—'} sx={(t) => ({ ...deepChip(t, v), fontWeight: 600 })} />
-                        )}
-                      >
-                        <MenuItem value=""><em>—</em></MenuItem>
-                        {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-                      </Select>
-                    )}
-                  </TableCell>
+              <Stack direction="row" spacing={0.5}>
+                <Tooltip title="Edit">
+                  <IconButton size="small" onClick={() => startEdit(r)}><EditRoundedIcon fontSize="small" /></IconButton>
+                </Tooltip>
+                <Tooltip title="Delete">
+                  <IconButton size="small" onClick={() => remove(r)}><DeleteRoundedIcon fontSize="small" /></IconButton>
+                </Tooltip>
+              </Stack>
+            </Paper>
+          ))}
+        </Stack>
+      ) : (
+        <Typography variant="body2" color="text.secondary">No custom attributes yet.</Typography>
+      )}
 
-                  {/* 2024 Assessor Score */}
-                  <TableCell align="center">
-                    {r.assessScore2024
-                      ? <Chip size="small" label={r.assessScore2024} sx={(t) => ({ ...deepChip(t, r.assessScore2024), fontWeight: 600 })} />
-                      : '—'}
-                  </TableCell>
-
-                  {/* Actions */}
-                  <TableCell align="center">
-                    {isCustom(r) ? (
-                      <Stack direction="row" spacing={0.5} justifyContent="center">
-                        {editState.get(k) ? (
-                          <>
-                            <Tooltip title="Save">
-                              <IconButton size="small" onClick={() => saveEditCustom(r)}>
-                                <SaveRoundedIcon fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
-                            <Tooltip title="Cancel">
-                              <IconButton size="small" onClick={() => cancelEditCustom(r)}>
-                                <CloseRoundedIcon fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
-                          </>
-                        ) : (
-                          <>
-                            <Tooltip title="Edit">
-                              <IconButton size="small" onClick={() => beginEditCustom(r)}>
-                                <EditRoundedIcon fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
-                            <Tooltip title="Delete">
-                              <IconButton size="small" onClick={() => deleteCustom(r)}>
-                                <DeleteOutlineRoundedIcon fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
-                          </>
-                        )}
-
-                        {actionState.get(k) === 'saving' ? (
-                          <CircularProgress size={18} />
-                        ) : actionState.get(k) === 'success' ? (
-                          <Tooltip title="Saved"><CheckCircleRoundedIcon color="success" fontSize="small" /></Tooltip>
-                        ) : actionState.get(k) === 'error' ? (
-                          <Tooltip title="Save failed"><CancelRoundedIcon color="error" fontSize="small" /></Tooltip>
-                        ) : null}
-                      </Stack>
-                    ) : (
-                      <>
-                        {actionState.get(k) === 'saving' ? (
-                          <CircularProgress size={18} />
-                        ) : actionState.get(k) === 'success' ? (
-                          <Tooltip title="Saved"><CheckCircleRoundedIcon color="success" fontSize="small" /></Tooltip>
-                        ) : actionState.get(k) === 'error' ? (
-                          <Tooltip title="Save failed"><CancelRoundedIcon color="error" fontSize="small" /></Tooltip>
-                        ) : null}
-                      </>
-                    )}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      {/* Edit dialog */}
+      <Dialog open={editOpen} onClose={() => setEditOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Edit custom attribute</DialogTitle>
+        <DialogContent sx={{ pt: 1 }}>
+          <Stack spacing={2}>
+            <TextField
+              label="Attribute definition"
+              fullWidth
+              value={editDef}
+              onChange={(e) => setEditDef(e.target.value)}
+            />
+            <Select
+              value={editAtt}
+              onChange={(e) => setEditAtt(e.target.value)}
+              displayEmpty
+              renderValue={(v) => v || '2025 Attestation — optional'}
+            >
+              <MenuItem value=""><em>—</em></MenuItem>
+              {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
+            </Select>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditOpen(false)} color="inherit">Cancel</Button>
+          <Button onClick={saveEdit} disabled={!editDef.trim()}>Save</Button>
+        </DialogActions>
+      </Dialog>
     </Paper>
   );
 }

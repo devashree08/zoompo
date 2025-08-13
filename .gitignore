@@ -1,79 +1,198 @@
-import { buildAttributeWorkbook } from './buildAttributeWorkbook';
-import { saveWorkbook } from '../../../ui/data/xlsx/excel';
-import { fetchAttributeFeed, fetchAttributeFilterLookups } from '../api/attributeApi';
-import { normalizeRows } from '../utils/normalizeFeed';
+import ExcelJS from 'exceljs';
 
-const isEmptyFilters = (f = {}) =>
-  !(
-    f.functionIds?.length ||
-    f.categoryIds?.length ||
-    f.subcatIds?.length ||
-    f.ownerNames?.length ||
-    f.custodianNames?.length ||
-    f.maturity?.length ||
-    f.finalOnly ||
-    (f.search && f.search.trim())
-  );
-
-const chunk = (arr, n = 30) => {
-  const out = [];
-  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
-  return out;
+const sanitizeSheetName = (name) => {
+  const cleaned = (name || 'Sheet').replace(/[\[\]\*\/\\\?\:]/g, ' ').trim();
+  return cleaned.length > 31 ? cleaned.slice(0, 31) : cleaned || 'Sheet';
 };
 
-/**
- * No filters  -> ALL orgs & ALL subcats (batch by subcatIds).
- * With filters -> only matching rows; sheets only for orgs that have rows.
- */
-export async function exportAttributesExcel(filters) {
-  const noFilters = isEmptyFilters(filters);
+const byOrg = (rows) => {
+  const m = new Map();
+  for (const r of rows) {
+    const k = String(r.orgID || '0');
+    if (!m.has(k)) m.set(k, []);
+    m.get(k).push(r);
+  }
+  return m;
+};
 
-  // Lookups are used for org list and (when needed) subcat IDs for batching
-  const lookups = await fetchAttributeFilterLookups({});
-  const allOrgs =
-    (lookups.orgs || []).map(o => ({ orgID: o.orgID, orgName: o.orgName })) || [];
-  const allSubcats =
-    (lookups.subcategories || []).map(s => s.csF2SubcategoryID).filter(Boolean) || [];
+// Sorting: Function > Category > CSF2 > CSF1.1 > ML(3 before 4) > AttrNum, baseline before custom
+const rowSort = (a, b) => {
+  const aFunc = a.functionName || '', bFunc = b.functionName || '';
+  if (aFunc !== bFunc) return aFunc.localeCompare(bFunc);
+  const aCat = a.categoryName || '', bCat = b.categoryName || '';
+  if (aCat !== bCat) return aCat.localeCompare(bCat);
+  const aS2 = a.csF2SubcategoryName || '', bS2 = b.csF2SubcategoryName || '';
+  if (aS2 !== bS2) return aS2.localeCompare(bS2);
+  const aS1 = a.csF1SubcategoryName || '', bS1 = b.csF1SubcategoryName || '';
+  if (aS1 !== bS1) return aS1.localeCompare(bS1);
+  const aML = Number(a.maturityLevel), bML = Number(b.maturityLevel);
+  if (aML !== bML) return aML - bML;
+  // baseline before custom
+  const aType = a.__type || 'Baseline';
+  const bType = b.__type || 'Baseline';
+  if (aType !== bType) return aType === 'Baseline' ? -1 : 1;
+  const aNum = Number(a.attributeNum || a.customAttributeNum || 0);
+  const bNum = Number(b.attributeNum || b.customAttributeNum || 0);
+  return aNum - bNum;
+};
 
-  let allRows = [];
+const HEAD = [
+  'Function',
+  'Function Language',
+  'Category',
+  'Category Language',
+  'CSF 2.0 Subcategory',
+  'Subcategory Language',
+  'CSF 1.1 Subcategory',
+  'ML',
+  'Type',                // Baseline / Custom
+  'Attribute #',
+  'Attribute Definition',
+  'Status',
+  '2025 Attestation',
+  '2024 Assessor Score',
+  'Owner',
+  'Custodian',
+];
 
-  if (noFilters) {
-    // Batch every CSF2 subcategory, accumulate rows
-    const batches = chunk(allSubcats, 40);
-    for (const ids of batches) {
-      const resp = await fetchAttributeFeed({
-        functionIds: [],
-        categoryIds: [],
-        subcatIds: ids,
-        ownerNames: [],
-        custodianNames: [],
-        maturity: [],
-        finalOnly: false,
-        search: '',
+const MODIFIABLE_COLS = new Set(['Status', '2025 Attestation']);
+const colIndex = (title) => HEAD.indexOf(title) + 1;
+
+export async function buildAttributeWorkbook({ rows = [], orgs }) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Attribute Mapping';
+  wb.created = new Date();
+
+  // Build a working list of "render rows" that includes baseline + custom
+  const renderRows = [];
+  for (const r of rows) {
+    // Baseline row
+    if (r.attributeDefinition) {
+      renderRows.push({
+        ...r,
+        __type: 'Baseline',
+        __attrNum: r.attributeNum,
+        __definition: r.attributeDefinition,
+        __attestation: r.selectionAttestation || null,
+        __status: r.selectionStatus || null,
+        __score24: r.assessScore2024 || null,
       });
-      const rows = normalizeRows(resp.rows || []);
-      allRows.push(...rows);
     }
-    // Build with every org sheet, even if some end up empty
-    const wb = await buildAttributeWorkbook({ rows: allRows, orgs: allOrgs });
-    await saveWorkbook(wb, 'csf-attribute-mapping.xlsx');
-    return;
+    // Custom row (separate item)
+    if (r.customAttributeDefinition) {
+      renderRows.push({
+        ...r,
+        __type: 'Custom',
+        __attrNum: r.customAttributeNum,
+        __definition: r.customAttributeDefinition,
+        __attestation: r.customAttributeAttestation || null,
+        __status: null,                    // status not editable for custom per spec
+        __score24: null,
+      });
+    }
   }
 
-  // With filters -> single call using current filters
-  const resp = await fetchAttributeFeed({
-    functionIds: filters.functionIds || [],
-    categoryIds: filters.categoryIds || [],
-    subcatIds: filters.subcatIds || [],
-    ownerNames: filters.ownerNames || [],
-    custodianNames: filters.custodianNames || [],
-    maturity: filters.maturity || [],
-    finalOnly: !!filters.finalOnly,
-    search: (filters.search || '').trim(),
-  });
-  allRows = normalizeRows(resp.rows || []);
+  // Group by org
+  let grouped = byOrg(renderRows);
+  // If org list is forced (no filters case), ensure sheet for each org
+  if (orgs?.length) {
+    const forced = new Map();
+    for (const o of orgs) forced.set(String(o.orgID), grouped.get(String(o.orgID)) || []);
+    grouped = forced;
+  }
 
-  // Only create sheets for orgs that actually have rows
-  const wb = await buildAttributeWorkbook({ rows: allRows });
-  await saveWorkbook(wb, 'csf-attribute-mapping.xlsx');
+  // Create one sheet per org present in the map
+  for (const [orgID, list] of grouped.entries()) {
+    const orgName = (rows.find(r => String(r.orgID) === orgID)?.orgName) ||
+                    (orgs?.find(o => String(o.orgID) === orgID)?.orgName) ||
+                    `Org ${orgID}`;
+    const ws = wb.addWorksheet(sanitizeSheetName(orgName), { views: [{ state: 'normal' }] });
+
+    // Columns
+    ws.columns = [
+      { header: HEAD[0], key: 'functionName', width: 24 },
+      { header: HEAD[1], key: 'functionLanguage', width: 36 },
+      { header: HEAD[2], key: 'categoryName', width: 30 },
+      { header: HEAD[3], key: 'categoryLanguage', width: 36 },
+      { header: HEAD[4], key: 'csF2SubcategoryName', width: 20 },
+      { header: HEAD[5], key: 'csF2SubcategoryLanguage', width: 36 },
+      { header: HEAD[6], key: 'csF1SubcategoryName', width: 18 },
+      { header: HEAD[7], key: 'maturityLevel', width: 6 },
+      { header: HEAD[8], key: '__type', width: 10 },
+      { header: HEAD[9], key: '__attrNum', width: 10 },
+      { header: HEAD[10], key: '__definition', width: 80 },
+      { header: HEAD[11], key: '__status', width: 16 },
+      { header: HEAD[12], key: '__attestation', width: 20 },
+      { header: HEAD[13], key: '__score24', width: 18 },
+      { header: HEAD[14], key: 'owner', width: 22 },
+      { header: HEAD[15], key: 'custodian', width: 22 },
+    ];
+
+    // Header styling (bold, sticky)
+    const headerRow = ws.getRow(1);
+    headerRow.font = { bold: true };
+    headerRow.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+    headerRow.height = 20;
+    // default header fill
+    headerRow.eachCell((cell) => {
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFEAEFF8' }, // light gray-blue
+      };
+      cell.border = { top: {style:'thin'}, left:{style:'thin'}, bottom:{style:'thin'}, right:{style:'thin'} };
+    });
+    // highlight modifiable column headers
+    [HEAD[11], HEAD[12]].forEach(title => {
+      const ci = colIndex(title);
+      const cell = ws.getCell(1, ci);
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6F4EA' } }; // green-ish tint
+    });
+    ws.views = [{ state: 'normal', showGridLines: true, ySplit: 1 }];
+
+    if (!list?.length) {
+      // No data for this org—leave just headers (empty sheet but valid)
+      continue;
+    }
+
+    // Sort and write
+    list.sort(rowSort);
+    list.forEach((r) => {
+      ws.addRow({
+        functionName: r.functionName || '',
+        functionLanguage: r.functionLanguage || '',
+        categoryName: r.categoryName || '',
+        categoryLanguage: r.categoryLanguage || '',
+        csF2SubcategoryName: r.csF2SubcategoryName || '',
+        csF2SubcategoryLanguage: r.csF2SubcategoryLanguage || '',
+        csF1SubcategoryName: r.csF1SubcategoryName || '',
+        maturityLevel: Number(r.maturityLevel) || '',
+        __type: r.__type || 'Baseline',
+        __attrNum: r.__attrNum ?? '',
+        __definition: r.__definition || '',
+        __status: r.__status ?? '',
+        __attestation: r.__attestation ?? '',
+        __score24: r.__score24 ?? '',
+        owner: r.owner || '',
+        custodian: r.custodian || '',
+      });
+    });
+
+    // Borders for all body cells and blue fill for custom definitions
+    const lastRow = ws.lastRow.number;
+    for (let r = 2; r <= lastRow; r++) {
+      for (let c = 1; c <= HEAD.length; c++) {
+        const cell = ws.getCell(r, c);
+        cell.border = { top: {style:'thin'}, left:{style:'thin'}, bottom:{style:'thin'}, right:{style:'thin'} };
+      }
+      // Custom definition cell color
+      const typeCell = ws.getCell(r, colIndex('Type'));
+      if ((typeCell.value || '').toString().toLowerCase() === 'custom') {
+        const defCell = ws.getCell(r, colIndex('Attribute Definition'));
+        defCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F0FE' } }; // light blue
+      }
+    }
+  }
+
+  return wb;
 }

@@ -1,122 +1,199 @@
-// Build the Excel workbook for Attribute Mapping
+// Build an Excel workbook for Attribute Mapping, 1 sheet per Org.
+// - Each sheet combines “summary” context + attribute rows in ONE table
+// - Bold, sticky header row
+// - Header highlight for editable columns (Status, 2025 Attestation)
+// - Custom rows: Attribute Definition cell tinted; ML stays numeric
+// - Includes both baseline and custom rows based on current filters
+//
+// Usage from page:
+//   const wb = await buildAttributeWorkbook({ headers, rows, filters });
+//   await saveWorkbook(wb, 'csf-attribute-mapping.xlsx');
+
 import { createWorkbook, autoFitColumns } from '../../../ui/data/xlsx/excel';
 
-// deep-chip coloring helpers (match your table chips)
+// Simple helpers for ExcelJS styling
+const solid = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
+const BOLD        = { bold: true };
+const WHITE_BOLD  = { color: { argb: 'FFFFFFFF' }, bold: true };
+const BLACK_BOLD  = { color: { argb: 'FF000000' }, bold: true };
+
+// Header highlight colors (align with your UI cues)
+const HDR_BASE_FILL       = 'FFF2F4F7';   // light neutral for all headers
+const HDR_STATUS_FILL     = 'FFECFDF3';   // success light
+const HDR_ATTEST_FILL     = 'FFFFFAEB';   // warning light
+
+// Deep chip colors for Attestation cells (align with table)
 function colorAttestation(cell, v) {
-  if (v === 'Meet')          { cell.fill = solid('FF12B76A'); cell.font = whiteBold(); }
-  if (v === 'Partial Meet')  { cell.fill = solid('FFF79009'); cell.font = blackBold(); }
-  if (v === 'Does Not Meet') { cell.fill = solid('FFD92D20'); cell.font = whiteBold(); }
+  if (v === 'Meet')          { cell.fill = solid('FF12B76A'); cell.font = WHITE_BOLD; }
+  if (v === 'Partial Meet')  { cell.fill = solid('FFF79009'); cell.font = BLACK_BOLD; }
+  if (v === 'Does Not Meet') { cell.fill = solid('FFD92D20'); cell.font = WHITE_BOLD; }
 }
-const solid = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{ argb } });
-const whiteBold = () => ({ color:{ argb:'FFFFFFFF' }, bold:true });
-const blackBold = () => ({ color:{ argb:'FF000000' }, bold:true });
+
+function safeSheetName(name) {
+  // Excel limits: 31 chars, no []:*?/\
+  const cleaned = (name || 'Org').replace(/[\[\]\:\*\?\/\\]/g, ' ').slice(0, 31).trim();
+  return cleaned || 'Org';
+}
+
+// Single combined column layout for both context + attributes
+function getColumnsForOrgSheet() {
+  return [
+    { header: 'Function',                key: 'functionName',              width: 18 },
+    { header: 'Function Language',       key: 'functionLanguage',          width: 40 },
+    { header: 'Category',                key: 'categoryName',              width: 22 },
+    { header: 'Category Language',       key: 'categoryLanguage',          width: 40 },
+    { header: 'CSF 2.0 Subcategory',     key: 'csf2Name',                  width: 16 },
+    { header: 'Subcategory Language',    key: 'csf2Lang',                  width: 60 },
+    { header: 'Change Summary',          key: 'changeSummary',             width: 50 },
+    { header: 'Implementation Examples', key: 'implementationExamples',    width: 80 },
+
+    // Associated NIST 1.1 + row typing
+    { header: 'Associated NIST 1.1',     key: 'csf1Name',                  width: 14 },
+    { header: 'Type',                    key: 'type',                      width: 10 },   // Baseline | Custom
+
+    // Row-level editable/important bits
+    { header: 'ML',                      key: 'ml',                        width: 8 },    // numeric only
+    { header: 'Attr #',                  key: 'attrNum',                   width: 8 },
+    { header: 'Attribute Definition',    key: 'attrDef',                   width: 80 },
+    { header: 'Status',                  key: 'status',                    width: 14 },   // editable
+    { header: '2025 Attestation',        key: 'attestation',               width: 22 },   // editable
+    { header: '2024 Assessor Score',     key: 'assess2024',                width: 22 },
+
+    // People (context varies by org)
+    { header: 'Owner(s)',                key: 'owner',                     width: 28 },
+    { header: 'Custodian(s)',            key: 'custodian',                 width: 28 },
+  ];
+}
+
+// Sort to match your on-screen grouping: for each CSF2 subcat,
+// walk all mapped CSF1s in order, ML3 then ML4, baseline first, then custom.
+function sortRowsLikeTable(a, b) {
+  // 1) CSF2 subcat
+  if (a.csF2SubcategoryID !== b.csF2SubcategoryID) {
+    return a.csF2SubcategoryID - b.csF2SubcategoryID;
+  }
+  // 2) CSF1 subcat (0 = custom comes last)
+  const aKey = a.csF1SubcategoryID || 999999;
+  const bKey = b.csF1SubcategoryID || 999999;
+  if (aKey !== bKey) return aKey - bKey;
+
+  // 3) baseline before custom (custom has customAttributeDefinition)
+  const aIsCustom = !!a.customAttributeDefinition;
+  const bIsCustom = !!b.customAttributeDefinition;
+  if (aIsCustom !== bIsCustom) return aIsCustom ? 1 : -1;
+
+  // 4) ML: 3 before 4
+  if (a.maturityLevel !== b.maturityLevel) return a.maturityLevel - b.maturityLevel;
+
+  // 5) Attribute number
+  const aNum = a.attributeNum || a.customAttributeNum || 999999;
+  const bNum = b.attributeNum || b.customAttributeNum || 999999;
+  return aNum - bNum;
+}
 
 export async function buildAttributeWorkbook({ headers = [], rows = [], filters = {} }) {
   const wb = createWorkbook();
 
-  /* ===== Sheet 1: Summary (one row per org × subcat header) ===== */
-  const ws1 = wb.addWorksheet('Summary');
-  ws1.columns = [
-    { header: 'Org', width: 12, key: 'orgName' },
-    { header: 'Function', width: 18, key: 'functionName' },
-    { header: 'Function Language', width: 40, key: 'functionLanguage' },
-    { header: 'Category', width: 22, key: 'categoryName' },
-    { header: 'Category Language', width: 40, key: 'categoryLanguage' },
-    { header: 'CSF 2.0 Subcategory', width: 18, key: 'csF2SubcategoryName' },
-    { header: 'Subcategory Language', width: 60, key: 'csF2SubcategoryLanguage' },
-    { header: 'Change Summary', width: 50, key: 'changeSummary' },
-    { header: 'Implementation Examples', width: 80, key: 'implementationExamples' },
-    { header: 'Owner(s)', width: 28, key: 'owner' },
-    { header: 'Custodian(s)', width: 28, key: 'custodian' },
-    { header: 'Kept', width: 8, key: 'keptCount' },
-    { header: 'Removed', width: 10, key: 'removedCount' },
-    { header: 'Custom', width: 10, key: 'customCount' },
-  ];
-  headers.forEach(h => ws1.addRow(h));
-  autoFitColumns(ws1);
-
-  /* ===== Sheet 2: Attributes (baseline + custom) ===== */
-  const ws2 = wb.addWorksheet('Attributes');
-
-  const columns = [
-    { header: 'Org', key: 'orgName', width: 10 },
-    { header: 'Function', key: 'functionName', width: 18 },
-    { header: 'Category', key: 'categoryName', width: 18 },
-    { header: 'CSF 2.0 Subcategory', key: 'csF2SubcategoryName', width: 16 },
-    { header: 'NIST 1.1', key: 'csF1SubcategoryName', width: 14 },
-
-    // explicit type
-    { header: 'Type', key: 'type', width: 10 },
-
-    // ML shows "3 (Custom)" etc for custom
-    { header: 'ML', key: 'ml', width: 12 },
-
-    { header: 'Attr #', key: 'attributeNum', width: 8 },
-    { header: 'Attribute Definition', key: 'attributeDefinition', width: 80 },
-
-    { header: 'Status', key: 'selectionStatus', width: 14 },
-    { header: '2025 Attestation', key: 'attestation', width: 22 },
-    { header: '2024 Assessor Score', key: 'assessScore2024', width: 22 },
-
-    { header: 'Owner(s)', key: 'owner', width: 28 },
-    { header: 'Custodian(s)', key: 'custodian', width: 28 },
-  ];
-  ws2.columns = columns;
-
+  // Group by Org (use name for sheet naming)
+  const byOrg = new Map();
   rows.forEach(r => {
-    const isCustom = !!r.customAttributeDefinition;
-    const att = r.selectionAttestation || r.customAttributeAttestation || '';
-    const def = r.attributeDefinition || r.customAttributeDefinition || '';
+    const key = `${r.orgID}|${r.orgName}`;
+    if (!byOrg.has(key)) byOrg.set(key, []);
+    byOrg.get(key).push(r);
+  });
 
-    const row = ws2.addRow({
-      orgName: r.orgName,
-      functionName: r.functionName,
-      categoryName: r.categoryName,
-      csF2SubcategoryName: r.csF2SubcategoryName,
-      csF1SubcategoryName: r.csF1SubcategoryName || '',
-      type: isCustom ? 'Custom' : 'Baseline',
-      ml: isCustom ? `${r.maturityLevel} (Custom)` : String(r.maturityLevel),
-      attributeNum: r.attributeNum || r.customAttributeNum || '',
-      attributeDefinition: def,
-      selectionStatus: isCustom ? '' : (r.selectionStatus || ''),
-      attestation: att,
-      assessScore2024: r.assessScore2024 || '',
-      owner: r.owner || '',
-      custodian: r.custodian || '',
+  // Build one sheet per org
+  for (const [key, orgRows] of byOrg.entries()) {
+    const [, orgName] = key.split('|');
+    const name = safeSheetName(orgName || 'Org');
+
+    const ws = wb.addWorksheet(name);
+
+    // Columns + header
+    const columns = getColumnsForOrgSheet();
+    ws.columns = columns;
+
+    // Header styling (bold, sticky/frozen, editable columns highlighted)
+    const hdrRow = ws.getRow(1);
+    hdrRow.font = BOLD;
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+
+    hdrRow.eachCell((cell, colNumber) => {
+      cell.fill = solid(HDR_BASE_FILL);
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      const key = ws.columns[colNumber - 1]?.key;
+      if (key === 'status')      cell.fill = solid(HDR_STATUS_FILL);
+      if (key === 'attestation') cell.fill = solid(HDR_ATTEST_FILL);
     });
 
-    // Style the ML column for custom rows
-    const mlCell = row.getCell('ml');
-    if (isCustom) {
-      mlCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3F2FD' } };
-      mlCell.font = { bold: true };
-      mlCell.alignment = { horizontal: 'center' };
-    } else {
-      mlCell.alignment = { horizontal: 'center' };
-    }
+    // Rows (merge headers + rows so we can repeat context per row)
+    const orgHeaders = (headers || []).filter(h => h.orgName === orgName);
+    // Small map to grab subcat-level context easily
+    const subcatCtx = new Map(
+      orgHeaders.map(h => [h.csF2SubcategoryID, h])
+    );
 
-    // Status color (baseline only)
-    const statusCell = row.getCell('selectionStatus');
-    const v = statusCell.value;
-    if (v === 'Keep')   { statusCell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFECFDF3' } }; statusCell.font = { color:{ argb:'FF027A48' }, bold:true }; }
-    if (v === 'Remove') { statusCell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFEF3F2' } }; statusCell.font = { color:{ argb:'FF912018' }, bold:true }; }
+    // Sort rows to match UI
+    orgRows.sort(sortRowsLikeTable);
 
-    // Attestation deep colors
-    colorAttestation(row.getCell('attestation'), att);
+    orgRows.forEach(r => {
+      const isCustom = !!r.customAttributeDefinition;
+      const ctx = subcatCtx.get(r.csF2SubcategoryID) || r; // fallback to row fields
 
-    // Wrap long definitions
-    row.getCell('attributeDefinition').alignment = { wrapText: true };
-  });
+      const att = r.selectionAttestation || r.customAttributeAttestation || '';
+      const attrDef = r.attributeDefinition || r.customAttributeDefinition || '';
+      const attrNum = r.attributeNum || r.customAttributeNum || '';
 
-  autoFitColumns(ws2);
+      const row = ws.addRow({
+        functionName:             r.functionName,
+        functionLanguage:         r.functionLanguage,
+        categoryName:             r.categoryName,
+        categoryLanguage:         r.categoryLanguage,
+        csf2Name:                 r.csF2SubcategoryName,
+        csf2Lang:                 r.csF2SubcategoryLanguage,
+        changeSummary:            ctx.changeSummary || r.changeSummary,
+        implementationExamples:   ctx.implementationExamples || r.implementationExamples,
 
-  /* ===== Sheet 3: Filters snapshot (optional) ===== */
-  const ws3 = wb.addWorksheet('Filters');
-  ws3.addRow(['Filter', 'Value']).font = { bold: true };
-  Object.entries(filters || {}).forEach(([k, v]) => {
-    ws3.addRow([k, Array.isArray(v) ? v.join(', ') : String(v ?? '')]);
-  });
-  autoFitColumns(ws3);
+        csf1Name:                 r.csF1SubcategoryName || '',
+        type:                     isCustom ? 'Custom' : 'Baseline',
+        ml:                       r.maturityLevel,        // numeric only per request
+        attrNum:                  attrNum,
+        attrDef:                  attrDef,
+        status:                   isCustom ? '' : (r.selectionStatus || ''),
+        attestation:              att,
+        assess2024:               r.assessScore2024 || '',
+        owner:                    r.owner || '',
+        custodian:                r.custodian || '',
+      });
+
+      // Wrap long narrative fields
+      row.getCell('changeSummary').alignment = { wrapText: true };
+      row.getCell('implementationExamples').alignment = { wrapText: true };
+      row.getCell('attrDef').alignment = { wrapText: true };
+      row.getCell('ml').alignment = { horizontal: 'center' };
+
+      // Editable columns have just the header tinted; values can be styled as needed:
+      // Status (baseline only): tint like your UI
+      const status = row.getCell('status').value;
+      if (status === 'Keep') {
+        row.getCell('status').fill = solid('FFECFDF3');
+        row.getCell('status').font = { color: { argb: 'FF027A48' }, bold: true };
+      } else if (status === 'Remove') {
+        row.getCell('status').fill = solid('FFFEF3F2');
+        row.getCell('status').font = { color: { argb: 'FF912018' }, bold: true };
+      }
+
+      // Attestation deep coloring (both baseline + custom)
+      colorAttestation(row.getCell('attestation'), att);
+
+      // Custom Attribute Definition cell tint
+      if (isCustom) {
+        row.getCell('attrDef').fill = solid('FFE3F2FD'); // light blue
+      }
+    });
+
+    autoFitColumns(ws);
+  }
 
   return wb;
 }

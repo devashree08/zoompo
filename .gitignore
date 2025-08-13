@@ -1,215 +1,187 @@
+// --- at top of file ---
 import * as React from 'react';
 import {
-  Box, Paper, Table, TableHead, TableBody, TableRow, TableCell,
-  TableContainer, Select, MenuItem, Chip, CircularProgress, Tooltip
+  Table, TableHead, TableRow, TableCell, TableBody,
+  TableContainer, Select, MenuItem, Chip, Box, CircularProgress
 } from '@mui/material';
-import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
-import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
-import { alpha } from '@mui/material/styles';
-
 import { saveSelection } from '../../api/selectionApi';
-import useToast from '../../../../ui/feedback/useToast';
+import { useToast } from '../../../../ui/feedback/useToast';
 
-const STATUS_OPTIONS = ['Keep', 'Remove'];
-const ATTEST_OPTIONS = ['Meet', 'Partial Meet', 'Does Not Meet'];
-
-const deepChip = (theme, v) => {
-  switch (v) {
-    case 'Meet':          return { bgcolor: theme.palette.success.main, color: theme.palette.common.white };
-    case 'Partial Meet':  return { bgcolor: theme.palette.warning.main, color: theme.palette.common.black };
-    case 'Does Not Meet': return { bgcolor: theme.palette.error.main,   color: theme.palette.common.white };
-    default:              return { bgcolor: theme.palette.grey[300],    color: theme.palette.text.primary };
-  }
+// Palette helpers you already had for chips
+const ATTEST_COLORS = {
+  'Meet':           { bg: '#0EA371', fg: '#fff' },     // deep green
+  'Partial Meet':   { bg: '#F2B400', fg: '#111' },     // deep yellow
+  'Does Not Meet':  { bg: '#D21F3C', fg: '#fff' },     // deep red
 };
 
-const lightStatusChip = (theme, v) => {
-  if (v === 'Keep') {
-    return { bgcolor: theme.palette.success.light, color: theme.palette.success.dark, borderColor: alpha(theme.palette.success.main, 0.4) };
-  }
-  if (v === 'Remove') {
-    return { bgcolor: theme.palette.error.light, color: theme.palette.error.dark, borderColor: alpha(theme.palette.error.main, 0.4) };
-  }
-  return { bgcolor: theme.palette.grey[200], color: theme.palette.text.primary, borderColor: theme.palette.grey[300] };
-};
-
-const rowKey = (r) => `${r.orgID}|${r.csF2SubcategoryID}|${r.maturityLevel}|${r.attributeNum}`;
-
-export default function AttributeGroupTable({
-  rows = [],
-  onPatchRow,
-  maxHeight = 'calc(100vh - 420px)',
-}) {
-  const { success, error } = useToast();
-
-  const [localRows, setLocalRows] = React.useState(rows);
-  React.useEffect(() => setLocalRows(rows), [rows]);
-
-  const [actionState, setActionState] = React.useState(new Map());
-  const setStateFor = (k, v) => setActionState(prev => new Map(prev).set(k, v));
-
-  const patchLocal = React.useCallback((key, patch) => {
-    setLocalRows(prev => prev.map(r => (rowKey(r) === key ? { ...r, ...patch } : r)));
-  }, []);
-
-  const optimisticPatch = React.useCallback((r, patch) => {
-    const k = rowKey(r);
-    if (onPatchRow) onPatchRow(k, patch);
-    else patchLocal(k, patch);
-  }, [onPatchRow, patchLocal]);
-
-  const handleSave = async (r, nextPatch) => {
-    const k = rowKey(r);
-    optimisticPatch(r, nextPatch);
-    setStateFor(k, 'saving');
-
-    try {
-      await saveSelection({
-        orgID: r.orgID,
-        csF2SubcategoryID: r.csF2SubcategoryID,
-        csF1SubcategoryID: r.csF1SubcategoryID,
-        maturityLevel: r.maturityLevel,
-        attributeNum: r.attributeNum,
-        selectionStatus: nextPatch.selectionStatus ?? r.selectionStatus ?? null,
-        selectionAttestation: nextPatch.selectionAttestation ?? r.selectionAttestation ?? null,
-      });
-      setStateFor(k, 'success');
-      success('Saved');
-    } catch {
-      if (onPatchRow) onPatchRow(k, r); else patchLocal(k, r);
-      setStateFor(k, 'error');
-      error('Save failed. Please retry.');
-    }
-  };
-
+function AttChip({ value }) {
+  if (!value) return <Chip size="small" label="—" variant="outlined" />;
+  const c = ATTEST_COLORS[value] || { bg: '#EEE', fg: '#333' };
   return (
-    <Paper variant="outlined" sx={{ mt: 2 }}>
-      <TableContainer sx={{ maxHeight, overflow: 'auto' }}>
-        <Table
-          stickyHeader
-          size="medium"
-          sx={{ tableLayout: 'fixed' }}   // stable widths, no forced minWidth
-        >
-          {/* 100% budget so header/body always align */}
-          <colgroup>
-            <col style={{ width: '4%' }} />
-            <col style={{ width: '44%' }} />
-            <col style={{ width: '6%' }} />
-            <col style={{ width: '10%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '10%' }} />
-            <col style={{ width: '2%' }} />
-          </colgroup>
-
-          <TableHead>
-            <TableRow>
-              <TableCell>#</TableCell>
-              <TableCell>Attribute Definition</TableCell>
-              <TableCell align="center">ML</TableCell>
-              <TableCell>NIST 1.1</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell>2025 Attestation</TableCell>
-              <TableCell>2024 Assessor Score</TableCell>
-              <TableCell align="center">Actions</TableCell>
-            </TableRow>
-          </TableHead>
-
-          <TableBody>
-            {localRows.map((r, i) => {
-              const k = rowKey(r);
-              return (
-                <Row
-                  key={k}
-                  index={i + 1}
-                  row={r}
-                  state={actionState.get(k)}
-                  onSave={handleSave}
-                />
-              );
-            })}
-          </TableBody>
-        </Table>
-      </TableContainer>
-    </Paper>
+    <Chip
+      size="small"
+      label={value}
+      sx={{ bgcolor: c.bg, color: c.fg, fontWeight: 700 }}
+    />
   );
 }
 
-function Row({ index, row, state, onSave }) {
-  // ML coloring as a subtle tint + inset left bar (no pseudo element)
-  const mlTint = (theme) => {
-    const isML4 = Number(row.maturityLevel) === 4;
-    const base = isML4 ? alpha(theme.palette.warning.main, 0.06) : alpha(theme.palette.primary.main, 0.04);
-    const bar  = isML4 ? theme.palette.warning.main : theme.palette.primary.main;
-    return {
-      backgroundColor: base,
-      boxShadow: `inset 4px 0 0 0 ${alpha(bar, 0.9)}`,
-    };
+export default function AttributeGroupTable({
+  rows = [],
+  maxHeight = 'calc(100vh - 460px)',
+  onRowPatched,               // (newRow) => void  (so parent can update without refetch)
+}) {
+  const toast = useToast();
+  const [saving, setSaving] = React.useState({}); // key: rowKey -> 'saving'|'ok'|'err'
+
+  const rowKey = (r) =>
+    `${r.orgID}-${r.csF2SubcategoryID}-${r.maturityLevel}-${r.attributeNum}`;
+
+  const patchAndSave = async (row, patch) => {
+    const key = rowKey(row);
+    const next = { ...row, ...patch };
+    setSaving((m) => ({ ...m, [key]: 'saving' }));
+
+    try {
+      await saveSelection({
+        orgID: row.orgID,
+        csF2SubcategoryID: row.csF2SubcategoryID,
+        csF1SubcategoryID: row.csF1SubcategoryID,
+        maturityLevel: row.maturityLevel,
+        attributeNum: row.attributeNum,
+        selectionStatus: next.selectionStatus ?? null,
+        selectionAttestation: next.selectionAttestation ?? null,
+      });
+
+      setSaving((m) => ({ ...m, [key]: 'ok' }));
+      onRowPatched?.(next);                  // push change up so UI updates immediately
+      toast.success('Saved');
+    } catch (e) {
+      setSaving((m) => ({ ...m, [key]: 'err' }));
+      toast.error('Save failed');
+    }
+  };
+
+  const handleStatusChange = (row, value) => {
+    // If user selects Remove -> clear attestation and disable its select
+    const patch =
+      value === 'Remove'
+        ? { selectionStatus: value, selectionAttestation: null }
+        : { selectionStatus: value };
+    patchAndSave(row, patch);
+  };
+
+  const handleAttChange = (row, value) => {
+    patchAndSave(row, { selectionAttestation: value || null });
   };
 
   return (
-    <TableRow hover sx={(t) => ({ verticalAlign: 'top', ...(Number(row.maturityLevel) >= 3 ? mlTint(t) : {}) })}>
-      <TableCell>{index}</TableCell>
+    <TableContainer sx={{ maxHeight, overflow: 'auto', pr: 1.5, pb: 0.5 }}>
+      <Table stickyHeader size="small" sx={{
+        tableLayout: 'auto',
+        '& th, & td': { verticalAlign: 'top' },
+        '& th': { whiteSpace: 'normal' },
+      }}>
+        <TableHead>
+          <TableRow>
+            <TableCell sx={{ width: 56, textAlign: 'right' }}>#</TableCell>
+            <TableCell>Attribute Definition</TableCell>
+            <TableCell sx={{ width: 72, textAlign: 'center' }}>ML</TableCell>
+            <TableCell sx={{ width: 110 }}>NIST 1.1</TableCell>
+            <TableCell sx={{ width: 140 }}>Status</TableCell>
+            <TableCell sx={{ width: 170 }}>2025 Attestation</TableCell>
+            <TableCell sx={{ width: 170 }}>2024 Assessor Score</TableCell>
+            <TableCell sx={{ width: 72, textAlign: 'center' }}>Actions</TableCell>
+          </TableRow>
+        </TableHead>
 
-      <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.5, pr: 3 }}>
-        {row.attributeDefinition}
-      </TableCell>
+        <TableBody>
+          {rows.map((r, idx) => {
+            const key = rowKey(r);
+            const removed = r.selectionStatus === 'Remove';
+            const sv = saving[key];
 
-      <TableCell align="center">{row.maturityLevel}</TableCell>
+            return (
+              <TableRow key={key} hover>
+                <TableCell sx={{ textAlign: 'right' }}>{idx + 1}</TableCell>
 
-      <TableCell>{row.csF1SubcategoryName || '—'}</TableCell>
+                {/* Attribute Definition (wrap nicely) */}
+                <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                  {r.attributeDefinition}
+                </TableCell>
 
-      <TableCell>
-        <Select
-          fullWidth
-          size="small"
-          value={row.selectionStatus || ''}
-          displayEmpty
-          onChange={(e) => onSave(row, { selectionStatus: e.target.value || null })}
-          renderValue={(v) => (
-            <Chip
-              size="small"
-              label={v || '—'}
-              variant="outlined"
-              sx={(t) => ({ borderWidth: 1, ...lightStatusChip(t, v) })}
-            />
-          )}
-        >
-          <MenuItem value=""><em>—</em></MenuItem>
-          {STATUS_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-        </Select>
-      </TableCell>
+                <TableCell sx={{ textAlign: 'center', fontWeight: 700 }}>
+                  {r.maturityLevel}
+                </TableCell>
 
-      <TableCell>
-        <Select
-          fullWidth
-          size="small"
-          value={row.selectionAttestation || ''}
-          displayEmpty
-          onChange={(e) => onSave(row, { selectionAttestation: e.target.value || null })}
-          renderValue={(v) => (
-            <Chip size="small" label={v || '—'} sx={(t) => ({ ...deepChip(t, v), fontWeight: 600 })} />
-          )}
-        >
-          <MenuItem value=""><em>—</em></MenuItem>
-          {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-        </Select>
-      </TableCell>
+                <TableCell>{r.csF1SubcategoryName}</TableCell>
 
-      <TableCell>
-        {row.assessScore2024
-          ? <Chip size="small" label={row.assessScore2024} sx={(t) => ({ ...deepChip(t, row.assessScore2024), fontWeight: 600 })} />
-          : '—'}
-      </TableCell>
+                {/* Status select -> if 'Remove' we also clear attestation */}
+                <TableCell>
+                  <Select
+                    size="small"
+                    fullWidth
+                    value={r.selectionStatus || ''}
+                    displayEmpty
+                    onChange={(e) => handleStatusChange(r, e.target.value || null)}
+                    renderValue={(v) => v || '—'}
+                    sx={{
+                      '& .MuiSelect-select': { py: 0.5, fontWeight: 700 },
+                      bgcolor: r.selectionStatus === 'Keep' ? '#E8F5EE' :
+                              r.selectionStatus === 'Remove' ? '#FFE8E8' : 'transparent',
+                      borderRadius: 999,
+                    }}
+                  >
+                    <MenuItem value="">—</MenuItem>
+                    <MenuItem value="Keep">Keep</MenuItem>
+                    <MenuItem value="Remove">Remove</MenuItem>
+                  </Select>
+                </TableCell>
 
-      <TableCell align="center">
-        {state === 'saving' ? (
-          <CircularProgress size={20} />
-        ) : state === 'success' ? (
-          <Tooltip title="Saved"><CheckCircleRoundedIcon color="success" /></Tooltip>
-        ) : state === 'error' ? (
-          <Tooltip title="Save failed"><CancelRoundedIcon color="error" /></Tooltip>
-        ) : null}
-      </TableCell>
-    </TableRow>
+                {/* 2025 Attestation (disabled when removed) */}
+                <TableCell>
+                  {removed ? (
+                    <Box sx={{ opacity: 0.5 }}>
+                      <AttChip value={null} />
+                    </Box>
+                  ) : (
+                    <Select
+                      size="small"
+                      fullWidth
+                      value={r.selectionAttestation || ''}
+                      displayEmpty
+                      onChange={(e) => handleAttChange(r, e.target.value || null)}
+                      renderValue={(v) => <AttChip value={v || null} />}
+                      sx={{ '& .MuiSelect-select': { py: 0.5 } }}
+                    >
+                      <MenuItem value="">—</MenuItem>
+                      <MenuItem value="Meet">Meet</MenuItem>
+                      <MenuItem value="Partial Meet">Partial Meet</MenuItem>
+                      <MenuItem value="Does Not Meet">Does Not Meet</MenuItem>
+                    </Select>
+                  )}
+                </TableCell>
+
+                {/* 2024 Assessor Score chip (read-only) */}
+                <TableCell>
+                  <AttChip value={r.assessScore2024} />
+                </TableCell>
+
+                {/* Actions: spinner -> check -> error; check persists after success */}
+                <TableCell sx={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
+                  {sv === 'saving' ? (
+                    <CircularProgress size={20} />
+                  ) : sv === 'err' ? (
+                    <Box component="span" sx={{ color: 'error.main', fontWeight: 800 }}>✕</Box>
+                  ) : sv === 'ok' ? (
+                    <Box component="span" sx={{ color: 'success.main', fontWeight: 800 }}>✓</Box>
+                  ) : null}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TableContainer>
   );
 }

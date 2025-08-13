@@ -1,30 +1,183 @@
-async function handleExportAllOrgs() {
-  // 1) Get *all* org names so every sheet exists (even if no rows)
-  const lookups = await fetchAttributeFilterLookups({
-    functionIds: [], categoryIds: [], subcatIds: [], ownerNames: [], custodianNames: []
-  });
-  const orgs = (lookups.orgs || []).map(o => ({ orgID: o.orgID, orgName: o.orgName }));
+import { createWorkbook, autoFitColumns } from '../../../ui/data/xlsx/excel';
 
-  // 2) Get the full feed for current filters EXCEPT don't narrow by subcategory
-  //    (so the export includes all subcats for all orgs under current filters)
-  const feed = await fetchAttributeFeed({
-    // keep Function/Category/Owner/Custodian/Maturity/FinalOnly/Search filters the user set:
-    functionIds: filters.functionIds,
-    categoryIds: filters.categoryIds,
-    subcatIds:   [], // IMPORTANT: no subcat filter in export
-    ownerNames:  filters.ownerNames,
-    custodianNames: filters.custodianNames,
-    maturity:    filters.maturity,
-    finalOnly:   filters.finalOnly,
-    search:      filters.search
+// --------- colors / styles ----------
+const solid = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
+const WHITE = 'FFFFFFFF';
+const BAND_DARK = 'FF2F3A4A';     // global header band
+const EDITABLE_HDR = 'FF0540C5';   // header color for editable columns
+const THIN_BORDER = {
+  top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+  left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+  bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+  right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+};
+
+// Deep fills for attestation values
+function colorAttestation(cell, v) {
+  if (v === 'Meet') {
+    cell.fill = solid('FF12B76A');           // green
+    cell.font = { color: { argb: WHITE }, bold: true };
+  } else if (v === 'Partial Meet' || v === 'Partially Meet') {
+    cell.fill = solid('FFF79009');           // amber
+    cell.font = { bold: true };
+  } else if (v === 'Does Not Meet') {
+    cell.fill = solid('FFD92D20');           // red
+    cell.font = { color: { argb: WHITE }, bold: true };
+  }
+}
+
+const safeSheet = (s) =>
+  (s || 'Org').replace(/[\[\]\:\*\?\/\\]/g, ' ').slice(0, 31).trim() || 'Org';
+
+// sort like the UI: csf2 → csf1 (baseline first) → ml (3→4) → attribute #
+function uiSort(a, b) {
+  if (a.csF2SubcategoryID !== b.csF2SubcategoryID)
+    return a.csF2SubcategoryID - b.csF2SubcategoryID;
+
+  const aC1 = a.csF1SubcategoryID || 999999;
+  const bC1 = b.csF1SubcategoryID || 999999;
+  if (aC1 !== bC1) return aC1 - bC1;
+
+  const aCustom = !!a.customAttributeDefinition;
+  const bCustom = !!b.customAttributeDefinition;
+  if (aCustom !== bCustom) return aCustom ? 1 : -1;
+
+  if (a.maturityLevel !== b.maturityLevel) return a.maturityLevel - b.maturityLevel;
+
+  const aNum = a.attributeNum || a.customAttributeNum || 999999;
+  const bNum = b.attributeNum || b.customAttributeNum || 999999;
+  return aNum - bNum;
+}
+
+// column model (keys used for row.getCell('<key>'))
+const COLS = [
+  { header: 'Function',                key: 'functionName'              },
+  { header: 'Function Language',       key: 'functionLanguage'          },
+  { header: 'Category',                key: 'categoryName'              },
+  { header: 'Category Language',       key: 'categoryLanguage'          },
+  { header: 'CSF 2.0 Subcategory',     key: 'csf2Name'                  },
+  { header: 'Subcategory Language',    key: 'csf2Lang'                  },
+  { header: 'Associated NIST 1.1',     key: 'csf1Name'                  },
+  { header: 'Type',                    key: 'type'                      }, // Baseline / Custom
+  { header: 'ML',                      key: 'ml'                        }, // numeric only
+  { header: 'Attr #',                  key: 'attrNum'                   },
+  { header: 'Attribute Definition',    key: 'attrDef'                   },
+  { header: 'Status',                  key: 'status', editable: true    },
+  { header: '2025 Attestation',        key: 'attestation', editable: true },
+  { header: '2024 Assessor Score',     key: 'assess2024'                },
+  { header: 'Owner(s)',                key: 'owner'                     },
+  { header: 'Custodian(s)',            key: 'custodian'                 },
+];
+
+// border all used cells in a row
+function borderRow(row, lastColIdx) {
+  for (let c = 1; c <= lastColIdx; c++) row.getCell(c).border = THIN_BORDER;
+}
+
+/**
+ * Build the Attribute Mapping workbook.
+ * - One worksheet per org (all orgs you pass in), containing ALL subcats (no stack-up summary)
+ * - Sticky header (row 1), bold, editable columns with different header color
+ * - Custom attribute definition cells tinted (kept thin border)
+ *
+ * @param {Object} params
+ * @param {Array}  params.rows  Full detail rows (ALL orgs, ALL subcats)
+ * @param {Array}  params.orgs  [{orgID, orgName}] — ensures sheet per org even with no rows
+ */
+export async function buildAttributeWorkbook({ rows = [], orgs = [] }) {
+  const wb = createWorkbook();
+
+  // group by org
+  const byOrg = new Map();
+  rows.forEach((r) => {
+    if (!byOrg.has(r.orgID)) byOrg.set(r.orgID, []);
+    byOrg.get(r.orgID).push(r);
   });
 
-  // 3) Build and save the workbook
-  const wb = await buildAttributeWorkbook({
-    headers: feed.headers || [],
-    rows:    feed.rows    || [],
-    orgs, // ensures a sheet is created for every org name regardless of data
-  });
+  const uniqueOrgs = (orgs && orgs.length)
+    ? orgs
+    : Array.from(new Map(rows.map(r => [r.orgID, { orgID: r.orgID, orgName: r.orgName }])).values());
 
-  await saveWorkbook(wb, 'csf-attribute-mapping.xlsx');
+  for (const org of uniqueOrgs) {
+    const ws = wb.addWorksheet(safeSheet(org.orgName), { views: [{ state: 'frozen', ySplit: 1 }] });
+    ws.columns = COLS;
+
+    // header (row 1)
+    const hdr = ws.getRow(1);
+    COLS.forEach((c, i) => {
+      const cell = hdr.getCell(i + 1);
+      cell.value = c.header;
+      cell.font = { bold: true, color: { argb: WHITE } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.fill = solid(c.editable ? EDITABLE_HDR : BAND_DARK);
+      cell.border = THIN_BORDER;
+    });
+    hdr.height = 22;
+
+    const orgRows = (byOrg.get(org.orgID) || []).slice().sort(uiSort);
+
+    if (!orgRows.length) {
+      const r = ws.addRow({ functionName: 'No rows under current filters.' });
+      r.getCell(1).font = { italic: true, color: { argb: 'FF667085' } };
+      borderRow(r, 3);
+    } else {
+      orgRows.forEach((r) => {
+        const isCustom = !!r.customAttributeDefinition;
+        const attrDef  = r.attributeDefinition || r.customAttributeDefinition || '';
+        const attrNum  = r.attributeNum || r.customAttributeNum || '';
+        const att      = r.selectionAttestation || r.customAttributeAttestation || '';
+        const status   = isCustom ? '' : (r.selectionStatus || '');
+        const type     = isCustom ? 'Custom' : 'Baseline';
+
+        const row = ws.addRow({
+          functionName:       r.functionName,
+          functionLanguage:   r.functionLanguage,
+          categoryName:       r.categoryName,
+          categoryLanguage:   r.categoryLanguage,
+          csf2Name:           r.csF2SubcategoryName,
+          csf2Lang:           r.csF2SubcategoryLanguage,
+          csf1Name:           r.csF1SubcategoryName || '',
+          type,
+          ml:                 r.maturityLevel,
+          attrNum,
+          attrDef,
+          status,
+          attestation:        att,
+          assess2024:         r.assessScore2024 || '',
+          owner:              r.owner || '',
+          custodian:          r.custodian || '',
+        });
+
+        // borders & alignment
+        borderRow(row, COLS.length);
+        row.getCell('ml').alignment = { horizontal: 'center' };
+        row.getCell('attrDef').alignment = { wrapText: true };
+        row.getCell('functionLanguage').alignment = { wrapText: true };
+        row.getCell('categoryLanguage').alignment = { wrapText: true };
+        row.getCell('csf2Lang').alignment = { wrapText: true };
+
+        // attestation deep color
+        colorAttestation(row.getCell('attestation'), att);
+
+        // custom: tint just the definition cell (keep border)
+        if (isCustom) {
+          row.getCell('attrDef').fill = solid('FFE6F4FF'); // light blue
+        }
+
+        // status soft colors (baseline only)
+        const st = row.getCell('status');
+        if (st.value === 'Keep') {
+          st.fill = solid('FFECFDF3');
+          st.font = { bold: true, color: { argb: 'FF027A48' } };
+        } else if (st.value === 'Remove') {
+          st.fill = solid('FFFEF3F2');
+          st.font = { bold: true, color: { argb: 'FF912018' } };
+        }
+      });
+    }
+
+    autoFitColumns(ws, { min: 10, max: 100 });
+  }
+
+  return wb;
 }

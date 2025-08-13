@@ -1,363 +1,99 @@
-import * as React from 'react';
-import {
-  Box, Paper, Stack, Select, MenuItem, TextField, Button, Chip,
-  IconButton, Tooltip, Divider, Typography
-} from '@mui/material';
-import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
-import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
-import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
-import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined';
-import { saveCustomAttribute } from '../../api/customApi';
-import useToast from '../../../../ui/feedback/useToast';
-
-const ATTEST_OPTIONS = ['Meet', 'Partial Meet', 'Does Not Meet'];
+// src/ui/data/excelExport.js
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
 
 /**
- * Props:
- *  orgID, orgName
- *  csF2SubcategoryID (or csf2SubcategoryID), subcatName
- *  existingRows: all rows (baseline+custom) for this org/subcat (optional)
- *  onAdded(newRow), onPatched(key, patch), onDeleted(key)  // optional callbacks to update parent state
- *
- * Row key format matches AttributeGroupTable: `${orgID}|${csF2SubcategoryID}|${ml}|${customAttributeNum}`
+ * exportWorkbook({
+ *   filename: 'my-file.xlsx',
+ *   sheets: [
+ *     {
+ *       name: 'Attributes',
+ *       columns: [
+ *         { key:'org', header:'Org', width: 10 },
+ *         { key:'attributeDefinition', header:'Attribute Definition', width: 60, wrap: true },
+ *         // optional:
+ *         // style: { alignment, font, fill, numFmt, ... }  (applies to entire column)
+ *         // value: (row) => value                         (per-cell value override)
+ *         // format: (cell, val, row) => { ... }           (per-cell style/format)
+ *       ],
+ *       rows: [ {...}, {...} ],
+ *       freezeHeader: true,
+ *       autoFilter: true
+ *     },
+ *     ...
+ *   ]
+ * })
  */
-export default function AddCustomAttributePanel({
-  orgID,
-  orgName,
-  csF2SubcategoryID,
-  csf2SubcategoryID, // tolerate either prop name
-  subcatName,
-  existingRows = [],
-  onAdded,
-  onPatched,
-  onDeleted,
-}) {
-  const subcatId = csF2SubcategoryID ?? csf2SubcategoryID;
-  const { success, error } = useToast();
+export async function exportWorkbook({ filename = 'export.xlsx', sheets = [] }) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'CSF Portal';
+  wb.created = new Date();
 
-  // ---------- source list (internal mirror so panel shows adds immediately) ----------
-  const seedList = React.useMemo(
-    () =>
-      (existingRows || []).filter(
-        r =>
-          (r.isCustom || r.customAttributeDefinition) &&
-          r.orgID === orgID &&
-          r.csF2SubcategoryID === subcatId
-      ),
-    [existingRows, orgID, subcatId]
-  );
-  const [items, setItems] = React.useState(seedList);
-  React.useEffect(() => setItems(seedList), [seedList]);
-
-  // ---------- add form ----------
-  const [ml, setMl] = React.useState(3);
-  const [def, setDef] = React.useState('');
-  const [att, setAtt] = React.useState('');
-  const [adding, setAdding] = React.useState(false);
-
-  // next custom # per ML (client-side fallback if API doesn’t echo one back)
-  const nextNum = React.useCallback((m) => {
-    const nums = items
-      .filter(x => Number(x.maturityLevel) === Number(m))
-      .map(x => Number(x.customAttributeNum || 0));
-    return (nums.length ? Math.max(...nums) : 0) + 1;
-  }, [items]);
-
-  const makeKey = (r) =>
-    `${r.orgID}|${r.csF2SubcategoryID}|${r.maturityLevel}|${r.customAttributeNum}`;
-
-  const addItemLocal = (row) =>
-    setItems(prev => {
-      const list = [...prev, row];
-      // keep list tidy: ML3 then ML4, then number
-      return list.sort((a, b) => {
-        const ar = Number(a.maturityLevel) === 4 ? 2 : 1;
-        const br = Number(b.maturityLevel) === 4 ? 2 : 1;
-        if (ar !== br) return ar - br;
-        return (a.customAttributeNum ?? 0) - (b.customAttributeNum ?? 0);
-      });
+  for (const s of sheets) {
+    const ws = wb.addWorksheet(s.name || 'Sheet', {
+      properties: { defaultRowHeight: 18 },
+      views: [{ state: 'frozen', ySplit: s.freezeHeader ? 1 : 0 }],
     });
 
-  const patchLocal = (key, patch) =>
-    setItems(prev => prev.map(x => (makeKey(x) === key ? { ...x, ...patch } : x)));
+    // Define columns
+    ws.columns = (s.columns || []).map(col => ({
+      header: col.header,
+      key: col.key,
+      width: col.width || 20,
+      style: col.style || {},
+    }));
 
-  const deleteLocal = (key) =>
-    setItems(prev => prev.filter(x => makeKey(x) !== key));
+    // Header style
+    const header = ws.getRow(1);
+    header.font = { bold: true };
+    header.alignment = { vertical: 'middle' };
+    header.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF3F8' } }; // light grey-blue
+    header.height = 20;
 
-  const handleAdd = async () => {
-    if (!def.trim()) return;
-    setAdding(true);
+    // Add rows
+    for (const row of (s.rows || [])) {
+      const excelRow = {};
+      for (const col of s.columns) {
+        const val = col.value ? col.value(row) : row[col.key];
+        excelRow[col.key] = val;
+      }
+      const added = ws.addRow(excelRow);
 
-    const localNum = nextNum(ml);
-    try {
-      const resp = await saveCustomAttribute({
-        action: 'Add',                // <<<<<< as requested
-        orgId: orgID,
-        csf2SubcategoryId: subcatId,
-        maturityLevel: ml,
-        attributeNum: localNum,
-        attrDefinition: def.trim(),   // server expects `attrDefinition`
-        attestation: att || null,
+      // Per-cell formatters
+      s.columns.forEach((col, idx) => {
+        const cell = added.getCell(idx + 1);
+        // Wrap if requested
+        if (col.wrap) {
+          cell.alignment = { ...(cell.alignment || {}), wrapText: true, vertical: 'top' };
+        }
+        if (typeof col.format === 'function') {
+          const v = col.value ? col.value(row) : row[col.key];
+          col.format(cell, v, row);
+        }
       });
-
-      const serverNum = resp?.customAttributeNum ?? resp?.attributeNum ?? localNum;
-      const serverDef = resp?.customAttributeDefinition ?? resp?.attrDefinition ?? def.trim();
-      const serverAtt = resp?.attestation ?? att || null;
-
-      const newRow = {
-        isCustom: true,
-        orgID,
-        csF2SubcategoryID: subcatId,
-        maturityLevel: ml,
-        customAttributeNum: serverNum,
-        customAttributeDefinition: serverDef,
-        customAttributeAttestation: serverAtt,
-        attributeNum: null, // not a baseline row
-      };
-
-      // show immediately in panel + bubble up to the table
-      addItemLocal(newRow);
-      onAdded?.(newRow);
-
-      success('Custom attribute added');
-      setDef('');
-      setAtt('');
-    } catch {
-      error('Add failed');
-    } finally {
-      setAdding(false);
     }
-  };
 
-  // ---------- item row (inline edit/delete) ----------
-  const RowItem = ({ row }) => {
-    const [edit, setEdit] = React.useState(false);
-    const [edef, setEdef] = React.useState(row.customAttributeDefinition || '');
-    const [eatt, setEatt] = React.useState(row.customAttributeAttestation || '');
-    const [saving, setSaving] = React.useState(false);
+    if (s.autoFilter) {
+      ws.autoFilter = {
+        from: { row: 1, column: 1 },
+        to: { row: 1, column: (s.columns || []).length },
+      };
+    }
 
-    React.useEffect(() => {
-      if (!edit) {
-        setEdef(row.customAttributeDefinition || '');
-        setEatt(row.customAttributeAttestation || '');
-      }
-    }, [edit, row.customAttributeDefinition, row.customAttributeAttestation]);
-
-    const key = makeKey(row);
-
-    const save = async () => {
-      if (!edef.trim()) return;
-      setSaving(true);
-      try {
-        await saveCustomAttribute({
-          action: 'Update',
-          orgId: row.orgID,
-          csf2SubcategoryId: row.csF2SubcategoryID,
-          maturityLevel: row.maturityLevel,
-          attributeNum: row.customAttributeNum,
-          attrDefinition: edef.trim(),
-          attestation: eatt || null,
-        });
-        const patch = {
-          customAttributeDefinition: edef.trim(),
-          customAttributeAttestation: eatt || null,
+    // Borders (optional – light bottom grid for readability)
+    ws.eachRow((r, rowNumber) => {
+      if (rowNumber === 1) return; // skip header
+      r.eachCell((cell) => {
+        cell.border = {
+          top:    { style: 'thin', color: { argb: 'FFEAEAEA' } },
+          left:   { style: 'thin', color: { argb: 'FFEAEAEA' } },
+          bottom: { style: 'thin', color: { argb: 'FFEAEAEA' } },
+          right:  { style: 'thin', color: { argb: 'FFEAEAEA' } },
         };
-        patchLocal(key, patch);
-        onPatched?.(key, patch);
-        success('Updated');
-        setEdit(false);
-      } catch {
-        error('Update failed');
-      } finally {
-        setSaving(false);
-      }
-    };
+      });
+    });
+  }
 
-    const remove = async () => {
-      try {
-        await saveCustomAttribute({
-          action: 'Delete',
-          orgId: row.orgID,
-          csf2SubcategoryId: row.csF2SubcategoryID,
-          maturityLevel: row.maturityLevel,
-          attributeNum: row.customAttributeNum,
-        });
-        deleteLocal(key);
-        onDeleted?.(key);
-        success('Deleted');
-      } catch {
-        error('Delete failed');
-      }
-    };
-
-    return (
-      <Paper variant="outlined" sx={{ p: 1 }}>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Chip size="small" label={`ML ${row.maturityLevel}`} />
-
-          {edit ? (
-            <>
-              <TextField
-                size="small"
-                fullWidth
-                value={edef}
-                onChange={(e) => setEdef(e.target.value)}
-              />
-              <Select
-                size="small"
-                displayEmpty
-                value={eatt || ''}
-                onChange={(e) => setEatt(e.target.value || '')}
-                renderValue={(v) => (v ? v : '2025 Attestation')}
-                sx={{ minWidth: 220 }}
-              >
-                <MenuItem value=""><em>—</em></MenuItem>
-                {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-              </Select>
-              <Tooltip title="Save">
-                <span>
-                  <IconButton size="small" onClick={save} disabled={saving || !edef.trim()}>
-                    <SaveOutlinedIcon fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title="Cancel">
-                <IconButton
-                  size="small"
-                  onClick={() => {
-                    setEdit(false);
-                    setEdef(row.customAttributeDefinition || '');
-                    setEatt(row.customAttributeAttestation || '');
-                  }}
-                >
-                  <CloseOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </>
-          ) : (
-            <>
-              <Typography variant="body2" sx={{ flex: 1 }}>{row.customAttributeDefinition}</Typography>
-
-              {row.customAttributeAttestation ? (
-                <Chip
-                  size="small"
-                  label={row.customAttributeAttestation}
-                  sx={(t) => ({
-                    bgcolor:
-                      row.customAttributeAttestation === 'Meet' ? t.palette.success.main :
-                      row.customAttributeAttestation === 'Partial Meet' ? t.palette.warning.main :
-                      t.palette.error.main,
-                    color: row.customAttributeAttestation === 'Partial Meet' ? t.palette.common.black : t.palette.common.white,
-                    fontWeight: 600
-                  })}
-                />
-              ) : (
-                <Typography variant="body2" color="text.secondary">—</Typography>
-              )}
-
-              <Tooltip title="Edit">
-                <IconButton size="small" onClick={() => setEdit(true)}>
-                  <EditOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Delete">
-                <IconButton size="small" onClick={remove}>
-                  <DeleteOutlineOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </>
-          )}
-        </Stack>
-      </Paper>
-    );
-  };
-
-  // ---------- UI ----------
-  return (
-    <Paper variant="outlined" sx={{ mt: 2, p: 1.5 }}>
-      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" sx={{ mb: 1 }}>
-        <Typography variant="subtitle2">
-          Custom Attributes — {orgName || 'Org'} / {subcatName}
-        </Typography>
-      </Stack>
-
-      {/* Add row */}
-      <Stack
-        direction={{ xs: 'column', md: 'row' }}
-        spacing={1}
-        alignItems={{ md: 'center' }}
-        sx={{ mb: 1.25 }}
-      >
-        <Select
-          size="small"
-          value={ml}
-          onChange={(e) => setMl(Number(e.target.value))}
-          sx={{ width: 180 }}
-          renderValue={(v) => (v === 4 ? 'Maturity Level 4' : 'Maturity Level 3')}
-        >
-          <MenuItem value={3}>Maturity Level 3</MenuItem>
-          <MenuItem value={4}>Maturity Level 4</MenuItem>
-        </Select>
-
-        <TextField
-          size="small"
-          fullWidth
-          placeholder="Attribute definition…"
-          value={def}
-          onChange={(e) => setDef(e.target.value)}
-        />
-
-        <Select
-          size="small"
-          displayEmpty
-          value={att || ''}
-          onChange={(e) => setAtt(e.target.value || '')}
-          renderValue={(v) => (v ? v : '2025 Attestation')}
-          sx={{ width: { xs: '100%', md: 220 } }}
-        >
-          <MenuItem value=""><em>—</em></MenuItem>
-          {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-        </Select>
-
-        <Button
-          variant="contained"
-          onClick={handleAdd}
-          disabled={adding || !def.trim()}
-          sx={{ minWidth: 88 }}
-        >
-          {adding ? 'Adding…' : 'Add'}
-        </Button>
-      </Stack>
-
-      <Divider sx={{ my: 1 }} />
-
-      {/* Grouped display for clarity */}
-      <GroupBlock
-        title="Maturity Level 3"
-        items={items.filter(x => Number(x.maturityLevel) === 3)}
-        RowItem={RowItem}
-      />
-      <Box sx={{ height: 8 }} />
-      <GroupBlock
-        title="Maturity Level 4"
-        items={items.filter(x => Number(x.maturityLevel) === 4)}
-        RowItem={RowItem}
-      />
-    </Paper>
-  );
-}
-
-function GroupBlock({ title, items, RowItem }) {
-  return (
-    <Box>
-      <Typography variant="overline" sx={{ color: 'text.secondary' }}>{title}</Typography>
-      <Stack spacing={0.75} sx={{ mt: 0.5 }}>
-        {items.length === 0 ? (
-          <Typography variant="body2" color="text.secondary">No custom attributes.</Typography>
-        ) : (
-          items.map(r => <RowItem key={`${r.maturityLevel}-${r.customAttributeNum}`} row={r} />)
-        )}
-      </Stack>
-    </Box>
-  );
+  const buf = await wb.xlsx.writeBuffer();
+  saveAs(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), filename);
 }

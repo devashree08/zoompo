@@ -1,85 +1,178 @@
-import * as React from 'react';
-import {
-  Box, Drawer, List, ListItemButton, ListItemIcon, ListItemText, IconButton, Divider, Tooltip
-} from '@mui/material';
-import HomeIcon from '@mui/icons-material/Home';
-import Inventory2Icon from '@mui/icons-material/Inventory2';
-import DashboardIcon from '@mui/icons-material/Dashboard';
-import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
-import ChevronRightIcon from '@mui/icons-material/ChevronRight';
-import { NavLink } from 'react-router-dom';
-import { useLayoutUI } from '../LayoutUIContext';
+#!/usr/bin/env python3
+import pandas as pd
+from pathlib import Path
 
-const ITEMS = [
-  { text: 'Home',        icon: <HomeIcon />,       to: '/' },
-  { text: 'Readiness',   icon: <Inventory2Icon />, to: '/readiness' },
-  { text: 'CSF Mapping', icon: <DashboardIcon />,  to: '/attributeMapping' },
-];
+INPUT_XLSX = "mobileapps.xlsx"
+OUTPUT_CSV = "mobileapps_master.csv"
 
-export default function Sidenav() {
-  const { railExpanded, toggleRail, drawerOpen, closeDrawer } = useLayoutUI();
-  const railWidth = railExpanded ? 240 : 80;
+# Columns to keep (exact names in Excel). We'll also try forgiving matching.
+COLUMNS_TO_KEEP = [
+    "VastID",
+    "Application Name in App Store",
+    "Client Type",
+    "Codebase Ownership",
+    "VMAC Team",
+    "BusinessUnit",
+    "Now Secure Scanning Status",
+    "Fortify Scan Status",
+    "Fortify Project Name",
+    "BlackDuck Status",
+    "BlackDuck Project Name",
+]
 
-  // Drawer for phones
-  return (
-    <>
-      {/* xs/sm overlay drawer */}
-      <Drawer
-        anchor="right"
-        open={drawerOpen}
-        onClose={closeDrawer}
-        sx={{ display: { xs: 'block', md: 'none' } }}
-      >
-        <Box sx={{ width: 260, pt: 1 }}>
-          <RailContent expanded />
-        </Box>
-      </Drawer>
-
-      {/* sticky rail for md+ */}
-      <Box
-        sx={{
-          display: { xs: 'none', md: 'block' },
-          position: 'sticky',
-          top: 64,
-          height: 'calc(100vh - 64px)',
-          width: railWidth,
-          borderLeft: 1,
-          borderColor: 'divider',
-          bgcolor: 'background.paper',
-        }}
-      >
-        <Box sx={{ display: 'flex', justifyContent: railExpanded ? 'flex-end' : 'center', p: 0.5 }}>
-          <Tooltip title={railExpanded ? 'Collapse' : 'Expand'}>
-            <IconButton size="small" onClick={toggleRail}>
-              {railExpanded ? <ChevronRightIcon /> : <ChevronLeftIcon />}
-            </IconButton>
-          </Tooltip>
-        </Box>
-        <Divider />
-        <RailContent expanded={railExpanded} />
-      </Box>
-    </>
-  );
+# Tabs and their row filters
+SHEET_FILTERS = {
+    "TPD - Sugandha": {
+        "BISO": "Sugandha Venk",
+        # no Business Unit condition
+    },
+    "VBG - Keith": {
+        "BISO": "Keith Huchi",
+        "Business Unit": "VBG",
+    },
+    "VCG - Jeff": {
+        "BISO": "Jeffrey Halt",
+        "Business Unit": "VCG",
+    },
+    "VGS-T - Tony/Keith": {
+        "BISO": "Keith Hutch",
+        "Business Unit": "VBIT",
+    },
+    "VGS-T - Tony/Jeff": {
+        "BISO": "Jeffrey Halt",
+        "Business Unit": "VCIT",
+    },
+    "VGS-T - Tony/Cathy": {
+        "BISO": "Cathleen Dryer",
+        # no Business Unit condition provided
+    },
 }
 
-function RailContent({ expanded }) {
-  return (
-    <List sx={{ py: 0.5 }}>
-      {ITEMS.map((it) => (
-        <ListItemButton
-          key={it.to}
-          component={NavLink}
-          to={it.to}
-          sx={{
-            px: 1,
-            gap: expanded ? 1 : 0,
-            justifyContent: expanded ? 'flex-start' : 'center',
-          }}
-        >
-          <ListItemIcon sx={{ minWidth: 0 }}>{it.icon}</ListItemIcon>
-          {expanded && <ListItemText primary={it.text} />}
-        </ListItemButton>
-      ))}
-    </List>
-  );
-}
+# --- Helper functions ---------------------------------------------------------
+
+def norm(s):
+    """Normalize strings for case/whitespace-insensitive matching."""
+    if pd.isna(s):
+        return s
+    return str(s).strip()
+
+def coalesce_business_unit_column(df):
+    """
+    Handle both 'Business Unit' and 'BusinessUnit' variants by creating a unified
+    'BusinessUnit' column if needed.
+    """
+    cols = {c.lower().strip(): c for c in df.columns}
+    bu = None
+    if "business unit" in cols:
+        bu = cols["business unit"]
+    elif "businessunit" in cols:
+        bu = cols["businessunit"]
+
+    if bu is not None and "BusinessUnit" not in df.columns:
+        df = df.copy()
+        df["BusinessUnit"] = df[bu]
+    return df
+
+def select_columns_forgiving(df, wanted):
+    """
+    Keep only wanted columns, forgiving small header differences like
+    'Business Unit' vs 'BusinessUnit'.
+    """
+    # Map lowercase stripped -> original
+    lower_map = {c.lower().strip(): c for c in df.columns}
+    selected = []
+    for col in wanted:
+        key = col.lower().strip()
+        if key in lower_map:
+            selected.append(lower_map[key])
+        else:
+            # Special-case 'BusinessUnit' to accept 'Business Unit'
+            if key == "businessunit" and "business unit" in lower_map:
+                selected.append(lower_map["business unit"])
+            else:
+                # If a column is truly missing, create it empty so the CSV schema is stable
+                df = df.copy()
+                df[col] = pd.NA
+                selected.append(col)
+    return df[selected]
+
+def apply_filters(df, filters):
+    """
+    Apply equality filters like {"BISO": "Name", "Business Unit": "VBG"}.
+    Be tolerant of 'Business Unit' vs 'BusinessUnit'.
+    """
+    if not filters:
+        return df
+
+    df = coalesce_business_unit_column(df)
+    # Build a working copy of columns with normalized keys for robust lookup
+    col_map = {c.lower().strip(): c for c in df.columns}
+
+    mask = pd.Series([True] * len(df))
+    for raw_key, expected_val in filters.items():
+        k = raw_key.lower().strip()
+        # Accept BISO, Business Unit, BusinessUnit, etc.
+        if k == "business unit":
+            # Coalesced to BusinessUnit already if present
+            lookup_key = "businessunit"
+        else:
+            lookup_key = k
+
+        if lookup_key not in col_map:
+            # Column missing: nothing can match
+            return df.iloc[0:0].copy()
+
+        col = col_map[lookup_key]
+        # Normalize both sides (string compare) but preserve NaN handling
+        mask = mask & (df[col].apply(norm) == norm(expected_val))
+    return df[mask]
+
+# --- Main ETL -----------------------------------------------------------------
+
+def main():
+    path = Path(INPUT_XLSX)
+    if not path.exists():
+        raise FileNotFoundError(f"Cannot find {INPUT_XLSX} in {Path.cwd()}")
+
+    # Read only the target sheets if present
+    xls = pd.ExcelFile(path)
+    available = set(xls.sheet_names)
+
+    frames = []
+    for sheet, filters in SHEET_FILTERS.items():
+        if sheet not in available:
+            print(f"[WARN] Sheet not found, skipping: {sheet}")
+            continue
+        df = pd.read_excel(path, sheet_name=sheet, dtype=str)  # read as strings to avoid type surprises
+        if df.empty:
+            print(f"[WARN] Sheet is empty, skipping: {sheet}")
+            continue
+
+        # Filter rows by the requested conditions
+        filtered = apply_filters(df, filters)
+
+        if filtered.empty:
+            print(f"[INFO] No matching rows after filters for sheet: {sheet}")
+            continue
+
+        # Ensure we have a unified BusinessUnit column available before selecting
+        filtered = coalesce_business_unit_column(filtered)
+        # Keep only the requested columns; create missing ones as empty so schema is stable
+        trimmed = select_columns_forgiving(filtered, COLUMNS_TO_KEEP)
+
+        # (Optional) keep lineage
+        trimmed = trimmed.copy()
+        trimmed["SourceSheet"] = sheet
+
+        frames.append(trimmed)
+
+    if not frames:
+        print("[INFO] No data matched across all sheets; no CSV written.")
+        return
+
+    master = pd.concat(frames, ignore_index=True)
+    master.to_csv(OUTPUT_CSV, index=False)
+    print(f"[OK] Wrote {OUTPUT_CSV} with {len(master)} rows from {len(frames)} sheets.")
+
+if __name__ == "__main__":
+    main()

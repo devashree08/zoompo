@@ -1,395 +1,251 @@
+// src/features/attributeMapping/pages/AttributeMappingPage.js
 import * as React from 'react';
-import {
-  Paper, Table, TableHead, TableBody, TableRow, TableCell,
-  TableContainer, Select, MenuItem, Chip, CircularProgress, Tooltip,
-  IconButton, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button
-} from '@mui/material';
-import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
-import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
-import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
-import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
-import { alpha } from '@mui/material/styles';
+import { Box, Typography, Stack, Button } from '@mui/material';
 
-import { saveSelection } from '../../api/selectionApi';
-import { saveCustomAttribute } from '../../api/customApi'; // expects { action, orgId, csf2SubcategoryId, maturityLevel, attributeNum, attrDefinition, attestation }
-import useToast from '../../../../ui/feedback/useToast';
+import AttributeFilterBar from '../components/molecules/AttributeFilterBar';
+import TwoPane from '../../../ui/layout/TwoPane';
+import BusyOverlay from '../../../ui/feedback/BusyOverlay';
 
-const STATUS_OPTIONS = ['Keep', 'Remove'];
-const ATTEST_OPTIONS = ['Meet', 'Partial Meet', 'Does Not Meet'];
+import CsfTree from '../components/organisms/CsfTree';
+import RightHeaderComposite from '../components/organisms/RightHeaderComposite';
+import OrgTabs from '../components/molecules/OrgTabs';
+import AttributeGroupTable, { rowKey as tableRowKey } from '../components/organisms/AttributeGroupTable';
+import AddCustomAttributePanel from '../components/molecules/AddCustomAttributePanel';
 
-const deepChip = (theme, v) => {
-  switch (v) {
-    case 'Meet':
-      return { bgcolor: theme.palette.success.main, color: theme.palette.common.white };
-    case 'Partial Meet':
-      return { bgcolor: theme.palette.warning.main, color: theme.palette.common.black };
-    case 'Does Not Meet':
-      return { bgcolor: theme.palette.error.main, color: theme.palette.common.white };
-    default:
-      return { bgcolor: theme.palette.grey[300], color: theme.palette.text.primary };
-  }
+import { fetchAttributeFeed } from '../api/attributeApi';
+import { exportRowsAsCsv } from '../../../ui/data/csvExport';
+import { normalizeHeaders, normalizeRows } from '../utils/normalizeFeed';
+
+const initialFilters = {
+  functionIds: [],
+  categoryIds: [],
+  subcatIds: [],
+  ownerNames: [],
+  custodianNames: [],
+  maturity: [],
+  finalOnly: false,
+  search: ''
 };
 
-const lightStatusChip = (theme, v) => {
-  if (v === 'Keep') {
-    return {
-      bgcolor: theme.palette.success.light,
-      color: theme.palette.success.dark,
-      borderColor: alpha(theme.palette.success.main, 0.4),
-    };
-  }
-  if (v === 'Remove') {
-    return {
-      bgcolor: theme.palette.error.light,
-      color: theme.palette.error.dark,
-      borderColor: alpha(theme.palette.error.main, 0.4),
-    };
-  }
-  return { bgcolor: theme.palette.grey[200], color: theme.palette.text.primary, borderColor: theme.palette.grey[300] };
-};
+const keyOf = (r) => `${r.orgID}|${r.csF2SubcategoryID}|${r.maturityLevel}|${r.customAttributeNum ?? r.attributeNum ?? '0'}`;
 
-// IMPORTANT: include customAttributeNum as a fallback to keep keys unique for custom rows
-export const rowKey = (r) =>
-  `${r.orgID}|${r.csF2SubcategoryID}|${r.maturityLevel}|${r.customAttributeNum ?? r.attributeNum ?? '0'}`;
+export default function AttributeMappingPage() {
+  const [filters, setFilters] = React.useState(initialFilters);
+  const [headers, setHeaders] = React.useState([]);
+  const [rows, setRows] = React.useState([]);
 
-export default function AttributeGroupTable({
-  rows = [],
-  onPatchRow,             // (key, patch) => void
-  onDeleteRow,            // (key) => void    <-- used for custom delete
-  maxHeight = 'calc(100vh - 420px)',
-}) {
-  const { success, error } = useToast();
+  const [selectedSubcatID, setSelectedSubcatID] = React.useState(null);
+  const [activeOrgID, setActiveOrgID] = React.useState(null);
 
-  const [localRows, setLocalRows] = React.useState(rows);
-  React.useEffect(() => setLocalRows(rows), [rows]);
+  const [initialLoading, setInitialLoading] = React.useState(true);
+  const [loadingHeaders, setLoadingHeaders] = React.useState(false);
+  const [loadingRows, setLoadingRows] = React.useState(false);
 
-  // per-row save state (baseline status/attestation)
-  const [actionState, setActionState] = React.useState(new Map());
-  const setStateFor = (k, v) => setActionState(prev => new Map(prev).set(k, v));
+  const mode = selectedSubcatID ? 'detail' : 'browse';
 
-  const patchLocal = React.useCallback((key, patch) => {
-    setLocalRows(prev => prev.map(r => (rowKey(r) === key ? { ...r, ...patch } : r)));
-  }, []);
-
-  const optimisticPatch = React.useCallback((r, patch) => {
-    const k = rowKey(r);
-    if (onPatchRow) onPatchRow(k, patch);
-    else patchLocal(k, patch);
-  }, [onPatchRow, patchLocal]);
-
-  // baseline save (status/attestation)
-  const handleSave = async (r, nextPatch) => {
-    const k = rowKey(r);
-    optimisticPatch(r, nextPatch);
-    setStateFor(k, 'saving');
-
+  const loadHeaders = React.useCallback(async () => {
+    setLoadingHeaders(true);
     try {
-      await saveSelection({
-        orgID: r.orgID,
-        csF2SubcategoryID: r.csF2SubcategoryID,
-        csF1SubcategoryID: r.csF1SubcategoryID,
-        maturityLevel: r.maturityLevel,
-        attributeNum: r.attributeNum,
-        selectionStatus: nextPatch.selectionStatus ?? r.selectionStatus ?? null,
-        selectionAttestation: nextPatch.selectionAttestation ?? r.selectionAttestation ?? null,
+      const resp = await fetchAttributeFeed({
+        functionIds:  filters.functionIds,
+        categoryIds:  filters.categoryIds,
+        subcatIds:    filters.subcatIds,
+        ownerNames:   filters.ownerNames,
+        custodianNames: filters.custodianNames,
+        maturity:     filters.maturity,
+        finalOnly:    filters.finalOnly,
+        search:       filters.search
       });
-      setStateFor(k, 'success');
-      success('Saved');
-    } catch {
-      if (onPatchRow) onPatchRow(k, r); else patchLocal(k, r);
-      setStateFor(k, 'error');
-      error('Save failed. Please retry.');
+      setHeaders(normalizeHeaders(resp.headers || []));
+    } finally {
+      setLoadingHeaders(false);
+      if (initialLoading) setInitialLoading(false);
     }
-  };
+  }, [filters, initialLoading]);
 
-  // ---------- sorting ----------
-  // Baselines: by csf1 -> ML(3 then 4) -> attributeNum
-  // Customs (no csf1): after all baselines, ML(3 then 4) -> customAttributeNum
-  const sortedRows = React.useMemo(() => {
-    const isCustom = (x) => !!(x.isCustom || x.customAttributeDefinition);
-    const base = [];
-    const cust = [];
-    for (const r of localRows) (isCustom(r) ? cust : base).push(r);
+  const loadRowsForSubcat = React.useCallback(async (subcatID) => {
+    if (!subcatID) { setRows([]); return; }
+    setLoadingRows(true);
+    try {
+      const resp = await fetchAttributeFeed({
+        functionIds:  filters.functionIds,
+        categoryIds:  filters.categoryIds,
+        subcatIds:    [subcatID],
+        ownerNames:   filters.ownerNames,
+        custodianNames: filters.custodianNames,
+        maturity:     filters.maturity,
+        finalOnly:    false,              // IMPORTANT: we fetch all; finalOnly handled in UI
+        search:       filters.search
+      });
+      setRows(normalizeRows(resp.rows || []));
+    } finally {
+      setLoadingRows(false);
+    }
+  }, [filters]);
 
-    const pad = (n, w = 6) => String(n ?? 0).padStart(w, '0');
-    const mlRank = (ml) => (Number(ml) === 4 ? 2 : 1); // 3 => 1, 4 => 2 (so 3 before 4)
+  React.useEffect(() => { loadHeaders(); }, [
+    filters.functionIds, filters.categoryIds, filters.subcatIds,
+    filters.ownerNames, filters.custodianNames, filters.maturity,
+    filters.finalOnly, filters.search, loadHeaders
+  ]);
 
-    base.sort((a, b) => {
-      const aK = `${pad(a.csF1SubcategoryID)}|${mlRank(a.maturityLevel)}|${pad(a.attributeNum, 4)}`;
-      const bK = `${pad(b.csF1SubcategoryID)}|${mlRank(b.maturityLevel)}|${pad(b.attributeNum, 4)}`;
-      return aK.localeCompare(bK);
-    });
+  React.useEffect(() => { loadRowsForSubcat(selectedSubcatID); }, [selectedSubcatID, loadRowsForSubcat]);
 
-    cust.sort((a, b) => {
-      const aK = `${mlRank(a.maturityLevel)}|${pad(a.customAttributeNum, 4)}`;
-      const bK = `${mlRank(b.maturityLevel)}|${pad(b.customAttributeNum, 4)}`;
-      return aK.localeCompare(bK);
-    });
-
-    return [...base, ...cust];
-  }, [localRows]);
-
-  return (
-    <Paper variant="outlined" sx={{ mt: 2 }}>
-      <TableContainer sx={{ maxHeight, overflow: 'auto', pr: 1.5, pb: 0.5 }}>
-        <Table stickyHeader size="small" sx={{ tableLayout: 'auto' }}>
-          <colgroup>
-            <col style={{ width: '4%' }} />
-            <col style={{ width: '42%' }} />
-            <col style={{ width: '6%' }} />
-            <col style={{ width: '10%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '10%' }} />
-            <col style={{ width: '4%' }} />
-          </colgroup>
-
-          <TableHead>
-            <TableRow>
-              <TableCell>#</TableCell>
-              <TableCell>Attribute Definition</TableCell>
-              <TableCell align="center">ML</TableCell>
-              <TableCell>NIST 1.1</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell>2025 Attestation</TableCell>
-              <TableCell align="center">2024 Assessor Score</TableCell>
-              <TableCell align="center">Actions</TableCell>
-            </TableRow>
-          </TableHead>
-
-          <TableBody>
-            {sortedRows.map((r, i) => (
-              <Row
-                key={rowKey(r)}
-                index={i + 1}
-                row={r}
-                state={actionState.get(rowKey(r))}
-                onSave={handleSave}           // baseline
-                onPatchRow={onPatchRow}       // custom patch
-                onDeleteRow={onDeleteRow}     // custom delete
-              />
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
-    </Paper>
-  );
-}
-
-function Row({ index, row, state, onSave, onPatchRow, onDeleteRow }) {
-  const { success, error } = useToast();
-
-  const isCustom = row.isCustom || !!row.customAttributeDefinition;
-
-  // ML tint (ML3 primary-tint; ML4 warning-tint)
-  const mlTint = (theme) => {
-    const isML4 = Number(row.maturityLevel) === 4;
-    const base = isML4 ? alpha(theme.palette.warning.main, 0.06) : alpha(theme.palette.primary.main, 0.04);
-    const bar  = isML4 ? theme.palette.warning.main : theme.palette.primary.main;
-    return { backgroundColor: base, boxShadow: `inset 4px 0 0 0 ${alpha(bar, 0.9)}` };
-  };
-
-  // custom edit dialog
-  const [openEdit, setOpenEdit] = React.useState(false);
-  const [defVal, setDefVal] = React.useState(row.customAttributeDefinition || '');
-  const [attVal, setAttVal] = React.useState(row.customAttributeAttestation || '');
-  const [savingCustom, setSavingCustom] = React.useState(false);
+  const orgsForTabs = React.useMemo(() => {
+    if (!selectedSubcatID) return [];
+    const m = new Map();
+    headers
+      .filter(h => h.csF2SubcategoryID === selectedSubcatID)
+      .forEach(h => m.set(h.orgID, { orgID: h.orgID, orgName: h.orgName }));
+    return Array.from(m.values()).sort((a,b) => a.orgID - b.orgID);
+  }, [headers, selectedSubcatID]);
 
   React.useEffect(() => {
-    if (openEdit) {
-      setDefVal(row.customAttributeDefinition || '');
-      setAttVal(row.customAttributeAttestation || '');
+    if (!orgsForTabs.length) { setActiveOrgID(null); return; }
+    if (!activeOrgID || !orgsForTabs.some(o => o.orgID === activeOrgID)) {
+      setActiveOrgID(orgsForTabs[0].orgID);
     }
-  }, [openEdit, row.customAttributeDefinition, row.customAttributeAttestation]);
+  }, [orgsForTabs, activeOrgID]);
 
-  const handleCustomSave = async () => {
-    setSavingCustom(true);
-    try {
-      await saveCustomAttribute({
-        action: 'update',
-        orgId: row.orgID,
-        csf2SubcategoryId: row.csF2SubcategoryID,
-        maturityLevel: row.maturityLevel,
-        attributeNum: row.customAttributeNum,    // the custom number
-        attrDefinition: defVal,
-        attestation: attVal || null,
-      });
-      onPatchRow?.(rowKey(row), {
-        customAttributeDefinition: defVal,
-        customAttributeAttestation: attVal || null,
-      });
-      success('Custom attribute updated');
-      setOpenEdit(false);
-    } catch {
-      error('Update failed');
-    } finally {
-      setSavingCustom(false);
-    }
-  };
+  const selectedHeader = React.useMemo(() => {
+    if (!selectedSubcatID) return null;
+    return (
+      headers.find(h => h.csF2SubcategoryID === selectedSubcatID && h.orgID === activeOrgID) ||
+      headers.find(h => h.csF2SubcategoryID === selectedSubcatID) || null
+    );
+  }, [headers, selectedSubcatID, activeOrgID]);
 
-  const handleCustomDelete = async () => {
-    try {
-      await saveCustomAttribute({
-        action: 'delete',
-        orgId: row.orgID,
-        csf2SubcategoryId: row.csF2SubcategoryID,
-        maturityLevel: row.maturityLevel,
-        attributeNum: row.customAttributeNum,
-      });
-      onDeleteRow?.(rowKey(row));
-      success('Custom attribute deleted');
-    } catch {
-      error('Delete failed');
-    }
-  };
+  const rowsForSelected = React.useMemo(
+    () => rows.filter(r => r.csF2SubcategoryID === selectedSubcatID),
+    [rows, selectedSubcatID]
+  );
 
-  const attributeText = row.customAttributeDefinition || row.attributeDefinition || '';
+  const rowsForActiveOrg = React.useMemo(
+    () => rowsForSelected.filter(r => r.orgID === activeOrgID),
+    [rowsForSelected, activeOrgID]
+  );
+
+  // FINAL VIEW: hide baseline "Remove" rows; customs (no Status) are kept
+  const displayRows = React.useMemo(() => {
+    if (!filters.finalOnly) return rowsForActiveOrg;
+    return rowsForActiveOrg.filter(r => (r.selectionStatus || '') !== 'Remove');
+  }, [rowsForActiveOrg, filters.finalOnly]);
+
+  // -------- optimistic patch / add / delete from children -------
+  const onPatchRow = React.useCallback((k, patch) => {
+    setRows(prev => prev.map(r => (keyOf(r) === k ? { ...r, ...patch } : r)));
+  }, []);
+
+  const onAddCustomRow = React.useCallback((newRow) => {
+    // Ensure the shape the table expects
+    const shaped = {
+      ...newRow,
+      isCustom: true,
+      attributeDefinition: undefined,
+      customAttributeDefinition: newRow.customAttributeDefinition ?? newRow.attrDefinition ?? newRow.attributeDefinition,
+      customAttributeAttestation: newRow.customAttributeAttestation ?? newRow.attestation ?? null,
+      attributeNum: null,
+      // customAttributeNum must exist; caller (panel) should set it
+    };
+    setRows(prev => [...prev, shaped]);
+  }, []);
+
+  const onDeleteRow = React.useCallback((k) => {
+    setRows(prev => prev.filter(r => keyOf(r) !== k));
+  }, []);
+
+  const handleSelectSubcat = (id) => setSelectedSubcatID(id);
+  const handleBack = () => setSelectedSubcatID(null);
+  const handleExport = () => rows?.length && exportRowsAsCsv(rows, 'csf-attribute-rows.csv');
+
+  const ownerCsv = React.useMemo(() => {
+    const h = headers.find(x => x.csF2SubcategoryID === selectedSubcatID && x.orgID === activeOrgID);
+    return h?.owner || '';
+  }, [headers, selectedSubcatID, activeOrgID]);
+
+  const custodianCsv = React.useMemo(() => {
+    const h = headers.find(x => x.csF2SubcategoryID === selectedSubcatID && x.orgID === activeOrgID);
+    return h?.custodian || '';
+  }, [headers, selectedSubcatID, activeOrgID]);
 
   return (
-    <>
-      <TableRow hover sx={(t) => ({ verticalAlign: 'top', ...(Number(row.maturityLevel) >= 3 ? mlTint(t) : {}) })}>
-        <TableCell>{index}</TableCell>
+    <Box sx={{ px: { xs: 1, md: 2 }, pb: 3 }}>
+      <AttributeFilterBar value={filters} onChange={setFilters} onExport={handleExport} />
 
-        <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.5, pr: 3 }}>
-          {attributeText}
-        </TableCell>
-
-        <TableCell align="center">
-          {row.maturityLevel}
-          {isCustom && (
-            <Chip
-              label="Custom"
-              size="small"
-              sx={(t) => ({
-                ml: 0.75,
-                height: 20,
-                bgcolor: t.palette.info.light,
-                color: t.palette.info.dark,
-                borderRadius: 10,
-              })}
-            />
-          )}
-        </TableCell>
-
-        {/* NIST 1.1 mapping */}
-        <TableCell>{isCustom ? '—' : (row.csF1SubcategoryName || '—')}</TableCell>
-
-        {/* STATUS */}
-        <TableCell>
-          {isCustom ? (
-            '—'
-          ) : (
-            <Select
-              fullWidth
-              size="small"
-              value={row.selectionStatus || ''}
-              displayEmpty
-              onChange={(e) => {
-                const v = e.target.value || null;
-                const patch = { selectionStatus: v };
-                if (v === 'Remove') patch.selectionAttestation = null; // clear attestation
-                onSave(row, patch);
-              }}
-              renderValue={(v) => (
-                <Chip size="small" label={v || '—'} variant="outlined" sx={(t) => ({ borderWidth: 1, ...lightStatusChip(t, v) })} />
-              )}
-            >
-              <MenuItem value=""><em>—</em></MenuItem>
-              {STATUS_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-            </Select>
-          )}
-        </TableCell>
-
-        {/* 2025 Attestation */}
-        <TableCell>
-          {isCustom ? (
-            row.customAttributeAttestation
-              ? <Chip size="small" label={row.customAttributeAttestation} sx={(t) => ({ ...deepChip(t, row.customAttributeAttestation), fontWeight: 600 })} />
-              : '—'
-          ) : (
-            <Select
-              fullWidth
-              size="small"
-              value={row.selectionAttestation || ''}
-              displayEmpty
-              disabled={row.selectionStatus === 'Remove'}
-              onChange={(e) => onSave(row, { selectionAttestation: e.target.value || null })}
-              renderValue={(v) => (
-                <Chip size="small" label={v || '—'} sx={(t) => ({ ...deepChip(t, v), fontWeight: 600 })} />
-              )}
-            >
-              <MenuItem value=""><em>—</em></MenuItem>
-              {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-            </Select>
-          )}
-        </TableCell>
-
-        {/* 2024 Assessor Score */}
-        <TableCell align="center">
-          {row.assessScore2024
-            ? <Chip size="small" label={row.assessScore2024} sx={(t) => ({ ...deepChip(t, row.assessScore2024), fontWeight: 600 })} />
-            : '—'}
-        </TableCell>
-
-        {/* Actions */}
-        <TableCell align="center">
-          {isCustom ? (
-            <>
-              <Tooltip title="Edit">
-                <IconButton size="small" onClick={() => setOpenEdit(true)}>
-                  <EditOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Delete">
-                <IconButton size="small" onClick={handleCustomDelete}>
-                  <DeleteOutlineOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </>
-          ) : state === 'saving' ? (
-            <CircularProgress size={20} />
-          ) : state === 'success' ? (
-            <Tooltip title="Saved"><CheckCircleRoundedIcon color="success" /></Tooltip>
-          ) : state === 'error' ? (
-            <Tooltip title="Save failed"><CancelRoundedIcon color="error" /></Tooltip>
-          ) : null}
-        </TableCell>
-      </TableRow>
-
-      {/* Edit dialog for custom */}
-      <Dialog open={openEdit} onClose={() => setOpenEdit(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Edit custom attribute</DialogTitle>
-        <DialogContent sx={{ pt: 1.5 }}>
-          <TextField
-            label="Attribute definition"
-            value={defVal}
-            onChange={(e) => setDefVal(e.target.value)}
-            fullWidth
-            multiline
-            minRows={3}
-            sx={{ mb: 2 }}
-          />
-          <Select
-            fullWidth
-            size="small"
-            value={attVal || ''}
-            displayEmpty
-            onChange={(e) => setAttVal(e.target.value || '')}
-            renderValue={(v) => (
-              <Chip size="small" label={v || '2025 Attestation — optional'} sx={(t) => (v ? { ...deepChip(t, v) } : { color: t.palette.text.secondary })} />
+      <Box sx={{ mt: 3 }}>
+        {mode === 'browse' ? (
+          <>
+            <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+              CSF 2.0 Structure
+            </Typography>
+            <CsfTree headers={headers} onSelectSubcat={handleSelectSubcat} selectedSubcatID={null} />
+            {loadingHeaders && (
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display:'block' }}>
+                Loading…
+              </Typography>
             )}
-          >
-            <MenuItem value=""><em>—</em></MenuItem>
-            {['Meet', 'Partial Meet', 'Does Not Meet'].map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-          </Select>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setOpenEdit(false)}>Cancel</Button>
-          <Button onClick={handleCustomSave} disabled={savingCustom} variant="contained">
-            {savingCustom ? 'Saving…' : 'Save'}
-          </Button>
-        </DialogActions>
-      </Dialog>
-    </>
+          </>
+        ) : (
+          <TwoPane
+            left={
+              <>
+                <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+                  <Button size="small" onClick={handleBack}>← Back</Button>
+                  <Typography variant="subtitle2" color="text.secondary">CSF 2.0 Structure</Typography>
+                </Stack>
+                <CsfTree
+                  headers={headers}
+                  onSelectSubcat={handleSelectSubcat}
+                  selectedSubcatID={selectedSubcatID}
+                  maxHeight="calc(100vh - 210px)"
+                />
+              </>
+            }
+            right={
+              !selectedHeader ? (
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  {loadingRows ? 'Loading…' : 'Select a subcategory from the left to view details.'}
+                </Typography>
+              ) : (
+                <>
+                  <RightHeaderComposite
+                    header={selectedHeader}
+                    associatedRows={rowsForSelected}
+                    ownerCsv={ownerCsv}
+                    custodianCsv={custodianCsv}
+                  />
+
+                  <OrgTabs
+                    orgs={orgsForTabs}
+                    activeOrgID={activeOrgID}
+                    editableOrgID={activeOrgID}
+                    onChange={setActiveOrgID}
+                  />
+
+                  <AttributeGroupTable
+                    rows={displayRows}
+                    onPatchRow={onPatchRow}
+                    onDeleteRow={onDeleteRow}
+                  />
+
+                  <AddCustomAttributePanel
+                    orgID={activeOrgID}
+                    orgName={orgsForTabs.find(x => x.orgID === activeOrgID)?.orgName}
+                    csf2SubcategoryID={selectedSubcatID}
+                    subcatName={selectedHeader.csF2SubcategoryName}
+                    existingRows={rowsForActiveOrg}   // UNFILTERED so panel shows what you just added
+                    onAdded={onAddCustomRow}
+                    onPatched={onPatchRow}
+                    onDeleted={onDeleteRow}
+                  />
+                </>
+              )
+            }
+          />
+        )}
+      </Box>
+
+      <BusyOverlay open={initialLoading} />
+    </Box>
   );
 }

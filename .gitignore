@@ -1,9 +1,40 @@
- onChange={(e) => {
-    const v = e.target.value || null;
-    const patch = v === 'Remove'
-      ? { selectionStatus: v, selectionAttestation: null } // <-- clear attestation
-      : { selectionStatus: v };
-    onSave(row, patch);
-  }}
+import api from '../../../lib/axiosClient';
 
+/**
+ * POST /api/v1/CSFAttributeMap/csf/custom/save
+ * Body:
+ * {
+ *   action: 'add' | 'update' | 'delete',
+ *   orgId,
+ *   csf2SubcategoryId,
+ *   maturityLevel,
+ *   attributeNum,           // optional for add (backend may assign)
+ *   attributeDefinition,    // string
+ *   attestation             // 'Meet' | 'Partial Meet' | 'Does Not Meet' | null
+ * }
+ * Returns: { ok: true, attributeNum?: number } or the updated row, depending on your API
+ */
+export async function saveCustomAttribute({
+  action,
+  orgId,
+  csf2SubcategoryId,
+  maturityLevel,
+  attributeNum,
+  attributeDefinition,
+  attestation,
+}) {
+  const payload = {
+    action,
+    orgId,
+    csf2SubcategoryId,
+    maturityLevel,
+    attributeNum: attributeNum ?? null,
+    attributeDefinition,
+    attestation: attestation ?? null,
+  };
+
+  // Adjust the path if your controller is different
+  const { data } = await api.post('/api/v1/CSFAttributeMap/csf/custom/save', payload);
+  return data;
+}
 

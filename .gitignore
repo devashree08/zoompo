@@ -1,34 +1,25 @@
 import * as React from 'react';
-import { Box, Container, Typography } from '@mui/material';
-import logoname from '../../assets/images/logoname.svg';
 
-export default function Footer() {
-  const year = new Date().getFullYear();
-  return (
-    <Box
-      component="footer"
-      sx={{
-        backgroundColor: '#001C4D',
-        color: 'common.white',
-        borderTop: '1px solid rgba(255,255,255,0.08)',
-      }}
-    >
-      <Container
-        maxWidth={false}
-        sx={{
-          py: 1.25,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 2,
-          minHeight: 48,
-        }}
-      >
-        <Box component="img" src={logoname} alt="brand" sx={{ height: 20 }} />
-        <Typography variant="body2" sx={{ opacity: 0.9, textAlign: 'right' }}>
-          Proprietary and Confidential. Not for disclosure outside. © {year} COMPANY
-        </Typography>
-      </Container>
-    </Box>
-  );
+const Ctx = React.createContext(null);
+
+export function LayoutUIProvider({ children }) {
+  const [railExpanded, setRailExpanded] = React.useState(false);
+  const [drawerOpen, setDrawerOpen]   = React.useState(false);
+
+  const value = React.useMemo(() => ({
+    railExpanded,
+    drawerOpen,
+    toggleRail: () => setRailExpanded(v => !v),
+    openDrawer:  () => setDrawerOpen(true),
+    closeDrawer: () => setDrawerOpen(false),
+    toggleDrawer: () => setDrawerOpen(v => !v),
+  }), [railExpanded, drawerOpen]);
+
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+export function useLayoutUI() {
+  const v = React.useContext(Ctx);
+  if (!v) throw new Error('useLayoutUI must be used inside LayoutUIProvider');
+  return v;
 }

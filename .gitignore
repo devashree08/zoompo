@@ -1,3 +1,9 @@
+// Attribute Definition cell (inside Row)
+<TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.5, pr: 3 }}>
+  {row.attributeDefinition || row.customAttributeDefinition}
+</TableCell>
+
+---
 import * as React from 'react';
 import {
   Box, Paper, Stack, TextField, Select, MenuItem, Button, Typography, IconButton, Tooltip, Dialog, DialogTitle, DialogContent, DialogActions, Chip

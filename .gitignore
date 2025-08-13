@@ -4,55 +4,76 @@ import { fetchAttributeFeed, fetchAttributeFilterLookups } from '../api/attribut
 import { normalizeRows } from '../utils/normalizeFeed';
 
 const isEmptyFilters = (f = {}) =>
-  !(f.functionIds?.length ||
+  !(
+    f.functionIds?.length ||
     f.categoryIds?.length ||
     f.subcatIds?.length ||
     f.ownerNames?.length ||
     f.custodianNames?.length ||
     f.maturity?.length ||
-    f.finalOnly ||              // treat true as “has filters”
-    (f.search && f.search.trim()));
+    f.finalOnly ||
+    (f.search && f.search.trim())
+  );
+
+const chunk = (arr, n = 30) => {
+  const out = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+};
 
 /**
- * Exports:
- * - No filters -> ALL subcats for ALL orgs (one sheet per org).
- * - With filters -> only filtered rows, sheets only for orgs that have rows.
+ * No filters  -> ALL orgs & ALL subcats (batch by subcatIds).
+ * With filters -> only matching rows; sheets only for orgs that have rows.
  */
-export async function exportAttributesExcel(currentFilters) {
-  const noFilters = isEmptyFilters(currentFilters);
+export async function exportAttributesExcel(filters) {
+  const noFilters = isEmptyFilters(filters);
 
-  // 1) Decide the payload for the feed
-  const payload = noFilters
-    ? {
-        functionIds: [], categoryIds: [], subcatIds: [],
-        ownerNames: [], custodianNames: [], maturity: [],
-        finalOnly: false, search: ''
-      }
-    : {
-        functionIds: currentFilters.functionIds || [],
-        categoryIds: currentFilters.categoryIds || [],
-        subcatIds: currentFilters.subcatIds || [],
-        ownerNames: currentFilters.ownerNames || [],
-        custodianNames: currentFilters.custodianNames || [],
-        maturity: currentFilters.maturity || [],
-        finalOnly: !!currentFilters.finalOnly,
-        search: (currentFilters.search || '').trim()
-      };
+  // Lookups are used for org list and (when needed) subcat IDs for batching
+  const lookups = await fetchAttributeFilterLookups({});
+  const allOrgs =
+    (lookups.orgs || []).map(o => ({ orgID: o.orgID, orgName: o.orgName })) || [];
+  const allSubcats =
+    (lookups.subcategories || []).map(s => s.csF2SubcategoryID).filter(Boolean) || [];
 
-  // 2) Rows (normalized)
-  const feed = await fetchAttributeFeed(payload);
-  const rows = normalizeRows(feed.rows || []);
+  let allRows = [];
 
-  // 3) Sheet list:
-  //    - No filters -> force a sheet for every org we know about
-  //    - Filters    -> let the builder create sheets only for orgs with rows
-  let orgs = undefined;
   if (noFilters) {
-    const lookups = await fetchAttributeFilterLookups({});
-    orgs = (lookups.orgs || []).map(o => ({ orgID: o.orgID, orgName: o.orgName }));
+    // Batch every CSF2 subcategory, accumulate rows
+    const batches = chunk(allSubcats, 40);
+    for (const ids of batches) {
+      const resp = await fetchAttributeFeed({
+        functionIds: [],
+        categoryIds: [],
+        subcatIds: ids,
+        ownerNames: [],
+        custodianNames: [],
+        maturity: [],
+        finalOnly: false,
+        search: '',
+      });
+      const rows = normalizeRows(resp.rows || []);
+      allRows.push(...rows);
+    }
+    // Build with every org sheet, even if some end up empty
+    const wb = await buildAttributeWorkbook({ rows: allRows, orgs: allOrgs });
+    await saveWorkbook(wb, 'csf-attribute-mapping.xlsx');
+    return;
   }
 
-  // 4) Build & download
-  const wb = await buildAttributeWorkbook({ rows, orgs });
+  // With filters -> single call using current filters
+  const resp = await fetchAttributeFeed({
+    functionIds: filters.functionIds || [],
+    categoryIds: filters.categoryIds || [],
+    subcatIds: filters.subcatIds || [],
+    ownerNames: filters.ownerNames || [],
+    custodianNames: filters.custodianNames || [],
+    maturity: filters.maturity || [],
+    finalOnly: !!filters.finalOnly,
+    search: (filters.search || '').trim(),
+  });
+  allRows = normalizeRows(resp.rows || []);
+
+  // Only create sheets for orgs that actually have rows
+  const wb = await buildAttributeWorkbook({ rows: allRows });
   await saveWorkbook(wb, 'csf-attribute-mapping.xlsx');
 }

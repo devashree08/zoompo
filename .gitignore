@@ -1,45 +1,34 @@
 import * as React from 'react';
-import { Box, Tooltip, IconButton, Stack } from '@mui/material';
-import { NavLink } from 'react-router-dom';
-import HomeIcon from '@mui/icons-material/Home';
-import Inventory2Icon from '@mui/icons-material/Inventory2';
-import DashboardIcon from '@mui/icons-material/Dashboard';
+import { Box, Container, Typography } from '@mui/material';
+import logoname from '../../assets/images/logoname.svg';
 
-const DEFAULT_ITEMS = [
-  { label: 'Home',       icon: <HomeIcon        />, to: '/' },
-  { label: 'Readiness',  icon: <Inventory2Icon  />, to: '/readiness' },
-  { label: 'CSF Mapping',icon: <DashboardIcon   />, to: '/attributemapping' },
-];
-
-export default function Sidenav({ items = DEFAULT_ITEMS }) {
+export default function Footer() {
+  const year = new Date().getFullYear();
   return (
     <Box
+      component="footer"
       sx={{
-        height: '100%',
-        display: 'flex',
-        alignItems: 'flex-start',
-        justifyContent: 'center',
-        pt: 1,
+        backgroundColor: '#001C4D',
+        color: 'common.white',
+        borderTop: '1px solid rgba(255,255,255,0.08)',
       }}
     >
-      <Stack spacing={1}>
-        {items.map((it) => (
-          <Tooltip key={it.to} title={it.label} placement="left">
-            <IconButton
-              component={NavLink}
-              to={it.to}
-              size="large"
-              sx={{
-                borderRadius: 2,
-                color: 'text.secondary',
-                '&.active': { bgcolor: 'action.selected', color: 'text.primary' },
-              }}
-            >
-              {it.icon}
-            </IconButton>
-          </Tooltip>
-        ))}
-      </Stack>
+      <Container
+        maxWidth={false}
+        sx={{
+          py: 1.25,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 2,
+          minHeight: 48,
+        }}
+      >
+        <Box component="img" src={logoname} alt="brand" sx={{ height: 20 }} />
+        <Typography variant="body2" sx={{ opacity: 0.9, textAlign: 'right' }}>
+          Proprietary and Confidential. Not for disclosure outside. © {year} COMPANY
+        </Typography>
+      </Container>
     </Box>
   );
 }

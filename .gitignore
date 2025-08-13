@@ -1,11 +1,85 @@
-Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-          <IconButton color="inherit" onClick={toggleRail} sx={{ display: { xs: 'none', md: 'inline-flex' } }} aria-label="Toggle side rail">
-            <MenuIcon />
-          </IconButton>
-          <IconButton color="inherit" onClick={toggleDrawer} sx={{ display: { xs: 'inline-flex', md: 'none' } }} aria-label="Open navigation">
-            <MenuIcon />
-          </IconButton>
-          <IconButton color="inherit" aria-label="Account">
-            <AccountCircleIcon />
-          </IconButton>
+import * as React from 'react';
+import {
+  Box, Drawer, List, ListItemButton, ListItemIcon, ListItemText, IconButton, Divider, Tooltip
+} from '@mui/material';
+import HomeIcon from '@mui/icons-material/Home';
+import Inventory2Icon from '@mui/icons-material/Inventory2';
+import DashboardIcon from '@mui/icons-material/Dashboard';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import { NavLink } from 'react-router-dom';
+import { useLayoutUI } from '../LayoutUIContext';
+
+const ITEMS = [
+  { text: 'Home',        icon: <HomeIcon />,       to: '/' },
+  { text: 'Readiness',   icon: <Inventory2Icon />, to: '/readiness' },
+  { text: 'CSF Mapping', icon: <DashboardIcon />,  to: '/attributeMapping' },
+];
+
+export default function Sidenav() {
+  const { railExpanded, toggleRail, drawerOpen, closeDrawer } = useLayoutUI();
+  const railWidth = railExpanded ? 240 : 80;
+
+  // Drawer for phones
+  return (
+    <>
+      {/* xs/sm overlay drawer */}
+      <Drawer
+        anchor="right"
+        open={drawerOpen}
+        onClose={closeDrawer}
+        sx={{ display: { xs: 'block', md: 'none' } }}
+      >
+        <Box sx={{ width: 260, pt: 1 }}>
+          <RailContent expanded />
         </Box>
+      </Drawer>
+
+      {/* sticky rail for md+ */}
+      <Box
+        sx={{
+          display: { xs: 'none', md: 'block' },
+          position: 'sticky',
+          top: 64,
+          height: 'calc(100vh - 64px)',
+          width: railWidth,
+          borderLeft: 1,
+          borderColor: 'divider',
+          bgcolor: 'background.paper',
+        }}
+      >
+        <Box sx={{ display: 'flex', justifyContent: railExpanded ? 'flex-end' : 'center', p: 0.5 }}>
+          <Tooltip title={railExpanded ? 'Collapse' : 'Expand'}>
+            <IconButton size="small" onClick={toggleRail}>
+              {railExpanded ? <ChevronRightIcon /> : <ChevronLeftIcon />}
+            </IconButton>
+          </Tooltip>
+        </Box>
+        <Divider />
+        <RailContent expanded={railExpanded} />
+      </Box>
+    </>
+  );
+}
+
+function RailContent({ expanded }) {
+  return (
+    <List sx={{ py: 0.5 }}>
+      {ITEMS.map((it) => (
+        <ListItemButton
+          key={it.to}
+          component={NavLink}
+          to={it.to}
+          sx={{
+            px: 1,
+            gap: expanded ? 1 : 0,
+            justifyContent: expanded ? 'flex-start' : 'center',
+          }}
+        >
+          <ListItemIcon sx={{ minWidth: 0 }}>{it.icon}</ListItemIcon>
+          {expanded && <ListItemText primary={it.text} />}
+        </ListItemButton>
+      ))}
+    </List>
+  );
+}

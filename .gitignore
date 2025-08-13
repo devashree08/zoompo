@@ -1,41 +1,122 @@
-// Generic Excel helpers for the whole app
-import ExcelJS from 'exceljs';
+// Build the Excel workbook for Attribute Mapping
+import { createWorkbook, autoFitColumns } from '../../../ui/data/xlsx/excel';
 
-/** Create a workbook with sane defaults */
-export function createWorkbook() {
-  const wb = new ExcelJS.Workbook();
-  wb.creator = 'Your Portal';
-  wb.created = new Date();
-  return wb;
+// deep-chip coloring helpers (match your table chips)
+function colorAttestation(cell, v) {
+  if (v === 'Meet')          { cell.fill = solid('FF12B76A'); cell.font = whiteBold(); }
+  if (v === 'Partial Meet')  { cell.fill = solid('FFF79009'); cell.font = blackBold(); }
+  if (v === 'Does Not Meet') { cell.fill = solid('FFD92D20'); cell.font = whiteBold(); }
 }
+const solid = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{ argb } });
+const whiteBold = () => ({ color:{ argb:'FFFFFFFF' }, bold:true });
+const blackBold = () => ({ color:{ argb:'FF000000' }, bold:true });
 
-/** Auto-fit columns by header/values */
-export function autoFitColumns(ws) {
-  ws.columns?.forEach((col) => {
-    let max = (col.header?.toString()?.length || 10) + 2;
-    col.eachCell?.({ includeEmpty: true }, (cell) => {
-      const v = (cell.value?.richText
-        ? cell.value.richText.map(t => t.text).join('')
-        : (cell.value?.text ?? cell.value)) ?? '';
-      max = Math.max(max, String(v).length + 2);
+export async function buildAttributeWorkbook({ headers = [], rows = [], filters = {} }) {
+  const wb = createWorkbook();
+
+  /* ===== Sheet 1: Summary (one row per org × subcat header) ===== */
+  const ws1 = wb.addWorksheet('Summary');
+  ws1.columns = [
+    { header: 'Org', width: 12, key: 'orgName' },
+    { header: 'Function', width: 18, key: 'functionName' },
+    { header: 'Function Language', width: 40, key: 'functionLanguage' },
+    { header: 'Category', width: 22, key: 'categoryName' },
+    { header: 'Category Language', width: 40, key: 'categoryLanguage' },
+    { header: 'CSF 2.0 Subcategory', width: 18, key: 'csF2SubcategoryName' },
+    { header: 'Subcategory Language', width: 60, key: 'csF2SubcategoryLanguage' },
+    { header: 'Change Summary', width: 50, key: 'changeSummary' },
+    { header: 'Implementation Examples', width: 80, key: 'implementationExamples' },
+    { header: 'Owner(s)', width: 28, key: 'owner' },
+    { header: 'Custodian(s)', width: 28, key: 'custodian' },
+    { header: 'Kept', width: 8, key: 'keptCount' },
+    { header: 'Removed', width: 10, key: 'removedCount' },
+    { header: 'Custom', width: 10, key: 'customCount' },
+  ];
+  headers.forEach(h => ws1.addRow(h));
+  autoFitColumns(ws1);
+
+  /* ===== Sheet 2: Attributes (baseline + custom) ===== */
+  const ws2 = wb.addWorksheet('Attributes');
+
+  const columns = [
+    { header: 'Org', key: 'orgName', width: 10 },
+    { header: 'Function', key: 'functionName', width: 18 },
+    { header: 'Category', key: 'categoryName', width: 18 },
+    { header: 'CSF 2.0 Subcategory', key: 'csF2SubcategoryName', width: 16 },
+    { header: 'NIST 1.1', key: 'csF1SubcategoryName', width: 14 },
+
+    // explicit type
+    { header: 'Type', key: 'type', width: 10 },
+
+    // ML shows "3 (Custom)" etc for custom
+    { header: 'ML', key: 'ml', width: 12 },
+
+    { header: 'Attr #', key: 'attributeNum', width: 8 },
+    { header: 'Attribute Definition', key: 'attributeDefinition', width: 80 },
+
+    { header: 'Status', key: 'selectionStatus', width: 14 },
+    { header: '2025 Attestation', key: 'attestation', width: 22 },
+    { header: '2024 Assessor Score', key: 'assessScore2024', width: 22 },
+
+    { header: 'Owner(s)', key: 'owner', width: 28 },
+    { header: 'Custodian(s)', key: 'custodian', width: 28 },
+  ];
+  ws2.columns = columns;
+
+  rows.forEach(r => {
+    const isCustom = !!r.customAttributeDefinition;
+    const att = r.selectionAttestation || r.customAttributeAttestation || '';
+    const def = r.attributeDefinition || r.customAttributeDefinition || '';
+
+    const row = ws2.addRow({
+      orgName: r.orgName,
+      functionName: r.functionName,
+      categoryName: r.categoryName,
+      csF2SubcategoryName: r.csF2SubcategoryName,
+      csF1SubcategoryName: r.csF1SubcategoryName || '',
+      type: isCustom ? 'Custom' : 'Baseline',
+      ml: isCustom ? `${r.maturityLevel} (Custom)` : String(r.maturityLevel),
+      attributeNum: r.attributeNum || r.customAttributeNum || '',
+      attributeDefinition: def,
+      selectionStatus: isCustom ? '' : (r.selectionStatus || ''),
+      attestation: att,
+      assessScore2024: r.assessScore2024 || '',
+      owner: r.owner || '',
+      custodian: r.custodian || '',
     });
-    col.width = Math.min(Math.max(max, 10), 80);
-  });
-}
 
-/** Save a workbook to the browser as a file */
-export async function saveWorkbook(wb, filename = 'export.xlsx') {
-  const buf = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buf], {
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    // Style the ML column for custom rows
+    const mlCell = row.getCell('ml');
+    if (isCustom) {
+      mlCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3F2FD' } };
+      mlCell.font = { bold: true };
+      mlCell.alignment = { horizontal: 'center' };
+    } else {
+      mlCell.alignment = { horizontal: 'center' };
+    }
+
+    // Status color (baseline only)
+    const statusCell = row.getCell('selectionStatus');
+    const v = statusCell.value;
+    if (v === 'Keep')   { statusCell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFECFDF3' } }; statusCell.font = { color:{ argb:'FF027A48' }, bold:true }; }
+    if (v === 'Remove') { statusCell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFEF3F2' } }; statusCell.font = { color:{ argb:'FF912018' }, bold:true }; }
+
+    // Attestation deep colors
+    colorAttestation(row.getCell('attestation'), att);
+
+    // Wrap long definitions
+    row.getCell('attributeDefinition').alignment = { wrapText: true };
   });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.style.display = 'none';
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  URL.revokeObjectURL(url);
-  a.remove();
+
+  autoFitColumns(ws2);
+
+  /* ===== Sheet 3: Filters snapshot (optional) ===== */
+  const ws3 = wb.addWorksheet('Filters');
+  ws3.addRow(['Filter', 'Value']).font = { bold: true };
+  Object.entries(filters || {}).forEach(([k, v]) => {
+    ws3.addRow([k, Array.isArray(v) ? v.join(', ') : String(v ?? '')]);
+  });
+  autoFitColumns(ws3);
+
+  return wb;
 }

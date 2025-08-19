@@ -1,12 +1,9 @@
-import api from '../../../lib/axiosClient';
+const { data: user, isError } = useQuery({
+    queryKey: ['userInfo'],
+    queryFn: fetchUserInfo,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
 
-/** Fetches user name injected by your gateway/header service. */
-export async function fetchUserInfo() {
-  const { data } = await api.get('/GetUserInfo');
-
-  // Normalize case variants just in case the API changes its casing:
-  const first = data?.firstName ?? data?.FirstName ?? data?.givenName ?? 'NULL';
-  const last  = data?.lastName  ?? data?.LastName  ?? data?.surname  ?? 'NULL';
-
-  return { firstName: first || 'NULL', lastName: last || 'NULL' };
-}
+  const firstName = isError ? 'NULL' : (user?.firstName ?? '…');
+  const lastName  = isError ? 'NULL' : (user?.lastName  ?? '');

@@ -1,9 +1,13 @@
-const { data: user, isError } = useQuery({
-    queryKey: ['userInfo'],
-    queryFn: fetchUserInfo,
-    staleTime: 5 * 60 * 1000,
-    retry: 1,
-  });
-
-  const firstName = isError ? 'NULL' : (user?.firstName ?? '…');
-  const lastName  = isError ? 'NULL' : (user?.lastName  ?? '');
+<Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'common.white' }}>
+            <IconButton color="inherit" aria-label="Account">
+              <AccountCircleIcon />
+            </IconButton>
+            <Typography
+              variant="caption"
+              noWrap
+              sx={{ maxWidth: 104, textAlign: 'center', mt: 0.25, opacity: 0.9 }}
+              title={`${firstName} ${lastName}`.trim()}
+            >
+              {(firstName + ' ' + (lastName || '')).trim()}
+            </Typography>
+          </Box>

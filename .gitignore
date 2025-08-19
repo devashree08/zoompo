@@ -1,142 +1,57 @@
 import * as React from 'react';
-import { Box, Container, Drawer, List, ListItemButton, ListItemIcon, ListItemText, Divider } from '@mui/material';
+import { Box, Tooltip, IconButton, Stack, ListItemButton, ListItemIcon, ListItemText } from '@mui/material';
 import { NavLink } from 'react-router-dom';
-import HomeIcon from '@mui/icons-material/Home';
-import Inventory2Icon from '@mui/icons-material/Inventory2';
-import DashboardIcon from '@mui/icons-material/Dashboard';
+import { useLayoutUI } from '../LayoutUIContext';
 
-import Navbar from './components/Navbar';
-import Sidenav from './components/Sidenav';
-import Footer from './components/Footer';
-import { LayoutUIProvider, useLayoutUI, NAVBAR_HEIGHT, RAIL_WIDTH_COLLAPSED, RAIL_WIDTH_EXPANDED } from './LayoutUIContext';
-
-const SIDE_ITEMS = [
-  { label: 'Home',        icon: <HomeIcon />,       to: '/' },
-  { label: 'Readiness',   icon: <Inventory2Icon />, to: '/readiness' },
-  { label: 'CSF Mapping', icon: <DashboardIcon />,  to: '/attributemapping' },
-];
-
-function Shell({ children }) {
-  const { railExpanded, drawerOpen, closeDrawer } = useLayoutUI();
-  const railWidth = railExpanded ? RAIL_WIDTH_EXPANDED : RAIL_WIDTH_COLLAPSED;
+export default function Sidenav({ items = [] }) {
+  const { railExpanded } = useLayoutUI();
 
   return (
-    <Box sx={{ display: 'grid', gridTemplateRows: 'auto 1fr auto', minHeight: '100vh' }}>
-      <Navbar />
-
-      {/* Content grid: main content + sticky right rail on md+ */}
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: { xs: '1fr', md: `1fr ${railWidth}px` },
-          columnGap: 0,
-          minWidth: 0,
-        }}
-      >
-        {/* Main content */}
-        <Container
-          maxWidth={false}
-          sx={{
-            px: { xs: 2, md: 3 },
-            py: { xs: 2, md: 3 },
-            minWidth: 0,
-          }}
-        >
-          {children}
-        </Container>
-
-        {/* Sticky right rail (desktop/tablet) */}
-        <Box
-          sx={{
-            display: { xs: 'none', md: 'block' },
-            position: 'sticky',
-            top: `${NAVBAR_HEIGHT}px`,
-            height: `calc(100vh - ${NAVBAR_HEIGHT}px)`,
-            borderLeft: '1px solid',
-            borderColor: 'divider',
-            backgroundColor: 'background.paper',
-          }}
-        >
-          <Sidenav items={SIDE_ITEMS} />
+    <Box sx={{ height: '100%', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', pt: 1 }}>
+      {railExpanded ? (
+        // Expanded = icon + label (bold, easy to scan)
+        <Box sx={{ width: '100%' }}>
+          <Stack spacing={0.5} sx={{ px: 1, pt: 0.5 }}>
+            {items.map((it) => (
+              <ListItemButton
+                key={it.to}
+                component={NavLink}
+                to={it.to}
+                sx={{
+                  borderRadius: 1.5,
+                  '&.active': { bgcolor: 'action.selected' },
+                }}
+              >
+                <ListItemIcon>{it.icon}</ListItemIcon>
+                <ListItemText
+                  primary={it.label}
+                  primaryTypographyProps={{ fontWeight: 700 }}
+                />
+              </ListItemButton>
+            ))}
+          </Stack>
         </Box>
-
-        {/* Mobile drawer (same items) */}
-        <Drawer
-          anchor="right"
-          open={drawerOpen}
-          onClose={closeDrawer}
-          ModalProps={{ keepMounted: true }}
-          sx={{
-            display: { xs: 'block', md: 'none' },
-            '& .MuiDrawer-paper': { width: 260 },
-          }}
-        >
-          <Box sx={{ height: 1, display: 'flex', flexDirection: 'column' }}>
-            <Box sx={{ px: 2, py: 1.5, fontWeight: 800 }}>Navigation</Box>
-            <Divider />
-            <List sx={{ py: 0 }}>
-              {SIDE_ITEMS.map(it => (
-                <ListItemButton
-                  key={it.to}
-                  component={NavLink}
-                  to={it.to}
-                  onClick={closeDrawer}
-                >
-                  <ListItemIcon>{it.icon}</ListItemIcon>
-                  <ListItemText primary={it.label} />
-                </ListItemButton>
-              ))}
-            </List>
-          </Box>
-        </Drawer>
-      </Box>
-
-      <Footer />
+      ) : (
+        // Collapsed = icon-only pills with tooltips
+        <Stack spacing={1}>
+          {items.map((it) => (
+            <Tooltip key={it.to} title={it.label} placement="left">
+              <IconButton
+                component={NavLink}
+                to={it.to}
+                size="large"
+                sx={{
+                  borderRadius: 2,
+                  color: 'text.secondary',
+                  '&.active': { bgcolor: 'action.selected', color: 'text.primary' },
+                }}
+              >
+                {it.icon}
+              </IconButton>
+            </Tooltip>
+          ))}
+        </Stack>
+      )}
     </Box>
   );
-}
-
-export default function PrimaryLayout({ children }) {
-  // Wrap the whole page in the UI provider so Navbar/Sidenav share the same toggles
-  return (
-    <LayoutUIProvider>
-      <Shell>{children}</Shell>
-    </LayoutUIProvider>
-  );
-
-
-
-import * as React from 'react';
-import { Box, Typography } from '@mui/material';
-import logoname from '../../assets/images/logoname.svg';
-
-export default function Footer() {
-  const year = new Date().getFullYear();
-  return (
-    <Box
-      component="footer"
-      sx={{
-        mt: 'auto',
-        borderTop: '1px solid',
-        borderColor: 'divider',
-        bgcolor: '#001C4D',
-        color: 'common.white',
-        px: { xs: 2, md: 3 },
-        py: 1.25,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        minHeight: 48,
-      }}
-    >
-      <Typography component="div">
-        <img src={logoname} alt="brand" width={155} />
-      </Typography>
-      <Typography variant="body2" sx={{ opacity: 0.85 }}>
-        Proprietary and Confidential. Not for disclosure outside. © {year} COMPANY
-      </Typography>
-    </Box>
-  );
-}
-
 }

@@ -1,57 +1,140 @@
 import * as React from 'react';
-import { Box, Tooltip, IconButton, Stack, ListItemButton, ListItemIcon, ListItemText } from '@mui/material';
-import { NavLink } from 'react-router-dom';
+import { AppBar, Toolbar, Box, Button, Menu, MenuItem, IconButton, Typography, Link } from '@mui/material';
+import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
+import AccountCircleIcon from '@mui/icons-material/AccountCircle';
+import MenuIcon from '@mui/icons-material/Menu';
+import logo from '../../assets/images/logo.svg';
 import { useLayoutUI } from '../LayoutUIContext';
 
-export default function Sidenav({ items = [] }) {
-  const { railExpanded } = useLayoutUI();
+const MENUS = {
+  looker: [
+    { text: 'CSF 1.1 to CSF 2.0 Sankey', link: 'https://looker.com' },
+    { text: '2024 Assessment Dash',       link: 'https://looker.com' },
+    { text: 'Assessor Findings',          link: 'https://looker.com' },
+  ],
+  resources: [
+    { text: 'Narrative template', link: 'https://docs.google.com' },
+    { text: 'N&A Folder',         link: 'https://docs.google.com' },
+    { text: 'Meeting Minutes',    link: 'https://drive.google.com' },
+  ],
+  contact: [
+    { text: 'Support Link', link: 'https://docs.google.com' },
+    { text: 'AD Access',    link: 'https://docs.google.com' },
+  ],
+};
+
+export default function Navbar() {
+  const { toggleRail, toggleDrawer } = useLayoutUI();
+  const [anchor, setAnchor] = React.useState({});
+
+  const openMenu  = (e, key) => setAnchor(p => ({ ...p, [key]: e.currentTarget }));
+  const closeMenu = (key)    => setAnchor(p => ({ ...p, [key]: null }));
 
   return (
-    <Box sx={{ height: '100%', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', pt: 1 }}>
-      {railExpanded ? (
-        // Expanded = icon + label (bold, easy to scan)
-        <Box sx={{ width: '100%' }}>
-          <Stack spacing={0.5} sx={{ px: 1, pt: 0.5 }}>
-            {items.map((it) => (
-              <ListItemButton
-                key={it.to}
-                component={NavLink}
-                to={it.to}
-                sx={{
-                  borderRadius: 1.5,
-                  '&.active': { bgcolor: 'action.selected' },
-                }}
-              >
-                <ListItemIcon>{it.icon}</ListItemIcon>
-                <ListItemText
-                  primary={it.label}
-                  primaryTypographyProps={{ fontWeight: 700 }}
-                />
-              </ListItemButton>
-            ))}
-          </Stack>
+    <AppBar
+      position="sticky"
+      sx={{
+        top: 0,
+        zIndex: t => t.zIndex.drawer + 1,
+        bgcolor: '#001C4D',
+        borderRadius: 0,
+        boxShadow: 'none',
+        borderBottom: '1px solid rgba(255,255,255,0.08)',
+      }}
+    >
+      <Toolbar sx={{ minHeight: 64, gap: 1, flexWrap: 'wrap' }}>
+        {/* Brand */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexGrow: 1, minWidth: 0 }}>
+          <Link href="/" underline="none" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Box component="img" src={logo} alt="logo" sx={{ width: 28, height: 28 }} />
+            <Typography variant="h6" sx={{ color: 'common.white', fontWeight: 800 }}>
+              CSF Mapping
+            </Typography>
+          </Link>
         </Box>
-      ) : (
-        // Collapsed = icon-only pills with tooltips
-        <Stack spacing={1}>
-          {items.map((it) => (
-            <Tooltip key={it.to} title={it.label} placement="left">
-              <IconButton
-                component={NavLink}
-                to={it.to}
-                size="large"
-                sx={{
-                  borderRadius: 2,
-                  color: 'text.secondary',
-                  '&.active': { bgcolor: 'action.selected', color: 'text.primary' },
-                }}
-              >
-                {it.icon}
-              </IconButton>
-            </Tooltip>
-          ))}
-        </Stack>
-      )}
-    </Box>
+
+        {/* Center menus */}
+        <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 0.5 }}>
+          {[
+            { key: 'looker',    label: 'Looker Dashboards' },
+            { key: 'resources', label: 'Resources' },
+            { key: 'contact',   label: 'Contact Us' },
+          ].map(({ key, label }) => {
+            const open = Boolean(anchor[key]);
+            return (
+              <React.Fragment key={key}>
+                <Button
+                  variant="text"
+                  color="inherit"
+                  endIcon={<ArrowDropDownIcon />}
+                  onClick={(e) => openMenu(e, key)}
+                  aria-haspopup="menu"
+                  aria-controls={`${key}-menu`}
+                  aria-expanded={open ? 'true' : undefined}
+                  sx={{
+                    color: 'common.white',
+                    borderRadius: 2,
+                    px: 2,
+                    bgcolor: 'transparent !important',
+                    '&:hover': { bgcolor: 'rgba(255,255,255,0.08) !important' },
+                  }}
+                >
+                  {label}
+                </Button>
+                <Menu
+                  id={`${key}-menu`}
+                  anchorEl={anchor[key]}
+                  open={open}
+                  onClose={() => closeMenu(key)}
+                  keepMounted
+                  anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+                  transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+                  PaperProps={{ sx: { mt: 0.5, borderRadius: 1 } }}
+                  MenuListProps={{ 'aria-labelledby': `${key}-menu-button` }}
+                >
+                  {(MENUS[key] || []).map((item, i) => (
+                    <MenuItem
+                      key={i}
+                      component="a"
+                      href={item.link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => closeMenu(key)}
+                    >
+                      {item.text}
+                    </MenuItem>
+                  ))}
+                </Menu>
+              </React.Fragment>
+            );
+          })}
+        </Box>
+
+        {/* Right actions */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          {/* Toggle sticky right rail on md+ */}
+          <IconButton
+            color="inherit"
+            onClick={toggleRail}
+            sx={{ display: { xs: 'none', md: 'inline-flex' } }}
+            aria-label="Toggle side rail"
+          >
+            <MenuIcon />
+          </IconButton>
+          {/* Open drawer on mobile */}
+          <IconButton
+            color="inherit"
+            onClick={toggleDrawer}
+            sx={{ display: { xs: 'inline-flex', md: 'none' } }}
+            aria-label="Open navigation"
+          >
+            <MenuIcon />
+          </IconButton>
+          <IconButton color="inherit" aria-label="Account">
+            <AccountCircleIcon />
+          </IconButton>
+        </Box>
+      </Toolbar>
+    </AppBar>
   );
 }

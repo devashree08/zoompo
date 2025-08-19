@@ -1,15 +1,19 @@
 /* =========================================================
-   3) CREATE
-   Purpose: Insert a new tag; auto-assign SortOrder (5,10,15… per list)
-   Params:  @ListName, @TagValue, @User (optional)
-   Returns: NewTagID, AssignedSortOrder
-   Notes:   Uses TRAN + UPDLOCK/HOLDLOCK to avoid race conditions;
-            also checks duplicate active value (unique filtered index will enforce too)
+   SAVE (Create or Update)
+   Purpose:
+     - If @TagID IS NULL -> CREATE new tag in @ListName with SortOrder auto (5,10,15…)
+     - If @TagID IS NOT NULL -> UPDATE existing tag (rename and/or toggle IsActive)
+   Rules:
+     - SortOrder is backend-owned; no client control
+     - Prevent duplicate ACTIVE TagValue within a ListName
+     - ListName cannot be changed during update (create a new row instead)
    ========================================================= */
-CREATE OR ALTER PROC dbo.usp_SelectionTag_Create
-  @ListName  NVARCHAR(64),
-  @TagValue  NVARCHAR(128),
-  @User      NVARCHAR(128) = NULL
+CREATE OR ALTER PROC dbo.usp_SelectionTag_Save
+  @TagID     INT            = NULL,          -- NULL => create; NOT NULL => update
+  @ListName  NVARCHAR(64)   = NULL,          -- required for CREATE only
+  @TagValue  NVARCHAR(128)  = NULL,          -- required for CREATE; optional for UPDATE (rename)
+  @IsActive  BIT            = NULL,          -- optional for UPDATE; ignored on CREATE (defaults to 1)
+  @User      NVARCHAR(128)  = NULL           -- optional audit user
 AS
 BEGIN
   SET NOCOUNT ON;
@@ -18,94 +22,88 @@ BEGIN
   BEGIN TRY
     BEGIN TRAN;
 
-    -- Friendly dup check (per-list, active only)
-    IF EXISTS (
-      SELECT 1
+    IF @TagID IS NULL
+    BEGIN
+      /* ---------- CREATE PATH ---------- */
+      IF @ListName IS NULL OR @TagValue IS NULL
+        THROW 50060, 'ListName and TagValue are required for create.', 1;
+
+      -- Friendly dup check (active only)
+      IF EXISTS (
+        SELECT 1
+        FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
+        WHERE ListName = @ListName
+          AND TagValue = @TagValue
+          AND IsActive = 1
+      )
+        THROW 50061, 'Duplicate active tag value in this list.', 1;
+
+      -- Allocate next SortOrder safely per list (5-step)
+      DECLARE @NextSort INT;
+      SELECT @NextSort = ISNULL(MAX(SortOrder), 0) + 5
       FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
-      WHERE ListName = @ListName AND TagValue = @TagValue AND IsActive = 1
-    )
-      THROW 50050, 'Duplicate active tag value in this list.', 1;
+      WHERE ListName = @ListName;
 
-    -- Allocate next SortOrder safely per list
-    DECLARE @NextSort INT;
-    SELECT @NextSort = ISNULL(MAX(SortOrder), 0) + 5
-    FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
-    WHERE ListName = @ListName;
+      INSERT INTO dbo.SelectionTag (ListName, TagValue, IsActive, SortOrder, CreatedBy, UpdatedBy)
+      VALUES (@ListName, @TagValue, 1, @NextSort, COALESCE(@User, SUSER_SNAME()), COALESCE(@User, SUSER_SNAME()));
 
-    INSERT INTO dbo.SelectionTag (ListName, TagValue, IsActive, SortOrder, CreatedBy, UpdatedBy)
-    VALUES (@ListName, @TagValue, 1, @NextSort, COALESCE(@User, SUSER_SNAME()), COALESCE(@User, SUSER_SNAME()));
+      DECLARE @NewID INT = SCOPE_IDENTITY();
 
-    DECLARE @NewID INT = SCOPE_IDENTITY();
+      COMMIT TRAN;
 
-    COMMIT TRAN;
+      -- Minimal return payload (what UIs typically need)
+      SELECT @NewID AS TagID, @ListName AS ListName, @TagValue AS TagValue, 1 AS IsActive, @NextSort AS SortOrder;
+      RETURN;
+    END
+    ELSE
+    BEGIN
+      /* ---------- UPDATE PATH ---------- */
+      DECLARE @CurList NVARCHAR(64), @CurValue NVARCHAR(128), @CurActive BIT;
+      SELECT @CurList = ListName, @CurValue = TagValue, @CurActive = IsActive
+      FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
+      WHERE TagID = @TagID;
 
-    SELECT @NewID AS NewTagID, @NextSort AS AssignedSortOrder;
+      IF @CurList IS NULL
+        THROW 50062, 'Update failed: Tag not found.', 1;
+
+      -- Do not allow list moves in this proc (keeps SortOrder rules simple)
+      IF @ListName IS NOT NULL AND @ListName <> @CurList
+        THROW 50063, 'Changing ListName during update is not supported. Create in the new list instead.', 1;
+
+      DECLARE @FinalValue  NVARCHAR(128) = COALESCE(@TagValue, @CurValue);
+      DECLARE @FinalActive BIT           = COALESCE(@IsActive, @CurActive);
+
+      -- If the resulting row is active, enforce no-duplicate-active constraint
+      IF @FinalActive = 1 AND EXISTS (
+        SELECT 1
+        FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
+        WHERE ListName = @CurList
+          AND TagValue = @FinalValue
+          AND IsActive = 1
+          AND TagID <> @TagID
+      )
+        THROW 50064, 'Duplicate active tag value in this list.', 1;
+
+      UPDATE dbo.SelectionTag
+         SET TagValue  = @FinalValue,
+             IsActive  = @FinalActive,
+             UpdatedAt = SYSUTCDATETIME(),
+             UpdatedBy = COALESCE(@User, SUSER_SNAME())
+       WHERE TagID = @TagID;
+
+      IF @@ROWCOUNT = 0
+        THROW 50065, 'Update failed: no rows affected.', 1;
+
+      COMMIT TRAN;
+
+      SELECT TagID, ListName, TagValue, IsActive, SortOrder, UpdatedAt, UpdatedBy
+      FROM dbo.SelectionTag
+      WHERE TagID = @TagID;
+    END
   END TRY
   BEGIN CATCH
     IF XACT_STATE() <> 0 ROLLBACK TRAN;
-    THROW 50051, ERROR_MESSAGE(), 1;
-  END CATCH
-END
-GO
-
-
-
-/* =========================================================
-   4) UPDATE
-   Purpose: Rename a tag and/or toggle active flag (backend owns SortOrder)
-   Params:  @TagID, @NewTagValue (nullable), @IsActive (nullable), @User (optional)
-   Returns: Updated row
-   Notes:   Uses TRAN; prevents duplicate active values within a list
-   ========================================================= */
-CREATE OR ALTER PROC dbo.usp_SelectionTag_Update
-  @TagID       INT,
-  @NewTagValue NVARCHAR(128) = NULL,
-  @IsActive    BIT           = NULL,
-  @User        NVARCHAR(128) = NULL
-AS
-BEGIN
-  SET NOCOUNT ON;
-  SET XACT_ABORT ON;
-
-  BEGIN TRY
-    BEGIN TRAN;
-
-    DECLARE @ListName NVARCHAR(64), @CurValue NVARCHAR(128), @CurActive BIT;
-    SELECT @ListName = ListName, @CurValue = TagValue, @CurActive = IsActive
-    FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
-    WHERE TagID = @TagID;
-
-    IF @ListName IS NULL
-      THROW 50052, 'Update failed: Tag not found.', 1;
-
-    DECLARE @FinalValue  NVARCHAR(128) = COALESCE(@NewTagValue, @CurValue);
-    DECLARE @FinalActive BIT           = COALESCE(@IsActive,    @CurActive);
-
-    IF @FinalActive = 1 AND EXISTS (
-      SELECT 1
-      FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
-      WHERE ListName = @ListName
-        AND TagValue = @FinalValue
-        AND IsActive = 1
-        AND TagID <> @TagID
-    )
-      THROW 50053, 'Duplicate active tag value in this list.', 1;
-
-    UPDATE dbo.SelectionTag
-       SET TagValue  = @FinalValue,
-           IsActive  = @FinalActive,
-           UpdatedAt = SYSUTCDATETIME(),
-           UpdatedBy = COALESCE(@User, SUSER_SNAME())
-     WHERE TagID = @TagID;
-
-    COMMIT TRAN;
-
-    SELECT TagID, ListName, TagValue, IsActive, SortOrder, UpdatedAt, UpdatedBy
-    FROM dbo.SelectionTag WHERE TagID = @TagID;
-  END TRY
-  BEGIN CATCH
-    IF XACT_STATE() <> 0 ROLLBACK TRAN;
-    THROW 50054, ERROR_MESSAGE(), 1;
+    THROW 50066, ERROR_MESSAGE(), 1;
   END CATCH
 END
 GO

@@ -1,36 +1,106 @@
 import * as React from 'react';
+import { Box, Container, Drawer, List, ListItemButton, ListItemIcon, ListItemText, Divider } from '@mui/material';
+import { NavLink } from 'react-router-dom';
+import HomeIcon from '@mui/icons-material/Home';
+import Inventory2Icon from '@mui/icons-material/Inventory2';
+import DashboardIcon from '@mui/icons-material/Dashboard';
 
-const LayoutUIContext = React.createContext(null);
+import Navbar from './components/Navbar';
+import Sidenav from './components/Sidenav';
+import Footer from './components/Footer';
+import { LayoutUIProvider, useLayoutUI, NAVBAR_HEIGHT, RAIL_WIDTH_COLLAPSED, RAIL_WIDTH_EXPANDED } from './LayoutUIContext';
 
-export const NAVBAR_HEIGHT = 64;
-export const RAIL_WIDTH_COLLAPSED = 64;
-export const RAIL_WIDTH_EXPANDED  = 220;
+const SIDE_ITEMS = [
+  { label: 'Home',        icon: <HomeIcon />,       to: '/' },
+  { label: 'Readiness',   icon: <Inventory2Icon />, to: '/readiness' },
+  { label: 'CSF Mapping', icon: <DashboardIcon />,  to: '/attributemapping' },
+];
 
-export function LayoutUIProvider({ children }) {
-  const [railExpanded, setRailExpanded] = React.useState(false);
-  const [drawerOpen, setDrawerOpen] = React.useState(false);
-
-  const toggleRail   = () => setRailExpanded(v => !v);
-  const toggleDrawer = () => setDrawerOpen(v => !v);
-  const closeDrawer  = () => setDrawerOpen(false);
-
-  const value = React.useMemo(() => ({
-    railExpanded,
-    drawerOpen,
-    toggleRail,
-    toggleDrawer,
-    closeDrawer
-  }), [railExpanded, drawerOpen]);
+function Shell({ children }) {
+  const { railExpanded, drawerOpen, closeDrawer } = useLayoutUI();
+  const railWidth = railExpanded ? RAIL_WIDTH_EXPANDED : RAIL_WIDTH_COLLAPSED;
 
   return (
-    <LayoutUIContext.Provider value={value}>
-      {children}
-    </LayoutUIContext.Provider>
+    <Box sx={{ display: 'grid', gridTemplateRows: 'auto 1fr auto', minHeight: '100vh' }}>
+      <Navbar />
+
+      {/* Content grid: main content + sticky right rail on md+ */}
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', md: `1fr ${railWidth}px` },
+          columnGap: 0,
+          minWidth: 0,
+        }}
+      >
+        {/* Main content */}
+        <Container
+          maxWidth={false}
+          sx={{
+            px: { xs: 2, md: 3 },
+            py: { xs: 2, md: 3 },
+            minWidth: 0,
+          }}
+        >
+          {children}
+        </Container>
+
+        {/* Sticky right rail (desktop/tablet) */}
+        <Box
+          sx={{
+            display: { xs: 'none', md: 'block' },
+            position: 'sticky',
+            top: `${NAVBAR_HEIGHT}px`,
+            height: `calc(100vh - ${NAVBAR_HEIGHT}px)`,
+            borderLeft: '1px solid',
+            borderColor: 'divider',
+            backgroundColor: 'background.paper',
+          }}
+        >
+          <Sidenav items={SIDE_ITEMS} />
+        </Box>
+
+        {/* Mobile drawer (same items) */}
+        <Drawer
+          anchor="right"
+          open={drawerOpen}
+          onClose={closeDrawer}
+          ModalProps={{ keepMounted: true }}
+          sx={{
+            display: { xs: 'block', md: 'none' },
+            '& .MuiDrawer-paper': { width: 260 },
+          }}
+        >
+          <Box sx={{ height: 1, display: 'flex', flexDirection: 'column' }}>
+            <Box sx={{ px: 2, py: 1.5, fontWeight: 800 }}>Navigation</Box>
+            <Divider />
+            <List sx={{ py: 0 }}>
+              {SIDE_ITEMS.map(it => (
+                <ListItemButton
+                  key={it.to}
+                  component={NavLink}
+                  to={it.to}
+                  onClick={closeDrawer}
+                >
+                  <ListItemIcon>{it.icon}</ListItemIcon>
+                  <ListItemText primary={it.label} />
+                </ListItemButton>
+              ))}
+            </List>
+          </Box>
+        </Drawer>
+      </Box>
+
+      <Footer />
+    </Box>
   );
 }
 
-export function useLayoutUI() {
-  const ctx = React.useContext(LayoutUIContext);
-  if (!ctx) throw new Error('useLayoutUI must be used within LayoutUIProvider');
-  return ctx;
+export default function PrimaryLayout({ children }) {
+  // Wrap the whole page in the UI provider so Navbar/Sidenav share the same toggles
+  return (
+    <LayoutUIProvider>
+      <Shell>{children}</Shell>
+    </LayoutUIProvider>
+  );
 }

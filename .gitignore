@@ -103,4 +103,40 @@ export default function PrimaryLayout({ children }) {
       <Shell>{children}</Shell>
     </LayoutUIProvider>
   );
+
+
+
+import * as React from 'react';
+import { Box, Typography } from '@mui/material';
+import logoname from '../../assets/images/logoname.svg';
+
+export default function Footer() {
+  const year = new Date().getFullYear();
+  return (
+    <Box
+      component="footer"
+      sx={{
+        mt: 'auto',
+        borderTop: '1px solid',
+        borderColor: 'divider',
+        bgcolor: '#001C4D',
+        color: 'common.white',
+        px: { xs: 2, md: 3 },
+        py: 1.25,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        minHeight: 48,
+      }}
+    >
+      <Typography component="div">
+        <img src={logoname} alt="brand" width={155} />
+      </Typography>
+      <Typography variant="body2" sx={{ opacity: 0.85 }}>
+        Proprietary and Confidential. Not for disclosure outside. © {year} COMPANY
+      </Typography>
+    </Box>
+  );
+}
+
 }

@@ -1,520 +1,207 @@
-# Files
-INPUT_XLSX=mobileapps.xlsx
-OUTPUT_CSV=mobileapps_master.csv
-
-# SQL enrichment
-SQL_ENRICH=true
-
-# SQL Server connection
-SQL_SERVER=YOUR_SQL_SERVER_OR_HOST\\INSTANCE
-SQL_DRIVER={ODBC Driver 18 for SQL Server}
-# For SQL auth, set both; for Windows/SSO (Trusted_Connection), leave both blank:
-SQL_USER=
-SQL_PASSWORD=
-
-# Database names
-ANALYTICS_DB=AnalyticsDW
-STAGING_DB=StagingETl
-
-# Logging
-LOG_LEVEL=INFO
-
-
-
-
-pandas>=2.2
-openpyxl>=3.1
-python-dotenv>=1.0
-pyodbc>=5.1
-
-#!/usr/bin/env python3
-"""
-ETL for 'mobileapps.xlsx' → master CSV with optional SQL Server enrichment,
-configured via .env (no CLI flags required).
-
-Workflow:
-  1) Read selected workbook sheets and apply per-sheet filters.
-  2) Select & rename columns; derive Is* flags from scan statuses.
-  3) Enrich blanks from:
-       a) AnalyticsDW.dbo.AllApps (by VastID) → ReportMonth, Tier2/3/4ManagerNm, BISO,
-          BaseRiskLevel, CustodianName
-       b) StagingETl.dbo.BUMap (by Tier2/3/4ManagerNm + BISO) → BU, BUSortOrder
-  4) Write master CSV in the exact column order requested.
-
-Key guarantees:
-  - Tier4ManagerNm included.
-  - True blanks preserved (no literal "nan" strings).
-  - Readable, modular code with clear logging.
-"""
-from __future__ import annotations
-
-import os
-import logging
-from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
-
-import pandas as pd
-from dotenv import load_dotenv
-
-try:
-    import pyodbc  # only needed if SQL_ENRICH=true
-except Exception:  # pragma: no cover
-    pyodbc = None
-
-
-# ------------------------------ Config via .env -------------------------------
-
-def _get_bool(s: str | None, default: bool = False) -> bool:
-    if s is None:
-        return default
-    return str(s).strip().lower() in {"1", "true", "yes", "y", "on"}
-
-def _require_or_default(name: str, default: Optional[str] = None) -> str:
-    val = os.getenv(name, default)
-    if val is None:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return val
-
-def load_config() -> dict:
-    load_dotenv()  # loads .env from current working directory
-
-    cfg = {
-        "INPUT_XLSX": _require_or_default("INPUT_XLSX", "mobileapps.xlsx"),
-        "OUTPUT_CSV": _require_or_default("OUTPUT_CSV", "mobileapps_master.csv"),
-        "SQL_ENRICH": _get_bool(os.getenv("SQL_ENRICH", "true")),
-        "SQL_SERVER": _require_or_default("SQL_SERVER", ""),  # can be blank if SQL_ENRICH=false
-        "SQL_DRIVER": _require_or_default("SQL_DRIVER", "{ODBC Driver 18 for SQL Server}"),
-        "SQL_USER": os.getenv("SQL_USER") or None,
-        "SQL_PASSWORD": os.getenv("SQL_PASSWORD") or None,
-        "ANALYTICS_DB": _require_or_default("ANALYTICS_DB", "AnalyticsDW"),
-        "STAGING_DB": _require_or_default("STAGING_DB", "StagingETl"),
-    }
-
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(level=getattr(logging, log_level, logging.INFO),
-                        format="%(levelname)s: %(message)s")
-    return cfg
-
-
-# ------------------------------ Constants -------------------------------------
-
-TARGET_SHEETS = [
-    "TPD - Sugandha",
-    "VBG - Keith",
-    "VCG - Jeff",
-    "VGS-T - TonyKeith",
-    "VGS-T - TonyJeff",
-    "VGS-T - TonyCathy",
-]
-
-# Filter rules per sheet
-SHEET_FILTERS = {
-    "TPD - Sugandha": {"BISO_eq": "Sugandha Venk"},
-    "VBG - Keith": {"BISO_in": {"Keith Huchi", "Sanj H Asd"}, "BusinessUnit_in": {"VBG"}},
-    "VCG - Jeff": {"BISO_eq": "Jeffrey Halt", "BusinessUnit_in": {"VCG", "GTO"}},
-    "VGS-T - TonyKeith": {"BISO_eq": "Keith Hutch", "BusinessUnit_in": {"VBIT"}},
-    "VGS-T - TonyJeff": {"BISO_eq": "Jeffrey Halt", "BusinessUnit_in": {"VCIT"}},
-    "VGS-T - TonyCathy": {"BISO_eq": "Cathleen Dryer"},
-}
-
-# Source→target (canonical) column map via synonyms
-COLUMN_SYNONYMS: Dict[str, List[str]] = {
-    "VastID": ["vastid", "vast id"],
-    "ApplicationName": ["application name in app store", "app name in app store"],
-    "ClientType": ["client type"],
-    "CodebaseOwnership": ["codebase ownership"],
-    "VMACTeam": ["vmac team", "vmac"],
-    "BusinessUnit": ["business unit", "businessunit"],
-    "NowSecureScanStatus": [
-        "now secure scan status",
-        "now secure scanning status",
-        "nowsecure scan status",
-        "nowsecure scanning status",
-    ],
-    "FortifyScanStatus": ["fortify scan status"],
-    "FortifyProjectName": ["fortify project name"],
-    "BlackDuckStatus": ["blackduck status", "black duck status"],
-    "BlackDuckProjectName": ["blackduck project name", "black duck project name"],
-    # filter-only
-    "BISO": ["biso"],
-}
-
-# Final CSV schema (exact order)
-FINAL_COLUMNS = [
-    "ReportMonth",
-    "VastID",
-    "ApplicationName",
-    "MetricName",
-    "BU",
-    "Tier2ManagerNm",
-    "Tier3ManagerNm",
-    "Tier4ManagerNm",
-    "BISO",
-    "CustodianName",
-    "BUSortOrder",
-    "MetricValue",
-    "ClientType",
-    "CodebaseOwnership",
-    "VMACTeam",
-    "BusinessUnit",
-    "BaseRiskLevel",
-    "TotalProjectCount",
-    "IsNowSecureScanStatus",
-    "NowSecureScanStatus",
-    "IsFortifyScanStatus",
-    "FortifyScanStatus",
-    "FortifyProjectName",
-    "IsBlackDuckStatus",
-    "BlackDuckStatus",
-    "BlackDuckProjectName",
-    "LastUpdateDate",
-]
-
-# Status flags
-ZERO_PHRASES = [
-    "n/a 3rd party",
-    "not eligible for scans",
-    "tbd",
-    "onboarded but not scanning",
-    "pending rescan",
-    "not onboarded",
-    "onboarding",
-    "request for new",
-    "to be retired",
-]
-ONE_PHRASES = ["scanning", "equivalent scans performed"]
-
-
-# ------------------------------ Small utils -----------------------------------
-
-def _normalize_key(s: str) -> str:
-    return " ".join(str(s).lower().replace("_", " ").split())
-
-def _build_column_index(cols: Iterable[str]) -> Dict[str, str]:
-    return {_normalize_key(c): c for c in cols}
-
-def _find_source_col(col_index: Dict[str, str], candidates: List[str]) -> Optional[str]:
-    for cand in candidates:
-        k = _normalize_key(cand)
-        if k in col_index:
-            return col_index[k]
-    return None
-
-def _status_to_flag(val: object) -> int:
-    if pd.isna(val):
-        return 0
-    s = " ".join(str(val).lower().split())
-    for phrase in ZERO_PHRASES:
-        if phrase in s:
-            return 0
-    for phrase in ONE_PHRASES:
-        if phrase in s:
-            return 1
-    return 0
-
-def _coalesce_business_unit(df: pd.DataFrame) -> pd.DataFrame:
-    col_index = _build_column_index(df.columns)
-    bu_src = _find_source_col(col_index, COLUMN_SYNONYMS["BusinessUnit"])
-    if bu_src and "BusinessUnit" not in df.columns:
-        df = df.copy()
-        df["BusinessUnit"] = df[bu_src]
-    return df
-
-def _get_col(df: pd.DataFrame, logical_name: str) -> Optional[str]:
-    candidates = COLUMN_SYNONYMS.get(logical_name, [])
-    col_index = _build_column_index(df.columns)
-    return _find_source_col(col_index, candidates)
-
-def _apply_filters(df: pd.DataFrame, spec: Dict[str, object]) -> pd.DataFrame:
-    if df.empty:
-        return df
-    df = _coalesce_business_unit(df)
-    mask = pd.Series(True, index=df.index)
-
-    if "BISO_eq" in spec:
-        col = _get_col(df, "BISO")
-        if not col: return df.iloc[0:0]
-        exp = str(spec["BISO_eq"]).strip()
-        mask &= (df[col].astype(str).str.strip() == exp)
-
-    if "BISO_in" in spec:
-        col = _get_col(df, "BISO")
-        if not col: return df.iloc[0:0]
-        vals = {str(v).strip() for v in spec["BISO_in"]}
-        mask &= df[col].astype(str).str.strip().isin(vals)
-
-    if "BusinessUnit_eq" in spec:
-        bu_col = "BusinessUnit" if "BusinessUnit" in df.columns else _get_col(df, "BusinessUnit")
-        if not bu_col: return df.iloc[0:0]
-        exp = str(spec["BusinessUnit_eq"]).strip()
-        mask &= (df[bu_col].astype(str).str.strip() == exp)
-
-    if "BusinessUnit_in" in spec:
-        bu_col = "BusinessUnit" if "BusinessUnit" in df.columns else _get_col(df, "BusinessUnit")
-        if not bu_col: return df.iloc[0:0]
-        vals = {str(v).strip() for v in spec["BusinessUnit_in"]}
-        mask &= df[bu_col].astype(str).str.strip().isin(vals)
-
-    return df[mask]
-
-def _select_and_rename(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Select only requested columns and rename; keep native dtypes to preserve blanks.
-    """
-    col_index = _build_column_index(df.columns)
-    out = pd.DataFrame(index=df.index)
-
-    for target, candidates in COLUMN_SYNONYMS.items():
-        if target not in {
-            "VastID", "ApplicationName", "ClientType", "CodebaseOwnership",
-            "VMACTeam", "BusinessUnit", "NowSecureScanStatus", "FortifyScanStatus",
-            "FortifyProjectName", "BlackDuckStatus", "BlackDuckProjectName",
-        }:
-            continue
-        src = _find_source_col(col_index, candidates)
-        out[target] = df[src] if src is not None else pd.Series([pd.NA]*len(df), index=df.index)
-    return out
-
-def _safe_text(s: pd.Series) -> pd.Series:
-    """Return a text series with true blanks (no literal 'nan')."""
-    return s.fillna("").astype(str).replace({"nan": ""})
-
-def _assemble_final(master_core: pd.DataFrame) -> pd.DataFrame:
-    r = pd.DataFrame(index=master_core.index)
-
-    # Blanks/constants
-    r["ReportMonth"] = ""
-    r["VastID"] = _safe_text(master_core["VastID"])
-    r["ApplicationName"] = _safe_text(master_core["ApplicationName"])
-    r["MetricName"] = "Mobile Apps"
-    r["BU"] = ""
-    r["Tier2ManagerNm"] = ""
-    r["Tier3ManagerNm"] = ""
-    r["Tier4ManagerNm"] = ""
-    r["BISO"] = ""
-    r["CustodianName"] = ""
-    r["BUSortOrder"] = ""
-    r["MetricValue"] = ""
-    r["ClientType"] = _safe_text(master_core["ClientType"])
-    r["CodebaseOwnership"] = _safe_text(master_core["CodebaseOwnership"])
-    r["VMACTeam"] = _safe_text(master_core["VMACTeam"])
-    r["BusinessUnit"] = _safe_text(master_core["BusinessUnit"])
-    r["BaseRiskLevel"] = ""
-    r["TotalProjectCount"] = 1
-
-    ns = master_core["NowSecureScanStatus"]
-    ft = master_core["FortifyScanStatus"]
-    bd = master_core["BlackDuckStatus"]
-
-    r["IsNowSecureScanStatus"] = ns.apply(_status_to_flag).fillna(0).astype(int)
-    r["NowSecureScanStatus"] = _safe_text(ns)
-
-    r["IsFortifyScanStatus"] = ft.apply(_status_to_flag).fillna(0).astype(int)
-    r["FortifyScanStatus"] = _safe_text(ft)
-    r["FortifyProjectName"] = _safe_text(master_core["FortifyProjectName"])
-
-    r["IsBlackDuckStatus"] = bd.apply(_status_to_flag).fillna(0).astype(int)
-    r["BlackDuckStatus"] = _safe_text(bd)
-    r["BlackDuckProjectName"] = _safe_text(master_core["BlackDuckProjectName"])
-
-    r["LastUpdateDate"] = ""
-
-    return r[FINAL_COLUMNS]
-
-
-# --------------------------- SQL Enrichment -----------------------------------
-
-def _connect(server: str, driver: str, user: Optional[str], password: Optional[str], database: str):
-    if pyodbc is None:
-        raise RuntimeError("pyodbc is not installed. Install with: pip install pyodbc")
-    parts = [f"DRIVER={driver}", f"SERVER={server}", f"DATABASE={database}"]
-    if user and password:
-        parts.extend([f"UID={user}", f"PWD={password}"])
-    else:
-        parts.append("Trusted_Connection=yes")
-    conn_str = ";".join(parts)
-    return pyodbc.connect(conn_str)
-
-def _chunk(seq: Sequence, size: int) -> Iterable[Sequence]:
-    for i in range(0, len(seq), size):
-        yield seq[i:i+size]
-
-def enrich_from_allapps(df: pd.DataFrame, *, server: str, driver: str, user: Optional[str], password: Optional[str], analytics_db: str) -> pd.DataFrame:
-    vastids = [v for v in _safe_text(df["VastID"]).tolist() if v]
-    if not vastids:
-        return df
-
-    logging.info("AllApps enrichment: querying %d VastIDs", len(vastids))
-    conn = _connect(server, driver, user, password, analytics_db)
-    try:
-        rows = []
-        for chunk_ids in _chunk(vastids, 900):  # guard against SQL Server param limits
-            placeholders = ",".join("?" for _ in chunk_ids)
-            sql = f"""
-                SELECT
-                    CAST(VastID AS VARCHAR(100)) AS VastID,
-                    CAST(ISNULL(ReportMonth,'') AS VARCHAR(50)) AS ReportMonth,
-                    CAST(ISNULL([Tier 2 Manager],'') AS VARCHAR(255)) AS Tier2ManagerNm,
-                    CAST(ISNULL([Tier 3 Manager],'') AS VARCHAR(255)) AS Tier3ManagerNm,
-                    CAST(ISNULL([Tier 4 Manager],'') AS VARCHAR(255)) AS Tier4ManagerNm,
-                    CAST(ISNULL([BISO],'') AS VARCHAR(255)) AS BISO,
-                    CAST(ISNULL([Base Risk Level],'') AS VARCHAR(255)) AS BaseRiskLevel,
-                    CAST(ISNULL([Custodian Name],'') AS VARCHAR(255)) AS CustodianName
-                FROM dbo.AllApps
-                WHERE VastID IN ({placeholders})
-            """
-            cur = conn.cursor()
-            cur.execute(sql, chunk_ids)
-            rows.extend(cur.fetchall())
-
-        if not rows:
-            return df
-
-        cols = ["VastID","ReportMonth","Tier2ManagerNm","Tier3ManagerNm","Tier4ManagerNm","BISO","BaseRiskLevel","CustodianName"]
-        allapps = pd.DataFrame.from_records(rows, columns=cols).drop_duplicates(subset=["VastID"], keep="first")
-
-        merged = df.merge(allapps, on="VastID", how="left", suffixes=("", "_fromDB"))
-        for c in ["ReportMonth","Tier2ManagerNm","Tier3ManagerNm","Tier4ManagerNm","BISO","BaseRiskLevel","CustodianName"]:
-            from_col = f"{c}_fromDB"
-            if from_col in merged.columns:
-                merged[c] = merged[c].where(_safe_text(merged[c]).str.len() > 0, _safe_text(merged[from_col]))
-                merged.drop(columns=[from_col], inplace=True)
-        return merged.fillna("")
-    finally:
-        conn.close()
-
-def enrich_bu_from_bumap(df: pd.DataFrame, *, server: str, driver: str, user: Optional[str], password: Optional[str], staging_db: str) -> pd.DataFrame:
-    # If all keys are blank, skip
-    if df[["Tier2ManagerNm","Tier3ManagerNm","Tier4ManagerNm","BISO"]].replace("", pd.NA).isna().all().all():
-        return df
-
-    t2_vals = sorted({v for v in _safe_text(df["Tier2ManagerNm"]) if v})
-    t3_vals = sorted({v for v in _safe_text(df["Tier3ManagerNm"]) if v})
-    t4_vals = sorted({v for v in _safe_text(df["Tier4ManagerNm"]) if v})
-    biso_vals = sorted({v for v in _safe_text(df["BISO"]) if v})
-    if not (t2_vals and t3_vals and t4_vals and biso_vals):
-        return df
-
-    logging.info("BUMap enrichment: candidates — T2:%d T3:%d T4:%d BISO:%d", len(t2_vals), len(t3_vals), len(t4_vals), len(biso_vals))
-    conn = _connect(server, driver, user, password, staging_db)
-    try:
-        sql = f"""
-            SELECT
-                CAST(ISNULL(Tier2ManagerNm,'') AS VARCHAR(255)) AS Tier2ManagerNm,
-                CAST(ISNULL(Tier3ManagerNm,'') AS VARCHAR(255)) AS Tier3ManagerNm,
-                CAST(ISNULL(Tier4ManagerNm,'') AS VARCHAR(255)) AS Tier4ManagerNm,
-                CAST(ISNULL(BISO,'') AS VARCHAR(255)) AS BISO,
-                CAST(ISNULL(BU,'') AS VARCHAR(255)) AS BU,
-                CAST(ISNULL(BUSortOrder,'') AS VARCHAR(255)) AS BUSortOrder
-            FROM dbo.BUMap
-            WHERE Tier2ManagerNm IN ({",".join("?"*len(t2_vals))})
-              AND Tier3ManagerNm IN ({",".join("?"*len(t3_vals))})
-              AND Tier4ManagerNm IN ({",".join("?"*len(t4_vals))})
-              AND BISO IN ({",".join("?"*len(biso_vals))})
-        """
-        params = t2_vals + t3_vals + t4_vals + biso_vals
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        rows = cur.fetchall()
-        if not rows:
-            return df
-
-        cols = ["Tier2ManagerNm","Tier3ManagerNm","Tier4ManagerNm","BISO","BU","BUSortOrder"]
-        bumap = pd.DataFrame.from_records(rows, columns=cols).drop_duplicates()
-
-        merged = df.merge(bumap, on=["Tier2ManagerNm","Tier3ManagerNm","Tier4ManagerNm","BISO"], how="left", suffixes=("", "_fromDB"))
-        for c in ["BU","BUSortOrder"]:
-            from_col = f"{c}_fromDB"
-            if from_col in merged.columns:
-                merged[c] = merged[c].where(_safe_text(merged[c]).str.len() > 0, _safe_text(merged[from_col]))
-                merged.drop(columns=[from_col], inplace=True)
-        return merged.fillna("")
-    finally:
-        conn.close()
-
-
-# ------------------------------ Excel ETL -------------------------------------
-
-def build_master_core(input_xlsx: Path) -> pd.DataFrame:
-    xls = pd.ExcelFile(input_xlsx)
-    available = set(xls.sheet_names)
-    frames: List[pd.DataFrame] = []
-
-    for sheet in TARGET_SHEETS:
-        if sheet not in available:
-            logging.warning("Sheet missing, skipping: %s", sheet)
-            continue
-
-        df = pd.read_excel(input_xlsx, sheet_name=sheet, dtype=str)
-        if df.empty:
-            continue
-
-        filtered = _apply_filters(df, SHEET_FILTERS.get(sheet, {}))
-        if filtered.empty:
-            continue
-
-        core = _select_and_rename(filtered)
-        if not core.empty:
-            frames.append(core)
-
-    if not frames:
-        logging.warning("No data matched across selected sheets.")
-        return pd.DataFrame(columns=[
-            "VastID","ApplicationName","ClientType","CodebaseOwnership","VMACTeam",
-            "BusinessUnit","NowSecureScanStatus","FortifyScanStatus","FortifyProjectName",
-            "BlackDuckStatus","BlackDuckProjectName"
-        ])
-
-    return pd.concat(frames, ignore_index=True)
-
-
-# ------------------------------ Orchestration ---------------------------------
-
-def run_all(cfg: dict) -> None:
-    input_xlsx = Path(cfg["INPUT_XLSX"])
-    output_csv = Path(cfg["OUTPUT_CSV"])
-
-    if not input_xlsx.exists():
-        raise FileNotFoundError(f"Input file not found: {input_xlsx.resolve()}")
-
-    logging.info("Reading workbook: %s", input_xlsx.name)
-    master_core = build_master_core(input_xlsx)
-    final_df = _assemble_final(master_core)
-
-    if cfg["SQL_ENRICH"]:
-        if not cfg["SQL_SERVER"]:
-            raise RuntimeError("SQL_ENRICH is true but SQL_SERVER is blank in .env")
-        # Enrich from AllApps first (by VastID), then BUMap (by manager/BISO tuple)
-        logging.info("Enriching from %s.dbo.AllApps ...", cfg["ANALYTICS_DB"])
-        final_df = enrich_from_allapps(
-            final_df,
-            server=cfg["SQL_SERVER"],
-            driver=cfg["SQL_DRIVER"],
-            user=cfg["SQL_USER"],
-            password=cfg["SQL_PASSWORD"],
-            analytics_db=cfg["ANALYTICS_DB"],
-        )
-        logging.info("Enriching from %s.dbo.BUMap ...", cfg["STAGING_DB"])
-        final_df = enrich_bu_from_bumap(
-            final_df,
-            server=cfg["SQL_SERVER"],
-            driver=cfg["SQL_DRIVER"],
-            user=cfg["SQL_USER"],
-            password=cfg["SQL_PASSWORD"],
-            staging_db=cfg["STAGING_DB"],
-        )
-
-    # Final tidy: ensure blanks are blanks and ints are ints
-    final_df = final_df.fillna("")
-    final_df["TotalProjectCount"] = final_df["TotalProjectCount"].astype(int)
-    for c in ["IsNowSecureScanStatus","IsFortifyScanStatus","IsBlackDuckStatus"]:
-        final_df[c] = final_df[c].astype(int)
-
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
-    final_df.to_csv(output_csv, index=False)
-    logging.info("Wrote %s with %d rows.", output_csv, len(final_df))
-
-
-if __name__ == "__main__":
-    cfg = load_config()
-    run_all(cfg)
+/* =========================================================
+   3) CREATE
+   Purpose: Insert a new tag; auto-assign SortOrder (5,10,15… per list)
+   Params:  @ListName, @TagValue, @User (optional)
+   Returns: NewTagID, AssignedSortOrder
+   Notes:   Uses TRAN + UPDLOCK/HOLDLOCK to avoid race conditions;
+            also checks duplicate active value (unique filtered index will enforce too)
+   ========================================================= */
+CREATE OR ALTER PROC dbo.usp_SelectionTag_Create
+  @ListName  NVARCHAR(64),
+  @TagValue  NVARCHAR(128),
+  @User      NVARCHAR(128) = NULL
+AS
+BEGIN
+  SET NOCOUNT ON;
+  SET XACT_ABORT ON;
+
+  BEGIN TRY
+    BEGIN TRAN;
+
+    -- Friendly dup check (per-list, active only)
+    IF EXISTS (
+      SELECT 1
+      FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
+      WHERE ListName = @ListName AND TagValue = @TagValue AND IsActive = 1
+    )
+      THROW 50050, 'Duplicate active tag value in this list.', 1;
+
+    -- Allocate next SortOrder safely per list
+    DECLARE @NextSort INT;
+    SELECT @NextSort = ISNULL(MAX(SortOrder), 0) + 5
+    FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
+    WHERE ListName = @ListName;
+
+    INSERT INTO dbo.SelectionTag (ListName, TagValue, IsActive, SortOrder, CreatedBy, UpdatedBy)
+    VALUES (@ListName, @TagValue, 1, @NextSort, COALESCE(@User, SUSER_SNAME()), COALESCE(@User, SUSER_SNAME()));
+
+    DECLARE @NewID INT = SCOPE_IDENTITY();
+
+    COMMIT TRAN;
+
+    SELECT @NewID AS NewTagID, @NextSort AS AssignedSortOrder;
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRAN;
+    THROW 50051, ERROR_MESSAGE(), 1;
+  END CATCH
+END
+GO
+
+
+
+/* =========================================================
+   4) UPDATE
+   Purpose: Rename a tag and/or toggle active flag (backend owns SortOrder)
+   Params:  @TagID, @NewTagValue (nullable), @IsActive (nullable), @User (optional)
+   Returns: Updated row
+   Notes:   Uses TRAN; prevents duplicate active values within a list
+   ========================================================= */
+CREATE OR ALTER PROC dbo.usp_SelectionTag_Update
+  @TagID       INT,
+  @NewTagValue NVARCHAR(128) = NULL,
+  @IsActive    BIT           = NULL,
+  @User        NVARCHAR(128) = NULL
+AS
+BEGIN
+  SET NOCOUNT ON;
+  SET XACT_ABORT ON;
+
+  BEGIN TRY
+    BEGIN TRAN;
+
+    DECLARE @ListName NVARCHAR(64), @CurValue NVARCHAR(128), @CurActive BIT;
+    SELECT @ListName = ListName, @CurValue = TagValue, @CurActive = IsActive
+    FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
+    WHERE TagID = @TagID;
+
+    IF @ListName IS NULL
+      THROW 50052, 'Update failed: Tag not found.', 1;
+
+    DECLARE @FinalValue  NVARCHAR(128) = COALESCE(@NewTagValue, @CurValue);
+    DECLARE @FinalActive BIT           = COALESCE(@IsActive,    @CurActive);
+
+    IF @FinalActive = 1 AND EXISTS (
+      SELECT 1
+      FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
+      WHERE ListName = @ListName
+        AND TagValue = @FinalValue
+        AND IsActive = 1
+        AND TagID <> @TagID
+    )
+      THROW 50053, 'Duplicate active tag value in this list.', 1;
+
+    UPDATE dbo.SelectionTag
+       SET TagValue  = @FinalValue,
+           IsActive  = @FinalActive,
+           UpdatedAt = SYSUTCDATETIME(),
+           UpdatedBy = COALESCE(@User, SUSER_SNAME())
+     WHERE TagID = @TagID;
+
+    COMMIT TRAN;
+
+    SELECT TagID, ListName, TagValue, IsActive, SortOrder, UpdatedAt, UpdatedBy
+    FROM dbo.SelectionTag WHERE TagID = @TagID;
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRAN;
+    THROW 50054, ERROR_MESSAGE(), 1;
+  END CATCH
+END
+GO
+
+/* =========================================================
+   5) SOFT DELETE
+   Purpose: Mark a tag inactive (soft delete)
+   Params:  @TagID, @User (optional)
+   Returns: Updated row
+   Notes:   Uses TRAN
+   ========================================================= */
+CREATE OR ALTER PROC dbo.usp_SelectionTag_SoftDelete
+  @TagID INT,
+  @User  NVARCHAR(128) = NULL
+AS
+BEGIN
+  SET NOCOUNT ON;
+  SET XACT_ABORT ON;
+
+  BEGIN TRY
+    BEGIN TRAN;
+
+    UPDATE dbo.SelectionTag
+       SET IsActive  = 0,
+           UpdatedAt = SYSUTCDATETIME(),
+           UpdatedBy = COALESCE(@User, SUSER_SNAME())
+     WHERE TagID = @TagID;
+
+    IF @@ROWCOUNT = 0
+      THROW 50055, 'Soft delete failed: Tag not found.', 1;
+
+    COMMIT TRAN;
+
+    SELECT TagID, ListName, TagValue, IsActive, SortOrder, UpdatedAt, UpdatedBy
+    FROM dbo.SelectionTag WHERE TagID = @TagID;
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRAN;
+    THROW 50056, ERROR_MESSAGE(), 1;
+  END CATCH
+END
+GO
+
+
+/* =========================================================
+   6) RESTORE
+   Purpose: Reactivate a previously soft-deleted tag
+   Params:  @TagID, @User (optional)
+   Returns: Updated row
+   Notes:   Uses TRAN; blocks restore if it would duplicate an active value
+   ========================================================= */
+CREATE OR ALTER PROC dbo.usp_SelectionTag_Restore
+  @TagID INT,
+  @User  NVARCHAR(128) = NULL
+AS
+BEGIN
+  SET NOCOUNT ON;
+  SET XACT_ABORT ON;
+
+  BEGIN TRY
+    BEGIN TRAN;
+
+    DECLARE @ListName NVARCHAR(64), @TagValue NVARCHAR(128);
+    SELECT @ListName = ListName, @TagValue = TagValue
+    FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
+    WHERE TagID = @TagID;
+
+    IF @ListName IS NULL
+      THROW 50057, 'Restore failed: Tag not found.', 1;
+
+    IF EXISTS (
+      SELECT 1
+      FROM dbo.SelectionTag WITH (UPDLOCK, HOLDLOCK)
+      WHERE ListName = @ListName
+        AND TagValue = @TagValue
+        AND IsActive = 1
+        AND TagID <> @TagID
+    )
+      THROW 50058, 'Restore would duplicate an active tag in this list.', 1;
+
+    UPDATE dbo.SelectionTag
+       SET IsActive  = 1,
+           UpdatedAt = SYSUTCDATETIME(),
+           UpdatedBy = COALESCE(@User, SUSER_SNAME())
+     WHERE TagID = @TagID;
+
+    COMMIT TRAN;
+
+    SELECT TagID, ListName, TagValue, IsActive, SortOrder, UpdatedAt, UpdatedBy
+    FROM dbo.SelectionTag WHERE TagID = @TagID;
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRAN;
+    THROW 50059, ERROR_MESSAGE(), 1;
+  END CATCH
+END
+GO
+
+

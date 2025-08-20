@@ -1,11 +1,5 @@
-    // Policy names centralized in PortalPolicies
-    options.AddPolicy(PortalPolicies.Admin, p => p.RequireClaim(PortalClaimTypes.Policy, PortalPolicies.Admin));
+// Services
+builder.Services.AddScoped<IPortalPolicyService, PortalPolicyService>();
 
-    options.AddPolicy(PortalPolicies.EditOTDPAll,   p => p.RequireClaim(PortalClaimTypes.Policy, PortalPolicies.EditOTDPAll));
-    options.AddPolicy(PortalPolicies.EditTDMAll,    p => p.RequireClaim(PortalClaimTypes.Policy, PortalPolicies.EditTDMAll));
-    options.AddPolicy(PortalPolicies.EditAccessAll, p => p.RequireClaim(PortalClaimTypes.Policy, PortalPolicies.EditAccessAll));
-    options.AddPolicy(PortalPolicies.EditGSAMAll,   p => p.RequireClaim(PortalClaimTypes.Policy, PortalPolicies.EditGSAMAll));
-
-    // Account Managers (Customer Update only across Request/TDM/Access)
-    options.AddPolicy(PortalPolicies.EditCustomerUpdate, p => p.RequireClaim(PortalClaimTypes.Policy, PortalPolicies.EditCustomerUpdate));
-});
+// Turn policies from DB into claims per request
+builder.Services.AddTransient<IClaimsTransformation, PortalClaimsTransformation>();

@@ -1,14 +1,16 @@
+using System.Security.Claims;
+
 namespace Gef.Portal.Auth;
 
-public static class PortalPolicies
+public static class PortalClaimTypes
 {
-    public const string Admin = "Admin";
+    // Repeated claim containing each policy string (from your SP)
+    public const string Policy = "portal:policy";
 
-    public const string EditOTDPAll   = "Edit.OTDP.All";
-    public const string EditTDMAll    = "Edit.TDM.All";
-    public const string EditAccessAll = "Edit.Access.All";
-    public const string EditGSAMAll   = "Edit.GSAM.All";
-
-    // Account Managers
-    public const string EditCustomerUpdate = "Edit.CustomerUpdate";
+    // Identity echoes (filled from SSO headers)
+    public const string EID = "portal:eid";
+    public const string UserName = ClaimTypes.Name; // reuse Name
+    public const string GivenName = ClaimTypes.GivenName;
+    public const string Surname = ClaimTypes.Surname;
+    public const string Email = ClaimTypes.Email;
 }

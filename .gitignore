@@ -1,5 +1,14 @@
-// Services
-builder.Services.AddScoped<IPortalPolicyService, PortalPolicyService>();
+namespace Gef.Portal.Auth;
 
-// Turn policies from DB into claims per request
-builder.Services.AddTransient<IClaimsTransformation, PortalClaimsTransformation>();
+public static class PortalPolicies
+{
+    public const string Admin = "Admin";
+
+    public const string EditOTDPAll   = "Edit.OTDP.All";
+    public const string EditTDMAll    = "Edit.TDM.All";
+    public const string EditAccessAll = "Edit.Access.All";
+    public const string EditGSAMAll   = "Edit.GSAM.All";
+
+    // Account Managers
+    public const string EditCustomerUpdate = "Edit.CustomerUpdate";
+}

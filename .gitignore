@@ -1,16 +1,64 @@
 using System.Security.Claims;
+using System.Text.Encodings.Web;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.Options;
 
 namespace Gef.Portal.Auth;
 
-public static class PortalClaimTypes
+// Trusts SSO/edge-provided headers to build an authenticated identity.
+// IMPORTANT: Ensure your reverse proxy strips/overwrites these headers
+// so clients cannot spoof them.
+public sealed class HeaderAuthenticationHandler
+    : AuthenticationHandler<AuthenticationSchemeOptions>
 {
-    // Repeated claim containing each policy string (from your SP)
-    public const string Policy = "portal:policy";
+    private readonly HeaderAuthOptions _opts;
 
-    // Identity echoes (filled from SSO headers)
-    public const string EID = "portal:eid";
-    public const string UserName = ClaimTypes.Name; // reuse Name
-    public const string GivenName = ClaimTypes.GivenName;
-    public const string Surname = ClaimTypes.Surname;
-    public const string Email = ClaimTypes.Email;
+    public HeaderAuthenticationHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger,
+        UrlEncoder encoder,
+        ISystemClock clock,
+        IOptions<HeaderAuthOptions> headerOptions)
+        : base(options, logger, encoder, clock)
+    {
+        _opts = headerOptions.Value;
+    }
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        var req = Request.Headers;
+
+        var userName = req[_opts.UserNameHeader].FirstOrDefault();
+        var eid      = req[_opts.EIDHeader].FirstOrDefault();
+
+        if (string.IsNullOrWhiteSpace(userName) && string.IsNullOrWhiteSpace(eid))
+        {
+            return Task.FromResult(AuthenticateResult.Fail("Missing identity headers."));
+        }
+
+        var claims = new List<Claim>();
+
+        if (!string.IsNullOrWhiteSpace(userName))
+            claims.Add(new Claim(PortalClaimTypes.UserName, userName));
+
+        if (!string.IsNullOrWhiteSpace(eid))
+            claims.Add(new Claim(PortalClaimTypes.EID, eid));
+
+        var first = req[_opts.FirstNameHeader].FirstOrDefault();
+        var last  = req[_opts.LastNameHeader].FirstOrDefault();
+        var email = req[_opts.EmailHeader].FirstOrDefault();
+
+        if (!string.IsNullOrWhiteSpace(first))
+            claims.Add(new Claim(PortalClaimTypes.GivenName, first));
+        if (!string.IsNullOrWhiteSpace(last))
+            claims.Add(new Claim(PortalClaimTypes.Surname, last));
+        if (!string.IsNullOrWhiteSpace(email))
+            claims.Add(new Claim(PortalClaimTypes.Email, email));
+
+        var identity = new ClaimsIdentity(claims, Scheme.Name);
+        var principal = new ClaimsPrincipal(identity);
+        var ticket = new AuthenticationTicket(principal, Scheme.Name);
+
+        return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
 }

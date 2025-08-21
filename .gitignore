@@ -1,153 +1,74 @@
-using System.Reflection;
-using System.Security.Claims;
-using Gef.Portal.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.Filters;
+// Extensions/SerilogExtensions.cs
+using Serilog;
+using Serilog.Events;
+using Serilog.Formatting.Json;
 
-namespace Gef.Portal.Filters;
+namespace Gef.Portal.Extensions;
 
 /// <summary>
-/// Enforces "Customer Update only" edits for Account Managers on specific endpoints.
-/// Bypass: Admin or the page's full-edit policy (e.g., Edit.TDM.All).
-/// Enforcement: if caller only has Edit.CustomerUpdate, the request body may contain
-///   - the single allowed field (e.g., "requestCustomerUpdate" or "tdmRemarks"),
-///   - and key/identity fields (IDs you list).
-/// Any other non-empty/non-null field results in 403.
-/// 
-/// Usage (examples):
-///   [CustomerUpdateOnly(allowedProperty: "requestCustomerUpdate", fullEditPolicy: PortalPolicies.EditAccessAll, keyProperties: new[] { "appId", "opportunity" })]
-///   [CustomerUpdateOnly("tdmRemarks", PortalPolicies.EditTDMAll, new[] { "appId" })]
-/// 
-/// Notes:
-/// - Property name checks are case-insensitive.
-/// - "Provided" means: string has non-whitespace; Nullable<T> has value; reference types non-null.
-///   Non-nullable value types are ignored (treated as not provided) to avoid false positives.
-/// - This filter assumes update DTOs send only fields they intend to change (recommended).
+/// Centralized Serilog bootstrapping (JSON file logs + daily rolling + retention).
+/// Keeps Program.cs clean and uses appsettings for overrides.
 /// </summary>
-[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
-public sealed class CustomerUpdateOnlyAttribute : Attribute, IAsyncActionFilter
+public static class SerilogExtensions
 {
-    private readonly string _allowedProperty;
-    private readonly string _fullEditPolicy;
-    private readonly HashSet<string> _keyProps;
-
-    public bool CaseInsensitive { get; init; } = true;
-
-    /// <param name="allowedProperty">The single field AMs can edit (e.g., "requestCustomerUpdate", "tdmRemarks").</param>
-    /// <param name="fullEditPolicy">The page's full-edit policy (e.g., PortalPolicies.EditTDMAll). If empty, only Admin bypasses.</param>
-    /// <param name="keyProperties">ID/identity fields always allowed (e.g., "appId", "opportunity").</param>
-    public CustomerUpdateOnlyAttribute(string allowedProperty, string fullEditPolicy, string[]? keyProperties = null)
+    /// <summary>
+    /// Configure Serilog for the host using appsettings and a JSON file sink.
+    /// Ensures the log directory exists (dev: .\Logs, IIS: D:\ProjectName\Logs unless overridden).
+    /// Call this BEFORE builder.Build().
+    /// </summary>
+    public static void UsePortalSerilog(this WebApplicationBuilder builder)
     {
-        _allowedProperty = allowedProperty ?? throw new ArgumentNullException(nameof(allowedProperty));
-        _fullEditPolicy  = fullEditPolicy  ?? string.Empty;
-        _keyProps = new HashSet<string>(keyProperties ?? Array.Empty<string>(),
-            StringComparer.OrdinalIgnoreCase);
+        var cfg = builder.Configuration;
+        var env = builder.Environment;
+
+        // Resolve log directory with sensible defaults per environment
+        var defaultDir = env.IsDevelopment() ? ".\\Logs" : "D:\\ProjectName\\Logs";
+        var dir = cfg["Logging:Directory"] ?? defaultDir;
+
+        Directory.CreateDirectory(dir); // ensure folder exists
+
+        builder.Host.UseSerilog((ctx, sp, lc) =>
+        {
+            // Read minimum levels; fall back to Information
+            var minText = cfg["Logging:MinimumLevel"];
+            var min = Enum.TryParse<LogEventLevel>(minText, true, out var parsed)
+                ? parsed
+                : LogEventLevel.Information;
+
+            lc.MinimumLevel.Is(min)
+              .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+              .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+              .MinimumLevel.Override("System", LogEventLevel.Warning)
+              .Enrich.FromLogContext()
+              .Enrich.WithEnvironmentName()
+              .Enrich.WithMachineName()
+              .Enrich.WithProcessId()
+              .Enrich.WithThreadId()
+              .WriteTo.File(
+                  formatter: new JsonFormatter(),
+                  path: Path.Combine(dir, "log-.json"),
+                  rollingInterval: RollingInterval.Day,
+                  retainedFileCountLimit: 30,
+                  fileSizeLimitBytes: 10_000_000,   // ~10 MB per file
+                  rollOnFileSizeLimit: true,
+                  shared: true                      // important for IIS
+              );
+        });
     }
 
-    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    /// <summary>
+    /// Adds request logging (status/latency) with smart level selection.
+    /// Call this early in the pipeline (after exception handler).
+    /// </summary>
+    public static IApplicationBuilder UsePortalRequestLogging(this IApplicationBuilder app)
     {
-        var user = context.HttpContext.User;
-        var userPolicies = user.FindAll(PortalClaimTypes.Policy)
-                               .Select(c => c.Value)
-                               .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        // Bypass for Admin or page full-edit policy (if defined)
-        if (userPolicies.Contains(PortalPolicies.Admin) ||
-            (!string.IsNullOrWhiteSpace(_fullEditPolicy) && userPolicies.Contains(_fullEditPolicy)))
+        app.UseSerilogRequestLogging(opts =>
         {
-            await next();
-            return;
-        }
-
-        // Must have Edit.CustomerUpdate to proceed on this endpoint
-        if (!userPolicies.Contains(PortalPolicies.EditCustomerUpdate))
-        {
-            context.Result = Forbid("You do not have permission to modify this resource.");
-            return;
-        }
-
-        // Identify the body DTO (first complex argument)
-        var bodyArg = context.ActionArguments.Values
-            .FirstOrDefault(v => v is not null && !IsSimpleType(v.GetType()));
-
-        if (bodyArg is null)
-        {
-            // No body provided; treat as no-op
-            await next();
-            return;
-        }
-
-        // Build allowed set (allowed field + keys)
-        var allowedNames = new HashSet<string>(_keyProps, StringComparer.OrdinalIgnoreCase)
-        {
-            _allowedProperty
-        };
-
-        // Find any disallowed provided fields
-        var disallowedProvided = new List<string>();
-        foreach (var prop in bodyArg.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public))
-        {
-            if (!prop.CanRead) continue;
-
-            var name = prop.Name;
-            var isAllowed = allowedNames.Contains(name);
-            if (isAllowed) continue;
-
-            var value = prop.GetValue(bodyArg);
-            if (IsProvided(value, prop.PropertyType))
-            {
-                disallowedProvided.Add(name);
-            }
-        }
-
-        if (disallowedProvided.Count > 0)
-        {
-            context.Result = Forbid(
-                $"Only '{_allowedProperty}' may be modified for your role. " +
-                $"Not allowed: {string.Join(", ", disallowedProvided)}");
-            return;
-        }
-
-        await next();
-    }
-
-    private static bool IsSimpleType(Type t)
-    {
-        t = Nullable.GetUnderlyingType(t) ?? t;
-        return t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal) || t == typeof(DateTime) || t == typeof(Guid);
-    }
-
-    private static bool IsProvided(object? value, Type type)
-    {
-        if (value is null) return false;
-
-        var t = Nullable.GetUnderlyingType(type) ?? type;
-
-        // Strings: non-empty => provided
-        if (t == typeof(string)) return !string.IsNullOrWhiteSpace(value as string);
-
-        // Nullable<T>: HasValue => provided
-        if (Nullable.GetUnderlyingType(type) is not null)
-        {
-            var hasValue = (bool)type.GetProperty("HasValue")!.GetValue(value)!;
-            return hasValue;
-        }
-
-        // Non-nullable value types: ignore (treated as not provided) to avoid false positives
-        if (t.IsValueType) return false;
-
-        // Reference types: non-null => provided
-        return true;
-    }
-
-    private static ObjectResult Forbid(string message)
-    {
-        var pd = new ProblemDetails
-        {
-            Status = StatusCodes.Status403Forbidden,
-            Title = "Forbidden",
-            Detail = message
-        };
-        return new ObjectResult(pd) { StatusCode = StatusCodes.Status403Forbidden };
+            opts.GetLevel = (ctx, elapsed, ex) =>
+                ex is null && ctx.Response.StatusCode < 500
+                    ? LogEventLevel.Information
+                    : LogEventLevel.Error;
+        });
+        return app;
     }
 }

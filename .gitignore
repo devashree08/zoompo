@@ -1,61 +1,85 @@
-using Serilog.Context;
-using Gef.Portal.Authorization;
+# Authorization Overview
 
-namespace Gef.Portal.Middlewares;
+Employee (SSO) ──► Portal API
+   │                 │
+   │     SSO headers/Items (eid, username, …)
+   ▼                 │
+[Identity middleware]│
+   │  looks up user’s policies via stored proc
+   ▼                 │
+[Policy claims stamped on the user]
+   │                 │
+   ▼                 ▼
+[Authorize(Policy=…)] + [CustomerUpdateOnly filter]
+   │
+   └─► Decision: Read (default) or Write (if policy allows)
 
-/// <summary>
-/// Ensures every request has a stable correlation id and enriches logs with:
-///   - correlationId  (from X-Correlation-ID request header, else TraceIdentifier)
-///   - eid            (from claims)
-///   - userName       (from claims)
-/// Also echoes X-Correlation-ID on the response.
-/// Place BEFORE request logging so enrichment appears in request logs.
-/// </summary>
-public sealed class CorrelationLoggingMiddleware(RequestDelegate next)
-{
-    private const string CorrelationHeader = "X-Correlation-ID";
-    private const int MaxCorrelationLength = 100; // safety cap
-    private readonly RequestDelegate _next = next;
 
-    public async Task InvokeAsync(HttpContext ctx)
-    {
-        // Accept inbound correlation id (if present), else use TraceIdentifier
-        var inbound =
-            ctx.Request.Headers[CorrelationHeader].FirstOrDefault()
-            ?? ctx.Request.Headers["X-Request-ID"].FirstOrDefault();
+| AD Group                           | Policies granted                    | Where they can write (beyond read-only)          |
+| ---------------------------------- | ----------------------------------- | ------------------------------------------------ |
+| **GEF\_PORTAL\_ADMINS**            | `Admin` (implies all edit policies) | **Every** write endpoint + admin tools           |
+| **GEF\_PORTAL\_ACCOUNT\_MANAGERS** | `Edit.CustomerUpdate`               | **Customer Update only** on Request, TDM, Access |
+| **GEF\_PORTAL\_OTDP**              | `Edit.OTDP.All`                     | OTDP page                                        |
+| **GEF\_PORTAL\_TDM**               | `Edit.TDM.All`                      | TDM page                                         |
+| **GEF\_PORTAL\_ACCESS**            | `Edit.Access.All`                   | Access Mgmt page                                 |
+| **GEF\_PORTAL\_GSAM**              | `Edit.GSAM.All`                     | GSAM page                                        |
+| **GEF\_PORTAL\_READONLY**          | *(no edit policy)*                  | Read-only                                        |
 
-        var correlationId = SanitizeCorrelationId(inbound) ?? ctx.TraceIdentifier;
 
-        // Echo it on the response
-        ctx.Response.Headers[CorrelationHeader] = correlationId;
+Special rules (plain English)
 
-        // Pull minimal identity (avoid PII beyond EID/username)
-        var eid  = ctx.User?.FindFirst(PortalClaimTypes.EID)?.Value ?? string.Empty;
-        var user = ctx.User?.Identity?.Name ?? string.Empty;
+Read-only for everyone by default (must be signed in).
 
-        // Enrich Serilog context for the lifetime of this request
-        using (LogContext.PushProperty("correlationId", correlationId, destructureObjects: false))
-        using (LogContext.PushProperty("eid", eid, destructureObjects: false))
-        using (LogContext.PushProperty("userName", user, destructureObjects: false))
-        {
-            await _next(ctx);
-        }
-    }
+Admins can do everything, including admin tools (Selection Tags, Change Log).
 
-    private static string? SanitizeCorrelationId(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return null;
+Account Managers can only edit the Customer Update field on Request, TDM, Access—no other fields.
 
-        // trim and cap length; allow visible characters except control chars
-        var trimmed = raw.Trim();
-        if (trimmed.Length > MaxCorrelationLength)
-            trimmed = trimmed[..MaxCorrelationLength];
+OTDP/TDM/Access/GSAM groups can fully edit their own page.
 
-        // Basic control-char guard
-        foreach (var ch in trimmed)
-        {
-            if (char.IsControl(ch)) return null;
-        }
-        return trimmed;
-    }
-}
+If someone is in two groups, they get both sets of rights.
+
+
+## Identity inputs (from SSO)
+- Items: `pzid`, `firstName`, `lastName`, `eid`, `email` (fallback to same-named headers).
+- Middleware builds an authenticated principal and stamps policies from the DB.
+
+## Claim types
+- `portal:policy` — one per effective policy (value = policy name).
+- `portal:eid`, `Name` (username), `GivenName`, `Surname`, `Email` — echoes from SSO.
+
+## Baseline policies (constants available in code)
+- `Admin` — full access across the portal.
+- `Edit.OTDP.All` — write access on OTDP endpoints.
+- `Edit.TDM.All` — write access on TDM endpoints.
+- `Edit.Access.All` — write access on Access Management endpoints.
+- `Edit.GSAM.All` — write access on GSAM endpoints.
+- `Edit.CustomerUpdate` — limited write access: “Customer Update” field on Request/TDM/Access pages.
+
+> Additional policies may be introduced by the DB (stored proc `dbo.usp_PortalPolicies_GetForUser`) and are automatically recognized by the app via the **dynamic policy provider**.
+
+## Group-to-policy mapping (Phase 1)
+| AD Group                       | Policies Granted                        |
+|--------------------------------|-----------------------------------------|
+| GEF_PORTAL_ADMINS              | Admin (implies all edit policies)       |
+| GEF_PORTAL_ACCOUNT_MANAGERS    | Edit.CustomerUpdate                     |
+| GEF_PORTAL_OTDP                | Edit.OTDP.All                           |
+| GEF_PORTAL_TDM                 | Edit.TDM.All                            |
+| GEF_PORTAL_ACCESS              | Edit.Access.All                         |
+| GEF_PORTAL_GSAM                | Edit.GSAM.All                           |
+| GEF_PORTAL_READONLY            | (no edit policy; read-only)             |
+
+**Multiple memberships**: union of policies; Admin supersedes.
+
+## Default behavior (Option A)
+- All **authenticated** users can perform **GET** (read-only).
+- **Write** endpoints must require the corresponding policy (e.g., `Edit.TDM.All`), Admin passes all.
+
+## Propagation expectations
+- AD feed refresh: every 3–4 hours.
+- App cache TTL: 5 minutes (configurable in `Auth:PolicyCache:Minutes`).
+- Worst-case role change to take effect: feed interval + TTL (~4h 5m).
+
+## Naming conventions
+- Policies are `Pascal.Case.With.Dots` (e.g., `Edit.TDM.All`).
+- Claim types use a `portal:` prefix (e.g., `portal:policy`, `portal:eid`).
+

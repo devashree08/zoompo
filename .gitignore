@@ -1,45 +1,54 @@
-using System.Security.Claims;
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.Extensions.Logging;
-using Gef.Portal.Services;
-
-namespace Gef.Portal.Auth;
-
-// Runs after authentication. Queries your SP for policy names and
-// stamps them into the identity as claims: portal:policy = <PolicyName>.
-public sealed class PortalClaimsTransformation : IClaimsTransformation
+public sealed class PortalPolicyService(
+    GEF_DbContext db,
+    IMemoryCache cache,
+    TimeProvider timeProvider,
+    IOptions<PolicyCacheOptions> cacheOptions,
+    ILogger<PortalPolicyService> logger
+) : IPortalPolicyService
 {
-    private readonly IPortalPolicyService _service;
-    private readonly ILogger<PortalClaimsTransformation> _logger;
+    private readonly GEF_DbContext _db = db;
+    private readonly IMemoryCache _cache = cache;
+    private readonly TimeProvider _time = timeProvider;
+    private readonly PolicyCacheOptions _opts = cacheOptions.Value;
+    private readonly ILogger<PortalPolicyService> _log = logger;
 
-    public PortalClaimsTransformation(IPortalPolicyService service, ILogger<PortalClaimsTransformation> logger)
+    public async Task<IReadOnlyList<string>> GetPoliciesAsync(string? eid, string? userName, CancellationToken ct = default)
     {
-        _service = service;
-        _logger = logger;
-    }
+        // Key: prefer EID, fallback to username, else "anon"
+        var idKey = eid ?? userName ?? "anon";
+        var cacheKey = $"policies::{idKey}";
 
-    public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
-    {
-        var id = principal.Identity as ClaimsIdentity;
-        if (id is null || !id.IsAuthenticated)
-            return principal;
+        if (_cache.TryGetValue(cacheKey, out IReadOnlyList<string>? cached) && cached is not null)
+            return cached;
 
-        // Avoid double-stamping
-        if (id.FindFirst(PortalClaimTypes.Policy) is not null)
-            return principal;
-
-        var eid = id.FindFirst(PortalClaimTypes.EID)?.Value;
-        var userName = id.FindFirst(PortalClaimTypes.UserName)?.Value;
-
-        var policies = await _service.GetPoliciesAsync(eid, userName);
-
-        foreach (var p in policies)
+        try
         {
-            id.AddClaim(new Claim(PortalClaimTypes.Policy, p));
+            await using var conn = _db.Database.GetDbConnection();
+            if (conn.State != ConnectionState.Open)
+                await conn.OpenAsync(ct);
+
+            var p = new DynamicParameters();
+            p.Add("@UserEID",  eid,      DbType.String);
+            p.Add("@UserName", userName, DbType.String);
+
+            // SP returns zero rows if no membership (option A => read-only)
+            var rows = await conn.QueryAsync<string>(
+                sql: "dbo.usp_PortalPolicies_GetForUser",
+                param: p,
+                commandType: CommandType.StoredProcedure);
+
+            var list = (rows?.ToList() ?? new List<string>()).AsReadOnly();
+
+            var abs = _time.GetUtcNow().AddMinutes(_opts.Minutes);
+            _cache.Set(cacheKey, list, new MemoryCacheEntryOptions { AbsoluteExpiration = abs });
+
+            return list;
         }
-
-        _logger.LogDebug("User {User} ({EID}) policies: {Policies}", userName, eid, string.Join(",", policies));
-
-        return principal;
+        catch (Exception ex)
+        {
+            // Fail closed for edits: empty policy set -> no write policies granted
+            _log.LogError(ex, "Failed to resolve policies via SP for user {UserKey}", idKey);
+            return Array.Empty<string>();
+        }
     }
 }

@@ -1,10 +1,55 @@
-public string? EID { get; set; }
-    public string? UserName { get; set; }
-    public string[] Policies { get; set; } = Array.Empty<string>();
+using Gef.Portal.Authorization;
+using Gef.Portal.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 
-    public bool IsAdmin { get; set; }
-    public bool CanEditOTDP { get; set; }
-    public bool CanEditTDM { get; set; }
-    public bool CanEditAccess { get; set; }
-    public bool CanEditGSAM { get; set; }
-    public bool CanCustomerUpdate { get; set; }
+namespace Gef.Portal.Controllers;
+
+[Route("api/auth")]
+[ApiController]
+public sealed class GEF_Auth_Controller : ControllerBase
+{
+    [HttpGet("user-permissions")]
+    [Authorize] // any authenticated user
+    public async Task<IActionResult> GetUserPermissions(CancellationToken ct)
+    {
+        try
+        {
+            var u = HttpContext.User;
+            bool Has(string p) => u.HasClaim(PortalClaimTypes.Policy, p);
+
+            var dto = new GEF_UserPermissions_Model
+            {
+                EID      = u.FindFirst(PortalClaimTypes.EID)?.Value,
+                UserName = u.Identity?.Name,
+                Policies = u.FindAll(PortalClaimTypes.Policy)
+                            .Select(c => c.Value)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                            .ToArray(),
+
+                IsAdmin           = Has(PortalPolicies.Admin),
+                CanEditOTDP       = Has(PortalPolicies.EditOTDPAll)       || Has(PortalPolicies.Admin),
+                CanEditTDM        = Has(PortalPolicies.EditTDMAll)        || Has(PortalPolicies.Admin),
+                CanEditAccess     = Has(PortalPolicies.EditAccessAll)     || Has(PortalPolicies.Admin),
+                CanEditGSAM       = Has(PortalPolicies.EditGSAMAll)       || Has(PortalPolicies.Admin),
+                CanCustomerUpdate = Has(PortalPolicies.EditCustomerUpdate)|| Has(PortalPolicies.Admin)
+            };
+
+            // keep async signature consistent with your controllers
+            await Task.CompletedTask;
+            return Ok(dto);
+        }
+        catch (Exception)
+        {
+            var pd = new ProblemDetails
+            {
+                Status = StatusCodes.Status500InternalServerError,
+                Title = "An unexpected error occurred.",
+                Instance = HttpContext.Request.Path
+            };
+            pd.Extensions["correlationId"] = HttpContext.TraceIdentifier;
+            return StatusCode(StatusCodes.Status500InternalServerError, pd);
+        }
+    }
+}

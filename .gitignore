@@ -1,3 +1,88 @@
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Gef.Portal.Errors;
+
+/// <summary>
+/// Converts exceptions into RFC 7807 ProblemDetails with consistent status codes.
+/// Keep messages minimal; do not leak PII.
+/// </summary>
+public sealed class GlobalExceptionHandler : IExceptionHandler
+{
+    private readonly ILogger<GlobalExceptionHandler> _log;
+
+    public GlobalExceptionHandler(ILogger<GlobalExceptionHandler> log) => _log = log;
+
+    public async ValueTask<bool> TryHandleAsync(HttpContext httpContext, Exception exception, CancellationToken ct)
+    {
+        // Default
+        var status = StatusCodes.Status500InternalServerError;
+        var title  = "An unexpected error occurred.";
+
+        // Map your known exceptions (add more as you formalize)
+        switch (exception)
+        {
+            // Example: map concurrency signals from your SP wrapper to 409
+            case ConcurrencyConflictException:
+                status = StatusCodes.Status409Conflict;
+                title  = "The resource was changed by another process. Please refresh and retry.";
+                break;
+
+            case EntityNotFoundException:
+                status = StatusCodes.Status404NotFound;
+                title  = "Resource not found.";
+                break;
+
+            case ForbiddenOperationException:
+                status = StatusCodes.Status403Forbidden;
+                title  = "You do not have permission to perform this action.";
+                break;
+
+            case ValidationFailureException vfe:
+                status = StatusCodes.Status400BadRequest;
+                title  = "One or more validation errors occurred.";
+                // You may attach vfe.Errors as an extension if they’re already sanitized
+                httpContext.Items["validationErrors"] = vfe.Errors;
+                break;
+        }
+
+        // Log once per failure (include correlation id)
+        _log.LogError(exception, "Unhandled error. Status={Status} TraceId={TraceId}", status, httpContext.TraceIdentifier);
+
+        var problem = new ProblemDetails
+        {
+            Status = status,
+            Title  = title,
+            Instance = httpContext.Request.Path
+        };
+        problem.Extensions["correlationId"] = httpContext.TraceIdentifier;
+
+        if (httpContext.Items.TryGetValue("validationErrors", out var errs) && errs is object)
+            problem.Extensions["errors"] = errs;
+
+        httpContext.Response.StatusCode = status;
+        httpContext.Response.ContentType = "application/problem+json";
+        await httpContext.Response.WriteAsJsonAsync(problem, cancellationToken: ct);
+        return true; // we handled it
+    }
+}
+
+// Minimal custom exceptions you can throw from controller/SP wrappers
+public sealed class ConcurrencyConflictException : Exception { public ConcurrencyConflictException(string? m=null): base(m){} }
+public sealed class EntityNotFoundException     : Exception { public EntityNotFoundException(string? m=null): base(m){} }
+public sealed class ForbiddenOperationException : Exception { public ForbiddenOperationException(string? m=null): base(m){} }
+public sealed class ValidationFailureException  : Exception
+{
+    public IDictionary<string, string[]> Errors { get; }
+    public ValidationFailureException(IDictionary<string, string[]> errors, string? message = null) : base(message) => Errors = errors;
+}
+
+
+
+
+
+
+
 // Extensions/SerilogExtensions.cs
 using Serilog;
 using Serilog.Events;

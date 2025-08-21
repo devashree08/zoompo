@@ -1,30 +1,26 @@
-using Microsoft.AspNetCore.Authorization;
-using System.Security.Claims;
-
-namespace Gef.Portal.Authorization;
-
-/// <summary>
-/// Dynamic policy provider:
-/// - If a policy name is explicitly registered, use it.
-/// - Otherwise, dynamically create a policy that requires:
-///     * an authenticated user, and
-///     * a claim portal:policy == <policyName>
-/// This lets you add new roles/policies in the DB (via SP) without code changes.
-/// </summary>
-public sealed class DynamicPolicyProvider : DefaultAuthorizationPolicyProvider
+public sealed class DynamicPolicyProvider(IAuthorizationPolicyProvider fallback)
+    : IAuthorizationPolicyProvider
 {
-    public DynamicPolicyProvider(IOptions<AuthorizationOptions> options) : base(options) { }
+    private readonly IAuthorizationPolicyProvider _fallback = fallback;
 
-    public override async Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
+    public Task<AuthorizationPolicy?> GetDefaultPolicyAsync()
+        => _fallback.GetDefaultPolicyAsync();
+
+    public Task<AuthorizationPolicy?> GetFallbackPolicyAsync()
+        => _fallback.GetFallbackPolicyAsync();
+
+    public async Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
     {
-        // Try a statically-registered policy first
-        var existing = await base.GetPolicyAsync(policyName);
+        // 1) Use any policy explicitly configured in AddAuthorization()
+        var existing = await _fallback.GetPolicyAsync(policyName);
         if (existing is not null) return existing;
 
-        // Otherwise build a claim-based policy dynamically
-        return new AuthorizationPolicyBuilder()
+        // 2) Otherwise, build a policy that matches our stamped policy claim
+        var p = new AuthorizationPolicyBuilder()
             .RequireAuthenticatedUser()
             .RequireClaim(PortalClaimTypes.Policy, policyName)
             .Build();
+
+        return p;
     }
 }

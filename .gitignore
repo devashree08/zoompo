@@ -1,48 +1,45 @@
-using System.Data;
-using Dapper;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.Logging;
+using Gef.Portal.Services;
 
-namespace Gef.Portal.Services;
+namespace Gef.Portal.Auth;
 
-public sealed class PortalPolicyService : IPortalPolicyService
+// Runs after authentication. Queries your SP for policy names and
+// stamps them into the identity as claims: portal:policy = <PolicyName>.
+public sealed class PortalClaimsTransformation : IClaimsTransformation
 {
-    private readonly GEF_DbContext _db;
-    private readonly IMemoryCache _cache;
-    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
+    private readonly IPortalPolicyService _service;
+    private readonly ILogger<PortalClaimsTransformation> _logger;
 
-    public PortalPolicyService(GEF_DbContext db, IMemoryCache cache)
+    public PortalClaimsTransformation(IPortalPolicyService service, ILogger<PortalClaimsTransformation> logger)
     {
-        _db = db;
-        _cache = cache;
+        _service = service;
+        _logger = logger;
     }
 
-    public async Task<IReadOnlyList<string>> GetPoliciesAsync(
-        string? eid,
-        string? userName,
-        CancellationToken ct = default)
+    public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
     {
-        // Prefer EID, fallback to username
-        var cacheKey = $"policies::{eid ?? userName ?? "anon"}";
-        if (_cache.TryGetValue(cacheKey, out IReadOnlyList<string>? cached))
-            return cached;
+        var id = principal.Identity as ClaimsIdentity;
+        if (id is null || !id.IsAuthenticated)
+            return principal;
 
-        await using var conn = _db.Database.GetDbConnection();
-        if (conn.State != ConnectionState.Open) await conn.OpenAsync(ct);
+        // Avoid double-stamping
+        if (id.FindFirst(PortalClaimTypes.Policy) is not null)
+            return principal;
 
-        var p = new DynamicParameters();
-        p.Add("@UserEID",  eid,      DbType.String);
-        p.Add("@UserName", userName, DbType.String);
+        var eid = id.FindFirst(PortalClaimTypes.EID)?.Value;
+        var userName = id.FindFirst(PortalClaimTypes.UserName)?.Value;
 
-        // Calls Phase-1 SP (row-per-policy). Zero rows means "read-only".
-        var rows = await conn.QueryAsync<string>(
-            sql: "dbo.usp_PortalPolicies_GetForUser",
-            param: p,
-            commandType: CommandType.StoredProcedure);
+        var policies = await _service.GetPoliciesAsync(eid, userName);
 
-        var list = rows.ToList().AsReadOnly();
+        foreach (var p in policies)
+        {
+            id.AddClaim(new Claim(PortalClaimTypes.Policy, p));
+        }
 
-        _cache.Set(cacheKey, list, CacheTtl);
-        return list;
+        _logger.LogDebug("User {User} ({EID}) policies: {Policies}", userName, eid, string.Join(",", policies));
+
+        return principal;
     }
 }

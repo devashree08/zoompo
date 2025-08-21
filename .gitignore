@@ -1,54 +1,20 @@
-public sealed class PortalPolicyService(
-    GEF_DbContext db,
-    IMemoryCache cache,
-    TimeProvider timeProvider,
-    IOptions<PolicyCacheOptions> cacheOptions,
-    ILogger<PortalPolicyService> logger
-) : IPortalPolicyService
+public static class ServiceCollectionExtensions
 {
-    private readonly GEF_DbContext _db = db;
-    private readonly IMemoryCache _cache = cache;
-    private readonly TimeProvider _time = timeProvider;
-    private readonly PolicyCacheOptions _opts = cacheOptions.Value;
-    private readonly ILogger<PortalPolicyService> _log = logger;
-
-    public async Task<IReadOnlyList<string>> GetPoliciesAsync(string? eid, string? userName, CancellationToken ct = default)
+    /// <summary>
+    /// Registers PolicyCacheOptions, MemoryCache, TimeProvider, and PortalPolicyService.
+    /// Call this once in Program.cs during startup.
+    /// </summary>
+    public static IServiceCollection AddPortalPolicyServices(this IServiceCollection services, IConfiguration config)
     {
-        // Key: prefer EID, fallback to username, else "anon"
-        var idKey = eid ?? userName ?? "anon";
-        var cacheKey = $"policies::{idKey}";
+        services.Configure<PolicyCacheOptions>(config.GetSection("Auth:PolicyCache"));
+        services.AddMemoryCache();
 
-        if (_cache.TryGetValue(cacheKey, out IReadOnlyList<string>? cached) && cached is not null)
-            return cached;
+        // TimeProvider.System is fine; register if not already
+        services.AddSingleton<TimeProvider>(TimeProvider.System);
 
-        try
-        {
-            await using var conn = _db.Database.GetDbConnection();
-            if (conn.State != ConnectionState.Open)
-                await conn.OpenAsync(ct);
-
-            var p = new DynamicParameters();
-            p.Add("@UserEID",  eid,      DbType.String);
-            p.Add("@UserName", userName, DbType.String);
-
-            // SP returns zero rows if no membership (option A => read-only)
-            var rows = await conn.QueryAsync<string>(
-                sql: "dbo.usp_PortalPolicies_GetForUser",
-                param: p,
-                commandType: CommandType.StoredProcedure);
-
-            var list = (rows?.ToList() ?? new List<string>()).AsReadOnly();
-
-            var abs = _time.GetUtcNow().AddMinutes(_opts.Minutes);
-            _cache.Set(cacheKey, list, new MemoryCacheEntryOptions { AbsoluteExpiration = abs });
-
-            return list;
-        }
-        catch (Exception ex)
-        {
-            // Fail closed for edits: empty policy set -> no write policies granted
-            _log.LogError(ex, "Failed to resolve policies via SP for user {UserKey}", idKey);
-            return Array.Empty<string>();
-        }
+        services.AddScoped<IPortalPolicyService, PortalPolicyService>();
+        return services;
     }
 }
+
+

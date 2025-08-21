@@ -1,57 +1,153 @@
-public sealed class SsoIdentityMiddleware(
-    RequestDelegate next,
-    ILogger<SsoIdentityMiddleware> logger,
-    IOptions<HeaderIdentityOptions> options)
+using System.Reflection;
+using System.Security.Claims;
+using Gef.Portal.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
+
+namespace Gef.Portal.Filters;
+
+/// <summary>
+/// Enforces "Customer Update only" edits for Account Managers on specific endpoints.
+/// Bypass: Admin or the page's full-edit policy (e.g., Edit.TDM.All).
+/// Enforcement: if caller only has Edit.CustomerUpdate, the request body may contain
+///   - the single allowed field (e.g., "requestCustomerUpdate" or "tdmRemarks"),
+///   - and key/identity fields (IDs you list).
+/// Any other non-empty/non-null field results in 403.
+/// 
+/// Usage (examples):
+///   [CustomerUpdateOnly(allowedProperty: "requestCustomerUpdate", fullEditPolicy: PortalPolicies.EditAccessAll, keyProperties: new[] { "appId", "opportunity" })]
+///   [CustomerUpdateOnly("tdmRemarks", PortalPolicies.EditTDMAll, new[] { "appId" })]
+/// 
+/// Notes:
+/// - Property name checks are case-insensitive.
+/// - "Provided" means: string has non-whitespace; Nullable<T> has value; reference types non-null.
+///   Non-nullable value types are ignored (treated as not provided) to avoid false positives.
+/// - This filter assumes update DTOs send only fields they intend to change (recommended).
+/// </summary>
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+public sealed class CustomerUpdateOnlyAttribute : Attribute, IAsyncActionFilter
 {
-    private readonly RequestDelegate _next = next;
-    private readonly ILogger<SsoIdentityMiddleware> _logger = logger;
-    private readonly HeaderIdentityOptions _opts = options.Value;
+    private readonly string _allowedProperty;
+    private readonly string _fullEditPolicy;
+    private readonly HashSet<string> _keyProps;
 
-    public async Task InvokeAsync(HttpContext context)
+    public bool CaseInsensitive { get; init; } = true;
+
+    /// <param name="allowedProperty">The single field AMs can edit (e.g., "requestCustomerUpdate", "tdmRemarks").</param>
+    /// <param name="fullEditPolicy">The page's full-edit policy (e.g., PortalPolicies.EditTDMAll). If empty, only Admin bypasses.</param>
+    /// <param name="keyProperties">ID/identity fields always allowed (e.g., "appId", "opportunity").</param>
+    public CustomerUpdateOnlyAttribute(string allowedProperty, string fullEditPolicy, string[]? keyProperties = null)
     {
-        // Prefer Items set by SSO agent; fallback to headers
-        string? GetItem(string key) =>
-            context.Items.TryGetValue(key, out var v) && v is not null ? v.ToString()?.Trim() : null;
+        _allowedProperty = allowedProperty ?? throw new ArgumentNullException(nameof(allowedProperty));
+        _fullEditPolicy  = fullEditPolicy  ?? string.Empty;
+        _keyProps = new HashSet<string>(keyProperties ?? Array.Empty<string>(),
+            StringComparer.OrdinalIgnoreCase);
+    }
 
-        string? GetHeader(string key) =>
-            context.Request.Headers.TryGetValue(key, out var hv) ? hv.ToString().Trim() : null;
+    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    {
+        var user = context.HttpContext.User;
+        var userPolicies = user.FindAll(PortalClaimTypes.Policy)
+                               .Select(c => c.Value)
+                               .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var userName = GetItem(_opts.ItemUserNameKey) ?? GetHeader(_opts.HeaderUserName);
-        var eid      = GetItem(_opts.ItemEidKey)      ?? GetHeader(_opts.HeaderEid);
-        var first    = GetItem(_opts.ItemFirstNameKey)?? GetHeader(_opts.HeaderFirstName);
-        var last     = GetItem(_opts.ItemLastNameKey) ?? GetHeader(_opts.HeaderLastName);
-        var email    = GetItem(_opts.ItemEmailKey)    ?? GetHeader(_opts.HeaderEmail);
-
-        if (string.IsNullOrWhiteSpace(userName) && string.IsNullOrWhiteSpace(eid))
+        // Bypass for Admin or page full-edit policy (if defined)
+        if (userPolicies.Contains(PortalPolicies.Admin) ||
+            (!string.IsNullOrWhiteSpace(_fullEditPolicy) && userPolicies.Contains(_fullEditPolicy)))
         {
-            await _next(context);
+            await next();
             return;
         }
 
-        var claims = new List<Claim>(8);
-        if (!string.IsNullOrWhiteSpace(userName)) claims.Add(new Claim(PortalClaimTypes.UserName, userName));
-        if (!string.IsNullOrWhiteSpace(eid))      claims.Add(new Claim(PortalClaimTypes.EID, eid));
-        if (!string.IsNullOrWhiteSpace(first))    claims.Add(new Claim(PortalClaimTypes.GivenName, first));
-        if (!string.IsNullOrWhiteSpace(last))     claims.Add(new Claim(PortalClaimTypes.Surname, last));
-        if (!string.IsNullOrWhiteSpace(email))    claims.Add(new Claim(PortalClaimTypes.Email, email));
-
-        var identity  = new ClaimsIdentity(claims, authenticationType: "PortalSso");
-        var principal = new ClaimsPrincipal(identity);
-
-        // ⬇️ Resolve the scoped service PER REQUEST (fix for the root-scope error)
-        var policyService = context.RequestServices.GetRequiredService<IPortalPolicyService>();
-        var policyNames = await policyService.GetPoliciesAsync(eid, userName, context.RequestAborted);
-
-        foreach (var pn in policyNames)
+        // Must have Edit.CustomerUpdate to proceed on this endpoint
+        if (!userPolicies.Contains(PortalPolicies.EditCustomerUpdate))
         {
-            if (!string.IsNullOrWhiteSpace(pn))
-                identity.AddClaim(new Claim(PortalClaimTypes.Policy, pn));
+            context.Result = Forbid("You do not have permission to modify this resource.");
+            return;
         }
 
-        context.User = principal;
+        // Identify the body DTO (first complex argument)
+        var bodyArg = context.ActionArguments.Values
+            .FirstOrDefault(v => v is not null && !IsSimpleType(v.GetType()));
 
-        // keep logs minimal; we’ll tune later
-        // _logger.LogDebug("User {User}/{EID} policies: {Policies}", userName, eid, string.Join(",", policyNames));
+        if (bodyArg is null)
+        {
+            // No body provided; treat as no-op
+            await next();
+            return;
+        }
 
-        await _next(context);
+        // Build allowed set (allowed field + keys)
+        var allowedNames = new HashSet<string>(_keyProps, StringComparer.OrdinalIgnoreCase)
+        {
+            _allowedProperty
+        };
+
+        // Find any disallowed provided fields
+        var disallowedProvided = new List<string>();
+        foreach (var prop in bodyArg.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public))
+        {
+            if (!prop.CanRead) continue;
+
+            var name = prop.Name;
+            var isAllowed = allowedNames.Contains(name);
+            if (isAllowed) continue;
+
+            var value = prop.GetValue(bodyArg);
+            if (IsProvided(value, prop.PropertyType))
+            {
+                disallowedProvided.Add(name);
+            }
+        }
+
+        if (disallowedProvided.Count > 0)
+        {
+            context.Result = Forbid(
+                $"Only '{_allowedProperty}' may be modified for your role. " +
+                $"Not allowed: {string.Join(", ", disallowedProvided)}");
+            return;
+        }
+
+        await next();
     }
+
+    private static bool IsSimpleType(Type t)
+    {
+        t = Nullable.GetUnderlyingType(t) ?? t;
+        return t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal) || t == typeof(DateTime) || t == typeof(Guid);
+    }
+
+    private static bool IsProvided(object? value, Type type)
+    {
+        if (value is null) return false;
+
+        var t = Nullable.GetUnderlyingType(type) ?? type;
+
+        // Strings: non-empty => provided
+        if (t == typeof(string)) return !string.IsNullOrWhiteSpace(value as string);
+
+        // Nullable<T>: HasValue => provided
+        if (Nullable.GetUnderlyingType(type) is not null)
+        {
+            var hasValue = (bool)type.GetProperty("HasValue")!.GetValue(value)!;
+            return hasValue;
+        }
+
+        // Non-nullable value types: ignore (treated as not provided) to avoid false positives
+        if (t.IsValueType) return false;
+
+        // Reference types: non-null => provided
+        return true;
+    }
+
+    private static ObjectResult Forbid(string message)
+    {
+        var pd = new ProblemDetails
+        {
+            Status = StatusCodes.Status403Forbidden,
+            Title = "Forbidden",
+            Detail = message
+        };
+        return new ObjectResult(pd) { StatusCode = StatusCodes.Status403Forbidden };
+    }
+}

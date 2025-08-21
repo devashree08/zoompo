@@ -1,165 +1,39 @@
-public sealed class HeaderIdentityOptions
-{
-    // HttpContext.Items keys (preferred)
-    public string ItemUserNameKey { get; set; } = "pzid";
-    public string ItemFirstNameKey { get; set; } = "firstName";
-    public string ItemLastNameKey  { get; set; } = "lastName";
-    public string ItemEidKey       { get; set; } = "eid";
-    public string ItemEmailKey     { get; set; } = "email";
-
-    // Fallback HTTP headers (same names by default)
-    public string HeaderUserName { get; set; } = "pzid";
-    public string HeaderFirstName{ get; set; } = "firstName";
-    public string HeaderLastName { get; set; } = "lastName";
-    public string HeaderEid      { get; set; } = "eid";
-    public string HeaderEmail    { get; set; } = "email";
-}
-
-
-/// <summary>Central claim type constants used across the app.</summary>
-public static class PortalClaimTypes
-{
-    public const string Policy   = "portal:policy";   // value = policy name (e.g., "Edit.TDM.All")
-    public const string EID      = "portal:eid";      // echoes SSO EID
-    public const string UserName = ClaimTypes.Name;   // echoes SSO username
-    public const string GivenName= ClaimTypes.GivenName;
-    public const string Surname  = ClaimTypes.Surname;
-    public const string Email    = ClaimTypes.Email;
-}
-
-
+using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
-using Gef.Portal.Authorization;
-using Gef.Portal.Services;
-using Microsoft.Extensions.Options;
 
-namespace Gef.Portal.Middlewares;
+namespace Gef.Portal.Authorization;
 
 /// <summary>
-/// Builds an authenticated ClaimsPrincipal from SSO-provided values and stamps policy claims:
-/// 1) Pull identity from HttpContext.Items (keys: pzid, firstName, lastName, eid, email);
-///    if missing, fall back to request headers with the same names.
-/// 2) Call dbo.usp_PortalPolicies_GetForUser via IPortalPolicyService.
-/// 3) For each returned policy, add claim portal:policy = <PolicyName>.
-/// Note: trust boundary is your SSO/edge; ensure headers are stripped/overwritten there.
+/// Dynamic policy provider:
+/// - If a policy name is explicitly registered, use it.
+/// - Otherwise, dynamically create a policy that requires:
+///     * an authenticated user, and
+///     * a claim portal:policy == <policyName>
+/// This lets you add new roles/policies in the DB (via SP) without code changes.
 /// </summary>
-public sealed class SsoIdentityMiddleware(
-    RequestDelegate next,
-    ILogger<SsoIdentityMiddleware> logger,
-    IPortalPolicyService policyService,
-    IOptions<HeaderIdentityOptions> options)
+public sealed class DynamicPolicyProvider(IAuthorizationPolicyProvider fallback)
+    : IAuthorizationPolicyProvider
 {
-    private readonly RequestDelegate _next = next;
-    private readonly ILogger<SsoIdentityMiddleware> _logger = logger;
-    private readonly IPortalPolicyService _policies = policyService;
-    private readonly HeaderIdentityOptions _opts = options.Value;
+    private readonly IAuthorizationPolicyProvider _fallback = fallback;
 
-    public async Task InvokeAsync(HttpContext context)
+    public Task<AuthorizationPolicy?> GetDefaultPolicyAsync()
+        => _fallback.GetDefaultPolicyAsync();
+
+    public Task<AuthorizationPolicy?> GetFallbackPolicyAsync()
+        => _fallback.GetFallbackPolicyAsync();
+
+    public async Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
     {
-        // prefer Items set by SSO agent; fallback to headers
-        string? GetItem(string key) =>
-            context.Items.TryGetValue(key, out var v) && v is not null ? v.ToString()?.Trim() : null;
+        // 1) Use any policy explicitly configured in AddAuthorization()
+        var existing = await _fallback.GetPolicyAsync(policyName);
+        if (existing is not null) return existing;
 
-        string? GetHeader(string key) =>
-            context.Request.Headers.TryGetValue(key, out var hv) ? hv.ToString().Trim() : null;
+        // 2) Otherwise, build a policy that matches our stamped policy claim
+        var p = new AuthorizationPolicyBuilder()
+            .RequireAuthenticatedUser()
+            .RequireClaim(PortalClaimTypes.Policy, policyName)
+            .Build();
 
-        var userName = GetItem(_opts.ItemUserNameKey) ?? GetHeader(_opts.HeaderUserName);
-        var eid      = GetItem(_opts.ItemEidKey)      ?? GetHeader(_opts.HeaderEid);
-        var first    = GetItem(_opts.ItemFirstNameKey)?? GetHeader(_opts.HeaderFirstName);
-        var last     = GetItem(_opts.ItemLastNameKey) ?? GetHeader(_opts.HeaderLastName);
-        var email    = GetItem(_opts.ItemEmailKey)    ?? GetHeader(_opts.HeaderEmail);
-
-        // If neither username nor eid is present, proceed unauthenticated.
-        if (string.IsNullOrWhiteSpace(userName) && string.IsNullOrWhiteSpace(eid))
-        {
-            await _next(context);
-            return;
-        }
-
-        // Build identity (setting AuthenticationType makes it "authenticated")
-        var claims = new List<Claim>(8);
-        if (!string.IsNullOrWhiteSpace(userName)) claims.Add(new Claim(PortalClaimTypes.UserName, userName));
-        if (!string.IsNullOrWhiteSpace(eid))      claims.Add(new Claim(PortalClaimTypes.EID, eid));
-        if (!string.IsNullOrWhiteSpace(first))    claims.Add(new Claim(PortalClaimTypes.GivenName, first));
-        if (!string.IsNullOrWhiteSpace(last))     claims.Add(new Claim(PortalClaimTypes.Surname, last));
-        if (!string.IsNullOrWhiteSpace(email))    claims.Add(new Claim(PortalClaimTypes.Email, email));
-
-        var identity  = new ClaimsIdentity(claims, authenticationType: "PortalSso");
-        var principal = new ClaimsPrincipal(identity);
-
-        // Resolve policies from DB; stamp as policy claims
-        var policyNames = await _policies.GetPoliciesAsync(eid, userName, context.RequestAborted);
-        foreach (var pn in policyNames)
-        {
-            if (!string.IsNullOrWhiteSpace(pn))
-                identity.AddClaim(new Claim(PortalClaimTypes.Policy, pn));
-        }
-
-        context.User = principal;
-
-        _logger.LogDebug("User {User}/{EID} policies: {Policies}",
-            userName ?? "(none)", eid ?? "(none)", string.Join(",", policyNames));
-
-        await _next(context);
+        return p;
     }
-}
-
-
-
-
-using Gef.Portal.Middlewares;
-
-namespace Gef.Portal.Extensions;
-
-/// <summary>App pipeline helpers.</summary>
-public static class ApplicationBuilderExtensions
-{
-    /// <summary>Insert SSO identity middleware. Place before UseAuthorization().</summary>
-    public static IApplicationBuilder UseSsoIdentity(this IApplicationBuilder app)
-    {
-        return app.UseMiddleware<SsoIdentityMiddleware>();
-    }
-}
-
-
-
-using Gef.Portal.Authorization;
-using Gef.Portal.Configurations;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-
-namespace Gef.Portal.Extensions;
-
-public static partial class ServiceCollectionExtensions
-{
-    /// <summary>Bind identity/header options; register cache/time is done in AddPortalPolicyServices.</summary>
-    public static IServiceCollection AddSsoIdentityOptions(this IServiceCollection services, IConfiguration config)
-    {
-        services.Configure<HeaderIdentityOptions>(config.GetSection("Auth:Headers"));
-        return services;
-    }
-}
-
-
-
-
-
-{
-  "Auth": {
-    "Headers": {
-      "ItemUserNameKey": "pzid",
-      "ItemFirstNameKey": "firstName",
-      "ItemLastNameKey":  "lastName",
-      "ItemEidKey":       "eid",
-      "ItemEmailKey":     "email",
-      "HeaderUserName": "pzid",
-      "HeaderFirstName":"firstName",
-      "HeaderLastName": "lastName",
-      "HeaderEid":      "eid",
-      "HeaderEmail":    "email"
-    },
-    "PolicyCache": {
-      "Minutes": 5
-    }
-  }
 }

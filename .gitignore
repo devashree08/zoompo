@@ -1,55 +1,45 @@
-using Gef.Portal.Authorization;
-using Gef.Portal.Models;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
+using System.Data;
+using Dapper;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 
-namespace Gef.Portal.Controllers;
+namespace Gef.Portal.Errors.Health;
 
-[Route("api/auth")]
-[ApiController]
-public sealed class GEF_Auth_Controller : ControllerBase
+/// <summary>
+/// Readiness probe: verifies DB connectivity AND that the policy SP executes.
+/// Returns Healthy when both succeed, Unhealthy otherwise.
+/// Keep timeout short so probes don't hang.
+/// </summary>
+public sealed class PortalPolicyHealthCheck(GEF_DbContext db) : IHealthCheck
 {
-    [HttpGet("user-permissions")]
-    [Authorize] // any authenticated user
-    public async Task<IActionResult> GetUserPermissions(CancellationToken ct)
+    private readonly GEF_DbContext _db = db;
+
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            var u = HttpContext.User;
-            bool Has(string p) => u.HasClaim(PortalClaimTypes.Policy, p);
+            await using var conn = _db.Database.GetDbConnection();
+            if (conn.State != ConnectionState.Open)
+                await conn.OpenAsync(cancellationToken);
 
-            var dto = new GEF_UserPermissions_Model
-            {
-                EID      = u.FindFirst(PortalClaimTypes.EID)?.Value,
-                UserName = u.Identity?.Name,
-                Policies = u.FindAll(PortalClaimTypes.Policy)
-                            .Select(c => c.Value)
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-                            .ToArray(),
+            // Minimal, non-sensitive invocation; null inputs are fine.
+            var cmd = new CommandDefinition(
+                commandText: "dbo.usp_PortalPolicies_GetForUser",
+                parameters: new { UserEID = (string?)null, UserName = (string?)null },
+                commandType: CommandType.StoredProcedure,
+                commandTimeout: 2,                      // short timeout for probes
+                cancellationToken: cancellationToken);
 
-                IsAdmin           = Has(PortalPolicies.Admin),
-                CanEditOTDP       = Has(PortalPolicies.EditOTDPAll)       || Has(PortalPolicies.Admin),
-                CanEditTDM        = Has(PortalPolicies.EditTDMAll)        || Has(PortalPolicies.Admin),
-                CanEditAccess     = Has(PortalPolicies.EditAccessAll)     || Has(PortalPolicies.Admin),
-                CanEditGSAM       = Has(PortalPolicies.EditGSAMAll)       || Has(PortalPolicies.Admin),
-                CanCustomerUpdate = Has(PortalPolicies.EditCustomerUpdate)|| Has(PortalPolicies.Admin)
-            };
+            await conn.ExecuteAsync(cmd);
 
-            // keep async signature consistent with your controllers
-            await Task.CompletedTask;
-            return Ok(dto);
+            return HealthCheckResult.Healthy("DB reachable and policy SP executable.");
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            var pd = new ProblemDetails
-            {
-                Status = StatusCodes.Status500InternalServerError,
-                Title = "An unexpected error occurred.",
-                Instance = HttpContext.Request.Path
-            };
-            pd.Extensions["correlationId"] = HttpContext.TraceIdentifier;
-            return StatusCode(StatusCodes.Status500InternalServerError, pd);
+            // No PII; infra just needs Healthy/Unhealthy
+            return HealthCheckResult.Unhealthy("DB connectivity or policy SP failed.", ex);
         }
     }
 }

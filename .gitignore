@@ -1,85 +1,223 @@
-# Authorization Overview
+using Gef.Portal.Authorization;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 
-Employee (SSO) ──► Portal API
-   │                 │
-   │     SSO headers/Items (eid, username, …)
-   ▼                 │
-[Identity middleware]│
-   │  looks up user’s policies via stored proc
-   ▼                 │
-[Policy claims stamped on the user]
-   │                 │
-   ▼                 ▼
-[Authorize(Policy=…)] + [CustomerUpdateOnly filter]
-   │
-   └─► Decision: Read (default) or Write (if policy allows)
+namespace Gef.Portal.Controllers;
 
+[ApiController]
+[Route("api/auth")]
+public sealed class AuthController : ControllerBase
+{
+    [HttpGet("user-permissions")]
+    [Authorize] // any authenticated user
+    public IActionResult GetUserPermissions()
+    {
+        var u = HttpContext.User;
 
-| AD Group                           | Policies granted                    | Where they can write (beyond read-only)          |
-| ---------------------------------- | ----------------------------------- | ------------------------------------------------ |
-| **GEF\_PORTAL\_ADMINS**            | `Admin` (implies all edit policies) | **Every** write endpoint + admin tools           |
-| **GEF\_PORTAL\_ACCOUNT\_MANAGERS** | `Edit.CustomerUpdate`               | **Customer Update only** on Request, TDM, Access |
-| **GEF\_PORTAL\_OTDP**              | `Edit.OTDP.All`                     | OTDP page                                        |
-| **GEF\_PORTAL\_TDM**               | `Edit.TDM.All`                      | TDM page                                         |
-| **GEF\_PORTAL\_ACCESS**            | `Edit.Access.All`                   | Access Mgmt page                                 |
-| **GEF\_PORTAL\_GSAM**              | `Edit.GSAM.All`                     | GSAM page                                        |
-| **GEF\_PORTAL\_READONLY**          | *(no edit policy)*                  | Read-only                                        |
+        bool Has(string p) => u.HasClaim(PortalClaimTypes.Policy, p);
 
+        var dto = new
+        {
+            eid      = u.FindFirst(PortalClaimTypes.EID)?.Value,
+            userName = u.Identity?.Name,
+            policies = u.FindAll(PortalClaimTypes.Policy).Select(c => c.Value).Distinct().OrderBy(x => x),
 
-Special rules (plain English)
+            // convenience booleans for UI gating
+            isAdmin            = Has(PortalPolicies.Admin),
+            canEditOTDP        = Has(PortalPolicies.EditOTDPAll)        || Has(PortalPolicies.Admin),
+            canEditTDM         = Has(PortalPolicies.EditTDMAll)         || Has(PortalPolicies.Admin),
+            canEditAccess      = Has(PortalPolicies.EditAccessAll)      || Has(PortalPolicies.Admin),
+            canEditGSAM        = Has(PortalPolicies.EditGSAMAll)        || Has(PortalPolicies.Admin),
+            canCustomerUpdate  = Has(PortalPolicies.EditCustomerUpdate) || Has(PortalPolicies.Admin)
+        };
 
-Read-only for everyone by default (must be signed in).
-
-Admins can do everything, including admin tools (Selection Tags, Change Log).
-
-Account Managers can only edit the Customer Update field on Request, TDM, Access—no other fields.
-
-OTDP/TDM/Access/GSAM groups can fully edit their own page.
-
-If someone is in two groups, they get both sets of rights.
+        return Ok(dto);
+    }
+}
 
 
-## Identity inputs (from SSO)
-- Items: `pzid`, `firstName`, `lastName`, `eid`, `email` (fallback to same-named headers).
-- Middleware builds an authenticated principal and stamps policies from the DB.
 
-## Claim types
-- `portal:policy` — one per effective policy (value = policy name).
-- `portal:eid`, `Name` (username), `GivenName`, `Surname`, `Email` — echoes from SSO.
+using System.Data;
+using Dapper;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 
-## Baseline policies (constants available in code)
-- `Admin` — full access across the portal.
-- `Edit.OTDP.All` — write access on OTDP endpoints.
-- `Edit.TDM.All` — write access on TDM endpoints.
-- `Edit.Access.All` — write access on Access Management endpoints.
-- `Edit.GSAM.All` — write access on GSAM endpoints.
-- `Edit.CustomerUpdate` — limited write access: “Customer Update” field on Request/TDM/Access pages.
+namespace Gef.Portal.Errors.Health;
 
-> Additional policies may be introduced by the DB (stored proc `dbo.usp_PortalPolicies_GetForUser`) and are automatically recognized by the app via the **dynamic policy provider**.
+public sealed class PortalPolicyHealthCheck(GEF_DbContext db) : IHealthCheck
+{
+    private readonly GEF_DbContext _db = db;
 
-## Group-to-policy mapping (Phase 1)
-| AD Group                       | Policies Granted                        |
-|--------------------------------|-----------------------------------------|
-| GEF_PORTAL_ADMINS              | Admin (implies all edit policies)       |
-| GEF_PORTAL_ACCOUNT_MANAGERS    | Edit.CustomerUpdate                     |
-| GEF_PORTAL_OTDP                | Edit.OTDP.All                           |
-| GEF_PORTAL_TDM                 | Edit.TDM.All                            |
-| GEF_PORTAL_ACCESS              | Edit.Access.All                         |
-| GEF_PORTAL_GSAM                | Edit.GSAM.All                           |
-| GEF_PORTAL_READONLY            | (no edit policy; read-only)             |
+    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct = default)
+    {
+        try
+        {
+            await using var conn = _db.Database.GetDbConnection();
+            if (conn.State != ConnectionState.Open) await conn.OpenAsync(ct);
 
-**Multiple memberships**: union of policies; Admin supersedes.
+            // Minimal readiness: can we execute the policy SP without error?
+            // Use a short timeout to avoid hanging readiness.
+            var cmd = new CommandDefinition("dbo.usp_PortalPolicies_GetForUser",
+                        new { UserEID = (string?)null, UserName = (string?)null },
+                        commandType: CommandType.StoredProcedure,
+                        cancellationToken: ct, commandTimeout: 2);
+            await conn.ExecuteAsync(cmd);
 
-## Default behavior (Option A)
-- All **authenticated** users can perform **GET** (read-only).
-- **Write** endpoints must require the corresponding policy (e.g., `Edit.TDM.All`), Admin passes all.
+            return HealthCheckResult.Healthy("DB reachable and policy SP executable.");
+        }
+        catch (Exception ex)
+        {
+            return HealthCheckResult.Unhealthy("DB or policy SP failed.", ex);
+        }
+    }
+}
 
-## Propagation expectations
-- AD feed refresh: every 3–4 hours.
-- App cache TTL: 5 minutes (configurable in `Auth:PolicyCache:Minutes`).
-- Worst-case role change to take effect: feed interval + TTL (~4h 5m).
 
-## Naming conventions
-- Policies are `Pascal.Case.With.Dots` (e.g., `Edit.TDM.All`).
-- Claim types use a `portal:` prefix (e.g., `portal:policy`, `portal:eid`).
+
+builder.Services.AddHealthChecks()
+    .AddCheck("live", () => HealthCheckResult.Healthy(), tags: new[] { "live" })
+    .AddCheck<Gef.Portal.Errors.Health.PortalPolicyHealthCheck>("ready-db-policy", tags: new[] { "ready" });
+
+var app = builder.Build();
+
+app.MapHealthChecks("/health/live",  new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = r => r.Tags.Contains("live")  });
+app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = r => r.Tags.Contains("ready") });
+
+
+
+--
+
+using System.Reflection;
+using Gef.Portal.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
+
+namespace Gef.Portal.Filters;
+
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+public sealed class CustomerUpdateOnlyAttribute : Attribute, IAsyncActionFilter
+{
+    private readonly string _allowedProperty;
+    private readonly string _fullEditPolicy;
+    private readonly HashSet<string> _keyProps;
+    private readonly ILogger<CustomerUpdateOnlyAttribute>? _logger;
+
+    public CustomerUpdateOnlyAttribute(string allowedProperty, string fullEditPolicy, string[]? keyProperties = null)
+    {
+        _allowedProperty  = allowedProperty ?? throw new ArgumentNullException(nameof(allowedProperty));
+        _fullEditPolicy   = fullEditPolicy  ?? string.Empty;
+        _keyProps         = new HashSet<string>(keyProperties ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    {
+        // Resolve logger from request scope (avoids singleton ctor)
+        _logger ??= context.HttpContext.RequestServices.GetService<ILogger<CustomerUpdateOnlyAttribute>>();
+
+        var user      = context.HttpContext.User;
+        var route     = $"{context.HttpContext.Request.Method} {context.HttpContext.Request.Path}";
+        var eid       = user.FindFirst(PortalClaimTypes.EID)?.Value ?? string.Empty;
+
+        var userPolicies = user.FindAll(PortalClaimTypes.Policy)
+                               .Select(c => c.Value)
+                               .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Full edit bypass
+        if (userPolicies.Contains(PortalPolicies.Admin) ||
+            (!string.IsNullOrWhiteSpace(_fullEditPolicy) && userPolicies.Contains(_fullEditPolicy)))
+        {
+            await next();
+            return;
+        }
+
+        // Must at least have CustomerUpdate policy
+        if (!userPolicies.Contains(PortalPolicies.EditCustomerUpdate))
+        {
+            // LOG deny: missing minimal policy
+            _logger?.LogInformation("WRITE DENIED (missing policy). eid={EID} route={Route} need=Edit.CustomerUpdate", eid, route);
+
+            context.Result = Forbid("You do not have permission to modify this resource.");
+            return;
+        }
+
+        // Identify DTO
+        var bodyArg = context.ActionArguments.Values
+            .FirstOrDefault(v => v is not null && !IsSimpleType(v.GetType()));
+
+        if (bodyArg is null)
+        {
+            await next(); // treat as no-op
+            return;
+        }
+
+        // Allowed name set = allowed field + keys
+        var allowedNames = new HashSet<string>(_keyProps, StringComparer.OrdinalIgnoreCase) { _allowedProperty };
+
+        // Gather key values for logging
+        var keySnapshot = _keyProps.Select(k =>
+        {
+            var prop = bodyArg.GetType().GetProperty(k, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            var val = prop is null ? null : prop.GetValue(bodyArg);
+            return $"{k}={(val ?? "").ToString()}";
+        }).ToArray();
+
+        // Find disallowed provided fields
+        var disallowedProvided = new List<string>();
+        foreach (var prop in bodyArg.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public))
+        {
+            if (!prop.CanRead) continue;
+            var name  = prop.Name;
+            var value = prop.GetValue(bodyArg);
+
+            if (allowedNames.Contains(name)) continue;
+            if (IsProvided(value, prop.PropertyType))
+                disallowedProvided.Add(name);
+        }
+
+        if (disallowedProvided.Count > 0)
+        {
+            // LOG deny: field blocked
+            _logger?.LogInformation("WRITE DENIED (fieldBlocked). eid={EID} route={Route} keys=[{Keys}] blocked=[{Fields}] allowedOnly={Allowed}",
+                eid, route, string.Join(",", keySnapshot), string.Join(",", disallowedProvided), _allowedProperty);
+
+            context.Result = Forbid(
+                $"Only '{_allowedProperty}' may be modified for your role. Not allowed: {string.Join(", ", disallowedProvided)}");
+            return;
+        }
+
+        await next();
+    }
+
+    private static bool IsSimpleType(Type t)
+    {
+        t = Nullable.GetUnderlyingType(t) ?? t;
+        return t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal) || t == typeof(DateTime) || t == typeof(Guid);
+    }
+
+    private static bool IsProvided(object? value, Type type)
+    {
+        if (value is null) return false;
+        var t = Nullable.GetUnderlyingType(type) ?? type;
+
+        if (t == typeof(string)) return !string.IsNullOrWhiteSpace(value as string);
+        if (Nullable.GetUnderlyingType(type) is not null)
+        {
+            var hasValue = (bool)type.GetProperty("HasValue")!.GetValue(value)!;
+            return hasValue;
+        }
+        if (t.IsValueType) return false; // ignore non-nullable primitives
+        return true; // reference types
+    }
+
+    private static ObjectResult Forbid(string message)
+    {
+        var pd = new ProblemDetails
+        {
+            Status = StatusCodes.Status403Forbidden,
+            Title  = "Forbidden",
+            Detail = message
+        };
+        return new ObjectResult(pd) { StatusCode = StatusCodes.Status403Forbidden };
+    }
+}
 

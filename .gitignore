@@ -1,9 +1,61 @@
-builder.Services.AddProblemDetails(options =>
-{
-    options.CustomizeProblemDetails = ctx =>
-    {
-        ctx.ProblemDetails.Extensions["correlationId"] = ctx.HttpContext.TraceIdentifier;
-    };
-});
+using Serilog.Context;
+using Gef.Portal.Authorization;
 
-builder.Services.AddExceptionHandler<Gef.Portal.Errors.GlobalExceptionHandler>();
+namespace Gef.Portal.Middlewares;
+
+/// <summary>
+/// Ensures every request has a stable correlation id and enriches logs with:
+///   - correlationId  (from X-Correlation-ID request header, else TraceIdentifier)
+///   - eid            (from claims)
+///   - userName       (from claims)
+/// Also echoes X-Correlation-ID on the response.
+/// Place BEFORE request logging so enrichment appears in request logs.
+/// </summary>
+public sealed class CorrelationLoggingMiddleware(RequestDelegate next)
+{
+    private const string CorrelationHeader = "X-Correlation-ID";
+    private const int MaxCorrelationLength = 100; // safety cap
+    private readonly RequestDelegate _next = next;
+
+    public async Task InvokeAsync(HttpContext ctx)
+    {
+        // Accept inbound correlation id (if present), else use TraceIdentifier
+        var inbound =
+            ctx.Request.Headers[CorrelationHeader].FirstOrDefault()
+            ?? ctx.Request.Headers["X-Request-ID"].FirstOrDefault();
+
+        var correlationId = SanitizeCorrelationId(inbound) ?? ctx.TraceIdentifier;
+
+        // Echo it on the response
+        ctx.Response.Headers[CorrelationHeader] = correlationId;
+
+        // Pull minimal identity (avoid PII beyond EID/username)
+        var eid  = ctx.User?.FindFirst(PortalClaimTypes.EID)?.Value ?? string.Empty;
+        var user = ctx.User?.Identity?.Name ?? string.Empty;
+
+        // Enrich Serilog context for the lifetime of this request
+        using (LogContext.PushProperty("correlationId", correlationId, destructureObjects: false))
+        using (LogContext.PushProperty("eid", eid, destructureObjects: false))
+        using (LogContext.PushProperty("userName", user, destructureObjects: false))
+        {
+            await _next(ctx);
+        }
+    }
+
+    private static string? SanitizeCorrelationId(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        // trim and cap length; allow visible characters except control chars
+        var trimmed = raw.Trim();
+        if (trimmed.Length > MaxCorrelationLength)
+            trimmed = trimmed[..MaxCorrelationLength];
+
+        // Basic control-char guard
+        foreach (var ch in trimmed)
+        {
+            if (char.IsControl(ch)) return null;
+        }
+        return trimmed;
+    }
+}

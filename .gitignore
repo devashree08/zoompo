@@ -11,29 +11,20 @@ namespace Gef.Portal.Authorization;
 ///     * a claim portal:policy == <policyName>
 /// This lets you add new roles/policies in the DB (via SP) without code changes.
 /// </summary>
-public sealed class DynamicPolicyProvider(IAuthorizationPolicyProvider fallback)
-    : IAuthorizationPolicyProvider
+public sealed class DynamicPolicyProvider : DefaultAuthorizationPolicyProvider
 {
-    private readonly IAuthorizationPolicyProvider _fallback = fallback;
+    public DynamicPolicyProvider(IOptions<AuthorizationOptions> options) : base(options) { }
 
-    public Task<AuthorizationPolicy?> GetDefaultPolicyAsync()
-        => _fallback.GetDefaultPolicyAsync();
-
-    public Task<AuthorizationPolicy?> GetFallbackPolicyAsync()
-        => _fallback.GetFallbackPolicyAsync();
-
-    public async Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
+    public override async Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
     {
-        // 1) Use any policy explicitly configured in AddAuthorization()
-        var existing = await _fallback.GetPolicyAsync(policyName);
+        // Try a statically-registered policy first
+        var existing = await base.GetPolicyAsync(policyName);
         if (existing is not null) return existing;
 
-        // 2) Otherwise, build a policy that matches our stamped policy claim
-        var p = new AuthorizationPolicyBuilder()
+        // Otherwise build a claim-based policy dynamically
+        return new AuthorizationPolicyBuilder()
             .RequireAuthenticatedUser()
             .RequireClaim(PortalClaimTypes.Policy, policyName)
             .Build();
-
-        return p;
     }
 }

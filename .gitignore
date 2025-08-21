@@ -1,45 +1,91 @@
-using System.Data;
-using Dapper;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
-
-namespace Gef.Portal.Errors.Health;
-
-/// <summary>
-/// Readiness probe: verifies DB connectivity AND that the policy SP executes.
-/// Returns Healthy when both succeed, Unhealthy otherwise.
-/// Keep timeout short so probes don't hang.
-/// </summary>
-public sealed class PortalPolicyHealthCheck(GEF_DbContext db) : IHealthCheck
+public sealed class CustomerUpdateOnlyAttribute : Attribute, IAsyncActionFilter
 {
-    private readonly GEF_DbContext _db = db;
+    private readonly string _allowedProperty;
+    private readonly string _fullEditPolicy;
+    private readonly HashSet<string> _keyProps;
 
-    public async Task<HealthCheckResult> CheckHealthAsync(
-        HealthCheckContext context,
-        CancellationToken cancellationToken = default)
+    public CustomerUpdateOnlyAttribute(string allowedProperty, string fullEditPolicy, string[]? keyProperties = null)
     {
-        try
+        _allowedProperty  = allowedProperty ?? throw new ArgumentNullException(nameof(allowedProperty));
+        _fullEditPolicy   = fullEditPolicy  ?? string.Empty;
+        _keyProps         = new HashSet<string>(keyProperties ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    public async Task OnActionExecutionAsync(ActionExecutingContext ctx, ActionExecutionDelegate next)
+    {
+        var log = ctx.HttpContext.RequestServices.GetRequiredService<ILogger<CustomerUpdateOnlyAttribute>>();
+        var user = ctx.HttpContext.User;
+        var eid  = user.FindFirst(PortalClaimTypes.EID)?.Value ?? string.Empty;
+        var route = $"{ctx.HttpContext.Request.Method} {ctx.HttpContext.Request.Path}";
+
+        var policies = user.FindAll(PortalClaimTypes.Policy).Select(c => c.Value).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (policies.Contains(PortalPolicies.Admin) ||
+            (!string.IsNullOrWhiteSpace(_fullEditPolicy) && policies.Contains(_fullEditPolicy)))
         {
-            await using var conn = _db.Database.GetDbConnection();
-            if (conn.State != ConnectionState.Open)
-                await conn.OpenAsync(cancellationToken);
-
-            // Minimal, non-sensitive invocation; null inputs are fine.
-            var cmd = new CommandDefinition(
-                commandText: "dbo.usp_PortalPolicies_GetForUser",
-                parameters: new { UserEID = (string?)null, UserName = (string?)null },
-                commandType: CommandType.StoredProcedure,
-                commandTimeout: 2,                      // short timeout for probes
-                cancellationToken: cancellationToken);
-
-            await conn.ExecuteAsync(cmd);
-
-            return HealthCheckResult.Healthy("DB reachable and policy SP executable.");
+            await next(); return;
         }
-        catch (Exception ex)
+
+        if (!policies.Contains(PortalPolicies.EditCustomerUpdate))
         {
-            // No PII; infra just needs Healthy/Unhealthy
-            return HealthCheckResult.Unhealthy("DB connectivity or policy SP failed.", ex);
+            log.LogInformation("WRITE DENIED (missing policy). eid={EID} route={Route} need=Edit.CustomerUpdate", eid, route);
+            ctx.Result = Forbid("You do not have permission to modify this resource.");
+            return;
         }
+
+        var body = ctx.ActionArguments.Values.FirstOrDefault(v => v is not null && !IsSimple(v.GetType()));
+        if (body is null) { await next(); return; }
+
+        var allowed = new HashSet<string>(_keyProps, StringComparer.OrdinalIgnoreCase) { _allowedProperty };
+        var keySnapshot = _keyProps.Select(k =>
+        {
+            var p = body.GetType().GetProperty(k, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            var v = p is null ? null : p.GetValue(body);
+            return $"{k}={(v ?? "").ToString()}";
+        }).ToArray();
+
+        var blocked = new List<string>();
+        foreach (var p in body.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public))
+        {
+            if (!p.CanRead) continue;
+            var name = p.Name;
+            var val  = p.GetValue(body);
+            if (allowed.Contains(name)) continue;
+            if (IsProvided(val, p.PropertyType)) blocked.Add(name);
+        }
+
+        if (blocked.Count > 0)
+        {
+            log.LogInformation("WRITE DENIED (fieldBlocked). eid={EID} route={Route} keys=[{Keys}] blocked=[{Fields}] allowedOnly={Allowed}",
+                eid, route, string.Join(",", keySnapshot), string.Join(",", blocked), _allowedProperty);
+
+            ctx.Result = Forbid($"Only '{_allowedProperty}' may be modified for your role. Not allowed: {string.Join(", ", blocked)}");
+            return;
+        }
+
+        await next();
+    }
+
+    private static bool IsSimple(Type t)
+    {
+        t = Nullable.GetUnderlyingType(t) ?? t;
+        return t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal) || t == typeof(DateTime) || t == typeof(Guid);
+    }
+
+    private static bool IsProvided(object? value, Type type)
+    {
+        if (value is null) return false;
+        var t = Nullable.GetUnderlyingType(type) ?? type;
+        if (t == typeof(string)) return !string.IsNullOrWhiteSpace(value as string);
+        if (Nullable.GetUnderlyingType(type) is not null)
+            return (bool)type.GetProperty("HasValue")!.GetValue(value)!;
+        if (t.IsValueType) return false;
+        return true;
+    }
+
+    private static ObjectResult Forbid(string message)
+    {
+        var pd = new ProblemDetails { Status = StatusCodes.Status403Forbidden, Title = "Forbidden", Detail = message };
+        return new ObjectResult(pd) { StatusCode = StatusCodes.Status403Forbidden };
     }
 }

@@ -1,19 +1,7 @@
-public sealed class SqlDbConnectionFactory : IDbConnectionFactory
+[ApiController, Route("api/test")]
+public class TestController : ControllerBase
 {
-    private readonly string _connString;
-
-    public SqlDbConnectionFactory(GEF_DbContext db, IConfiguration config)
-    {
-        // Prefer the EF connection string; fall back to config.
-        _connString = db.Database.GetConnectionString()
-                      ?? config.GetConnectionString("GefDb")
-                      ?? throw new InvalidOperationException("GefDb connection string is missing.");
-    }
-
-    public async Task<DbConnection> OpenAsync(CancellationToken ct)
-    {
-        var conn = new SqlConnection(_connString);
-        await conn.OpenAsync(ct);
-        return conn;
-    }
+    [HttpGet("admin-ping")]
+    [Authorize(Policy = PortalPolicies.Admin)]
+    public IActionResult AdminPing() => Ok(new { ok = true });
 }

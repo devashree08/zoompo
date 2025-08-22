@@ -1,91 +1,203 @@
-public sealed class CustomerUpdateOnlyAttribute : Attribute, IAsyncActionFilter
+CREATE OR ALTER PROC dbo.usp_PortalUsers_BrowseMatrix
+    @Query        nvarchar(200) = NULL,   -- matches EID/UserName/Email/First/Last/Full
+    @GroupName    nvarchar(128) = NULL,   -- optional: restrict to a single group
+    @WorkerStatus nvarchar(32)  = NULL,   -- e.g. 'Active'
+    @PageNumber   int           = 1,      -- 1-based
+    @PageSize     int           = 100     -- cap in API if desired
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF (@PageNumber < 1) SET @PageNumber = 1;
+    IF (@PageSize   < 1 OR @PageSize > 1000) SET @PageSize = 100;
+
+    DECLARE @q nvarchar(202) =
+        CASE WHEN @Query IS NULL OR LTRIM(RTRIM(@Query)) = '' THEN NULL
+             ELSE N'%' + LTRIM(RTRIM(@Query)) + N'%' END;
+
+    ;WITH Base AS (
+        SELECT
+            UserKey      = COALESCE(NULLIF(UserEID, ''), CONCAT(UserDomain, ':', UserName)),
+            UserEID, UserDomain, UserName, FirstName, LastName, FullName, Email, WorkerStatus,
+            GroupName = UPPER(GroupName)
+        FROM dbo.Portal_ADFeed WITH (NOLOCK)
+        WHERE (@GroupName    IS NULL OR UPPER(GroupName) = UPPER(@GroupName))
+          AND (@WorkerStatus IS NULL OR WorkerStatus = @WorkerStatus)
+          AND (
+                @q IS NULL OR
+                UserEID   LIKE @q OR
+                UserName  LIKE @q OR
+                Email     LIKE @q OR
+                FullName  LIKE @q OR
+                FirstName LIKE @q OR
+                LastName  LIKE @q
+              )
+    ),
+    DistinctGroups AS (   -- ensure we don’t double-count duplicate feed rows
+        SELECT DISTINCT UserKey, GroupName
+        FROM Base
+    ),
+    Agg AS (  -- one row per user (UserKey)
+        SELECT
+            bg.UserKey,
+            -- representative identity fields from Base
+            UserEID      = MAX(b.UserEID),
+            UserName     = MAX(b.UserName),
+            FirstName    = MAX(b.FirstName),
+            LastName     = MAX(b.LastName),
+            FullName     = MAX(b.FullName),
+            Email        = MAX(b.Email),
+
+            -- membership flags (7 portal groups)
+            IsAdmin            = MAX(CASE WHEN bg.GroupName = 'GEF_PORTAL_ADMINS'            THEN 1 ELSE 0 END),
+            InAccountManagers  = MAX(CASE WHEN bg.GroupName = 'GEF_PORTAL_ACCOUNT_MANAGERS'  THEN 1 ELSE 0 END),
+            IsOTDP             = MAX(CASE WHEN bg.GroupName = 'GEF_PORTAL_OTDP'              THEN 1 ELSE 0 END),
+            IsTDM              = MAX(CASE WHEN bg.GroupName = 'GEF_PORTAL_TDM'               THEN 1 ELSE 0 END),
+            IsAccess           = MAX(CASE WHEN bg.GroupName = 'GEF_PORTAL_ACCESS'            THEN 1 ELSE 0 END),
+            IsGSAM             = MAX(CASE WHEN bg.GroupName = 'GEF_PORTAL_GSAM'              THEN 1 ELSE 0 END),
+            IsReadOnly         = MAX(CASE WHEN bg.GroupName = 'GEF_PORTAL_READONLY'          THEN 1 ELSE 0 END),
+
+            GroupsCsv          = STRING_AGG(bg.GroupName, ', ') WITHIN GROUP (ORDER BY bg.GroupName)
+        FROM DistinctGroups bg
+        JOIN Base b
+          ON b.UserKey = bg.UserKey
+        GROUP BY bg.UserKey
+    ),
+    Final AS (
+        SELECT
+            -- identity
+            UserEID,
+            UserName,
+            FirstName,
+            LastName,
+            FullName,
+            Email,
+
+            -- output membership flags (exact columns you asked for)
+            IsAdmin               = CAST(IsAdmin           AS bit),
+            InAccountManagers     = CAST(InAccountManagers AS bit),
+            InOTDP                = CAST(IsOTDP            AS bit),
+            InAccess              = CAST(IsAccess          AS bit),
+            InGSAM                = CAST(IsGSAM            AS bit),
+            InReadOnly            = CAST(IsReadOnly        AS bit),
+
+            -- derived capabilities (Admin implies all)
+            CanEditOTDP              = CAST(CASE WHEN IsAdmin = 1 OR IsOTDP = 1 THEN 1 ELSE 0 END AS bit),
+            CanEditTDM               = CAST(CASE WHEN IsAdmin = 1 OR IsTDM  = 1 THEN 1 ELSE 0 END AS bit),
+            CanEditAccess            = CAST(CASE WHEN IsAdmin = 1 OR IsAccess = 1 THEN 1 ELSE 0 END AS bit),
+            CanEditGSAM              = CAST(CASE WHEN IsAdmin = 1 OR IsGSAM   = 1 THEN 1 ELSE 0 END AS bit),
+            CanEditCustomerUpdateOnly= CAST(CASE WHEN IsAdmin = 1 OR InAccountManagers = 1 THEN 1 ELSE 0 END AS bit),
+
+            IsPortalUser             = CAST(CASE WHEN (IsAdmin + InAccountManagers + IsOTDP + IsTDM + IsAccess + IsGSAM + IsReadOnly) > 0 THEN 1 ELSE 0 END AS bit),
+
+            GroupsCsv
+        FROM Agg
+    ),
+    Numbered AS (
+        SELECT
+            ROW_NUMBER() OVER (ORDER BY FullName, UserName, UserEID) AS RowNum,
+            COUNT(*)    OVER ()                                       AS TotalRows,
+            *
+        FROM Final
+    )
+    SELECT
+        TotalRows,
+        UserEID, UserName, FirstName, LastName, FullName, Email,
+        IsAdmin, InAccountManagers, InOTDP, InAccess, InGSAM, InReadOnly,
+        CanEditOTDP, CanEditTDM, CanEditAccess, CanEditGSAM, CanEditCustomerUpdateOnly,
+        IsPortalUser, GroupsCsv
+    FROM Numbered
+    WHERE RowNum BETWEEN ((@PageNumber - 1) * @PageSize + 1) AND (@PageNumber * @PageSize)
+    ORDER BY RowNum;
+END
+GO
+
+namespace Gef.Portal.Models;
+
+public sealed class GEF_UserRoles_MatrixRow_Model
 {
-    private readonly string _allowedProperty;
-    private readonly string _fullEditPolicy;
-    private readonly HashSet<string> _keyProps;
+    public int    TotalRows { get; set; }
 
-    public CustomerUpdateOnlyAttribute(string allowedProperty, string fullEditPolicy, string[]? keyProperties = null)
+    public string? UserEID   { get; set; }
+    public string? UserName  { get; set; }
+    public string? FirstName { get; set; }
+    public string? LastName  { get; set; }
+    public string? FullName  { get; set; }
+    public string? Email     { get; set; }
+
+    public bool IsAdmin            { get; set; }
+    public bool InAccountManagers  { get; set; }
+    public bool InOTDP             { get; set; }
+    public bool InAccess           { get; set; }
+    public bool InGSAM             { get; set; }
+    public bool InReadOnly         { get; set; }
+
+    public bool CanEditOTDP               { get; set; }
+    public bool CanEditTDM                { get; set; }
+    public bool CanEditAccess             { get; set; }
+    public bool CanEditGSAM               { get; set; }
+    public bool CanEditCustomerUpdateOnly { get; set; }
+
+    public bool   IsPortalUser { get; set; }
+    public string? GroupsCsv   { get; set; }
+}
+
+
+using System.Data;
+using Dapper;
+using Gef.Portal.Authorization;
+using Gef.Portal.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Gef.Portal.Controllers;
+
+[Route("API/V1/[controller]")]
+[ApiController]
+[Authorize(Policy = PortalPolicies.Admin)] // Admin-only diagnostics
+public class GEF_UserRoles_Controller(GEF_DbContext dbContext) : ControllerBase
+{
+    private readonly GEF_DbContext _dbContext = dbContext;
+
+    /// <summary>
+    /// Returns one row per unique portal user with membership flags, derived capabilities, and GroupsCsv.
+    /// Backed by dbo.usp_PortalUsers_BrowseMatrix. Suitable for feeding an admin AG Grid.
+    /// </summary>
+    [HttpGet("UsersMatrix")]
+    public async Task<IActionResult> GetUsersMatrix(
+        [FromQuery] string? query        = null,
+        [FromQuery] string? groupName    = null,
+        [FromQuery] string? workerStatus = null,
+        [FromQuery] int pageNumber       = 1,
+        [FromQuery] int pageSize         = 100)
     {
-        _allowedProperty  = allowedProperty ?? throw new ArgumentNullException(nameof(allowedProperty));
-        _fullEditPolicy   = fullEditPolicy  ?? string.Empty;
-        _keyProps         = new HashSet<string>(keyProperties ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
-    }
-
-    public async Task OnActionExecutionAsync(ActionExecutingContext ctx, ActionExecutionDelegate next)
-    {
-        var log = ctx.HttpContext.RequestServices.GetRequiredService<ILogger<CustomerUpdateOnlyAttribute>>();
-        var user = ctx.HttpContext.User;
-        var eid  = user.FindFirst(PortalClaimTypes.EID)?.Value ?? string.Empty;
-        var route = $"{ctx.HttpContext.Request.Method} {ctx.HttpContext.Request.Path}";
-
-        var policies = user.FindAll(PortalClaimTypes.Policy).Select(c => c.Value).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        if (policies.Contains(PortalPolicies.Admin) ||
-            (!string.IsNullOrWhiteSpace(_fullEditPolicy) && policies.Contains(_fullEditPolicy)))
+        try
         {
-            await next(); return;
+            await using var connection = _dbContext.Database.GetDbConnection();
+            if (connection.State != ConnectionState.Open)
+                await connection.OpenAsync(HttpContext.RequestAborted);
+
+            var p = new DynamicParameters();
+            p.Add("@Query",        string.IsNullOrWhiteSpace(query) ? null : query, DbType.String);
+            p.Add("@GroupName",    string.IsNullOrWhiteSpace(groupName) ? null : groupName, DbType.String);
+            p.Add("@WorkerStatus", string.IsNullOrWhiteSpace(workerStatus) ? null : workerStatus, DbType.String);
+            p.Add("@PageNumber",   pageNumber <= 0 ? 1 : pageNumber, DbType.Int32);
+            p.Add("@PageSize",     pageSize   <= 0 ? 100 : pageSize, DbType.Int32);
+
+            var rows = await connection.QueryAsync<GEF_UserRoles_MatrixRow_Model>(
+                "dbo.usp_PortalUsers_BrowseMatrix",
+                p,
+                commandType: CommandType.StoredProcedure);
+
+            // For a grid, return 200 with an array (possibly empty).
+            return Ok(rows);
         }
-
-        if (!policies.Contains(PortalPolicies.EditCustomerUpdate))
+        catch
         {
-            log.LogInformation("WRITE DENIED (missing policy). eid={EID} route={Route} need=Edit.CustomerUpdate", eid, route);
-            ctx.Result = Forbid("You do not have permission to modify this resource.");
-            return;
+            // GlobalExceptionHandler will format the ProblemDetails
+            throw;
         }
-
-        var body = ctx.ActionArguments.Values.FirstOrDefault(v => v is not null && !IsSimple(v.GetType()));
-        if (body is null) { await next(); return; }
-
-        var allowed = new HashSet<string>(_keyProps, StringComparer.OrdinalIgnoreCase) { _allowedProperty };
-        var keySnapshot = _keyProps.Select(k =>
-        {
-            var p = body.GetType().GetProperty(k, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-            var v = p is null ? null : p.GetValue(body);
-            return $"{k}={(v ?? "").ToString()}";
-        }).ToArray();
-
-        var blocked = new List<string>();
-        foreach (var p in body.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public))
-        {
-            if (!p.CanRead) continue;
-            var name = p.Name;
-            var val  = p.GetValue(body);
-            if (allowed.Contains(name)) continue;
-            if (IsProvided(val, p.PropertyType)) blocked.Add(name);
-        }
-
-        if (blocked.Count > 0)
-        {
-            log.LogInformation("WRITE DENIED (fieldBlocked). eid={EID} route={Route} keys=[{Keys}] blocked=[{Fields}] allowedOnly={Allowed}",
-                eid, route, string.Join(",", keySnapshot), string.Join(",", blocked), _allowedProperty);
-
-            ctx.Result = Forbid($"Only '{_allowedProperty}' may be modified for your role. Not allowed: {string.Join(", ", blocked)}");
-            return;
-        }
-
-        await next();
-    }
-
-    private static bool IsSimple(Type t)
-    {
-        t = Nullable.GetUnderlyingType(t) ?? t;
-        return t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal) || t == typeof(DateTime) || t == typeof(Guid);
-    }
-
-    private static bool IsProvided(object? value, Type type)
-    {
-        if (value is null) return false;
-        var t = Nullable.GetUnderlyingType(type) ?? type;
-        if (t == typeof(string)) return !string.IsNullOrWhiteSpace(value as string);
-        if (Nullable.GetUnderlyingType(type) is not null)
-            return (bool)type.GetProperty("HasValue")!.GetValue(value)!;
-        if (t.IsValueType) return false;
-        return true;
-    }
-
-    private static ObjectResult Forbid(string message)
-    {
-        var pd = new ProblemDetails { Status = StatusCodes.Status403Forbidden, Title = "Forbidden", Detail = message };
-        return new ObjectResult(pd) { StatusCode = StatusCodes.Status403Forbidden };
     }
 }
+
+

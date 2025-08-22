@@ -1,90 +1,219 @@
+// src/api/axios.js
+import axios from "axios";
+import { config } from "../config/urls"; // uses your mode-based urls.jsx
 
-namespace Gef.Portal.Models;
+// Base URL from your config helper
+const baseURL = (config?.url?.api_url || "").replace(/\/$/, "");
 
-public sealed class GEF_UserRoles_MatrixRow_Model
-{
-    public int    TotalRows { get; set; }
+// Simple correlation id for server-side tracing
+function genCorrelationId() {
+  // Prefer crypto if available; fallback to random+time
+  try {
+    const a = (...n) => crypto.getRandomValues(new Uint32Array(n));
+    return `cid-${a(1)[0].toString(16)}-${Date.now().toString(36)}-${a(1)[0].toString(36)}`;
+  } catch {
+    return `cid-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+  }
+}
 
-    public string? UserEID   { get; set; }
-    public string? UserName  { get; set; }
-    public string? FirstName { get; set; }
-    public string? LastName  { get; set; }
-    public string? FullName  { get; set; }
-    public string? Email     { get; set; }
+const api = axios.create({
+  baseURL,
+  withCredentials: true, // allow SSO cookies to flow
+  timeout: 30000,        // adjust if needed
+  headers: {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+  },
+});
 
-    public bool IsAdmin            { get; set; }
-    public bool InAccountManagers  { get; set; }
-    public bool InOTDP             { get; set; }
-    public bool InAccess           { get; set; }
-    public bool InGSAM             { get; set; }
-    public bool InReadOnly         { get; set; }
+// Request interceptor: add correlation id if not present
+api.interceptors.request.use((req) => {
+  req.headers = req.headers || {};
+  if (!req.headers["X-Correlation-ID"]) {
+    req.headers["X-Correlation-ID"] = genCorrelationId();
+  }
+  return req;
+});
 
-    public bool CanEditOTDP               { get; set; }
-    public bool CanEditTDM                { get; set; }
-    public bool CanEditAccess             { get; set; }
-    public bool CanEditGSAM               { get; set; }
-    public bool CanEditCustomerUpdateOnly { get; set; }
+// Response interceptor: normalize ProblemDetails (optional)
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    // Attach a friendlier message if API returned RFC 7807 ProblemDetails
+    const pd = err?.response?.data;
+    if (pd && (pd.title || pd.detail)) {
+      const title = pd.title || "Request failed";
+      const detail = pd.detail ? `: ${pd.detail}` : "";
+      err.message = `${title}${detail}`;
+    }
+    return Promise.reject(err);
+  }
+);
 
-    public bool   IsPortalUser { get; set; }
-    public string? GroupsCsv   { get; set; }
+export default api;
+
+
+
+// src/contexts/AuthzContext.jsx
+import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import api from "../api/axios";
+
+/**
+ * Fetches /api/auth/user-permissions once on app boot and exposes
+ * a tiny set of booleans that the UI needs to drive show/hide/disable.
+ *
+ * Shape expected from API (example):
+ * {
+ *   isAdmin: true/false,
+ *   canEditOTDP: true/false,
+ *   canEditTDM: true/false,
+ *   canEditAccess: true/false,
+ *   canEditGSAM: true/false,
+ *   canCustomerUpdate: true/false,
+ *   // Optional extras (eid, userName, policies[])
+ * }
+ */
+const AuthzContext = createContext(null);
+
+export function AuthzProvider({ children }) {
+  const [loading, setLoading] = useState(true);
+  const [perms, setPerms] = useState(null);
+  const [error, setError] = useState(null);
+
+  async function fetchPermissions(signal) {
+    try {
+      const { data } = await api.get("/api/auth/user-permissions", { signal });
+      setPerms(data || {});
+      setError(null);
+    } catch (e) {
+      setError(e);
+      setPerms(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetchPermissions(ctrl.signal);
+    return () => ctrl.abort();
+  }, []);
+
+  const value = useMemo(() => {
+    const p = perms || {};
+    return {
+      loading,
+      error,
+      // booleans the UI will actually consume
+      isAdmin: !!p.isAdmin,
+      canEditOTDP: !!p.canEditOTDP,
+      canEditTDM: !!p.canEditTDM,
+      canEditAccess: !!p.canEditAccess,
+      canEditGSAM: !!p.canEditGSAM,
+      canCustomerUpdate: !!p.canCustomerUpdate,
+      // optional: expose raw payload (eid/userName/policies[]) for debugging
+      raw: p,
+      // manual refresh hook if you ever need it
+      refresh: async () => {
+        setLoading(true);
+        await fetchPermissions();
+      },
+    };
+  }, [loading, perms, error]);
+
+  return <AuthzContext.Provider value={value}>{children}</AuthzContext.Provider>;
+}
+
+export function useAuthz() {
+  const ctx = useContext(AuthzContext);
+  if (!ctx) throw new Error("useAuthz must be used within <AuthzProvider>");
+  return ctx;
 }
 
 
-using System.Data;
-using Dapper;
-using Gef.Portal.Authorization;
-using Gef.Portal.Models;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
 
-namespace Gef.Portal.Controllers;
 
-[Route("API/V1/[controller]")]
-[ApiController]
-[Authorize(Policy = PortalPolicies.Admin)] // Admin-only diagnostics
-public class GEF_UserRoles_Controller(GEF_DbContext dbContext) : ControllerBase
-{
-    private readonly GEF_DbContext _dbContext = dbContext;
 
-    /// <summary>
-    /// Returns one row per unique portal user with membership flags, derived capabilities, and GroupsCsv.
-    /// Backed by dbo.usp_PortalUsers_BrowseMatrix. Suitable for feeding an admin AG Grid.
-    /// </summary>
-    [HttpGet("UsersMatrix")]
-    public async Task<IActionResult> GetUsersMatrix(
-        [FromQuery] string? query        = null,
-        [FromQuery] string? groupName    = null,
-        [FromQuery] string? workerStatus = null,
-        [FromQuery] int pageNumber       = 1,
-        [FromQuery] int pageSize         = 100)
-    {
-        try
-        {
-            await using var connection = _dbContext.Database.GetDbConnection();
-            if (connection.State != ConnectionState.Open)
-                await connection.OpenAsync(HttpContext.RequestAborted);
+// src/App.jsx
+import React from "react";
+import { BrowserRouter, Routes, Route, Link, Navigate } from "react-router-dom";
+import { AuthzProvider, useAuthz } from "./contexts/AuthzContext";
 
-            var p = new DynamicParameters();
-            p.Add("@Query",        string.IsNullOrWhiteSpace(query) ? null : query, DbType.String);
-            p.Add("@GroupName",    string.IsNullOrWhiteSpace(groupName) ? null : groupName, DbType.String);
-            p.Add("@WorkerStatus", string.IsNullOrWhiteSpace(workerStatus) ? null : workerStatus, DbType.String);
-            p.Add("@PageNumber",   pageNumber <= 0 ? 1 : pageNumber, DbType.Int32);
-            p.Add("@PageSize",     pageSize   <= 0 ? 100 : pageSize, DbType.Int32);
+// --- Page imports (create these under src/Pages/*.jsx) ---
+import AllEnrich from "./Pages/AllEnrich.jsx";
+import Application from "./Pages/Application.jsx";
+import Opportunity from "./Pages/Opportunity.jsx";
+import Request from "./Pages/Request.jsx";
+import TDM from "./Pages/TDM.jsx";
+import OTDP from "./Pages/OTDP.jsx";
+import AccessMgmt from "./Pages/AccessMgmt.jsx";
+import GSAM from "./Pages/GSAM.jsx";
+import Admin from "./Pages/Admin.jsx";
 
-            var rows = await connection.QueryAsync<GEF_UserRoles_MatrixRow_Model>(
-                "dbo.usp_PortalUsers_BrowseMatrix",
-                p,
-                commandType: CommandType.StoredProcedure);
+// Simple admin route guard
+function AdminRoute({ children }) {
+  const { loading, isAdmin } = useAuthz();
+  if (loading) return <div style={{ padding: 16 }}>loading…</div>;
+  if (!isAdmin) return <Navigate to="/" replace />;
+  return children;
+}
 
-            // For a grid, return 200 with an array (possibly empty).
-            return Ok(rows);
-        }
-        catch
-        {
-            // GlobalExceptionHandler will format the ProblemDetails
-            throw;
-        }
-    }
+// Minimal top-nav; hide /admin if not Admin
+function Nav() {
+  const { isAdmin } = useAuthz();
+  const linkStyle = { padding: "6px 10px", textDecoration: "none" };
+
+  return (
+    <nav style={{ display: "flex", gap: 12, padding: 12, borderBottom: "1px solid #eee" }}>
+      <Link style={linkStyle} to="/">All Enrich</Link>
+      <Link style={linkStyle} to="/application">Application</Link>
+      <Link style={linkStyle} to="/opportunity">Opportunity</Link>
+      <Link style={linkStyle} to="/request">Request</Link>
+      <Link style={linkStyle} to="/tdm">TDM</Link>
+      <Link style={linkStyle} to="/otdp">OTDP</Link>
+      <Link style={linkStyle} to="/access-management">Access Mgmt</Link>
+      <Link style={linkStyle} to="/gsam">GSAM</Link>
+      {isAdmin && <Link style={linkStyle} to="/admin">Admin</Link>}
+    </nav>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthzProvider>
+      <BrowserRouter>
+        <Nav />
+        <div style={{ padding: 16 }}>
+          <Routes>
+            {/* Read-only pages */}
+            <Route path="/" element={<AllEnrich />} />
+            <Route path="/opportunity" element={<Opportunity />} />
+            <Route path="/otdp" element={<OTDP />} />
+            <Route path="/access-management" element={<AccessMgmt />} />
+            <Route path="/gsam" element={<GSAM />} />
+
+            {/* Pages with edits controlled by server + UI booleans */}
+            <Route path="/application" element={<Application />} />
+            <Route path="/request" element={<Request />} />
+            <Route path="/tdm" element={<TDM />} />
+
+            {/* Admin container (SelectionTags, ChangeLog, Roles Matrix) */}
+            <Route
+              path="/admin"
+              element={
+                <AdminRoute>
+                  <Admin />
+                </AdminRoute>
+              }
+            />
+
+            {/* Fallback */}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </div>
+      </BrowserRouter>
+    </AuthzProvider>
+  );
 }
 
 

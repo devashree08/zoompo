@@ -1,7 +1,89 @@
-[ApiController, Route("api/test")]
-public class TestController : ControllerBase
+public sealed class SecureHeadersOptions
 {
-    [HttpGet("admin-ping")]
-    [Authorize(Policy = PortalPolicies.Admin)]
-    public IActionResult AdminPing() => Ok(new { ok = true });
+    /// <summary>Set HSTS for HTTPS responses in non-Development environments.</summary>
+    public bool EnableHsts { get; init; } = true;
+    /// <summary>HSTS max-age (defaults 365 days).</summary>
+    public TimeSpan HstsMaxAge { get; init; } = TimeSpan.FromDays(365);
+    public bool HstsIncludeSubdomains { get; init; } = true;
+    public bool HstsPreload { get; init; } = true;
+
+    /// <summary>Content-Security-Policy value; null uses a safe API default.</summary>
+    public string? ContentSecurityPolicy { get; init; } = null;
+
+    /// <summary>Referrer-Policy header value.</summary>
+    public string ReferrerPolicy { get; init; } = "no-referrer";
+
+    /// <summary>X-Frame-Options value ("DENY" or "SAMEORIGIN").</summary>
+    public string FrameOptions { get; init; } = "DENY";
+
+    /// <summary>Permissions-Policy: disable powerful features by default.</summary>
+    public string PermissionsPolicy { get; init; } = "geolocation=(), camera=(), microphone=()";
+
+    /// <summary>Add Cross-Origin-Resource-Policy? (empty to skip)</summary>
+    public string? CrossOriginResourcePolicy { get; init; } = "same-site";
+
+    /// <summary>Add Cache-Control/Pragma/Expires no-store to responses (APIs often want this).</summary>
+    public bool AddNoStoreCacheControl { get; init; } = true;
 }
+
+public static class SecureHeadersExtensions
+{
+    /// <summary>
+    /// Adds common hardened headers for APIs. Call after HSTS/HTTPS, before CORS/auth.
+    /// </summary>
+    public static IApplicationBuilder UseSecureHeaders(
+        this IApplicationBuilder app,
+        IWebHostEnvironment env,
+        SecureHeadersOptions? options = null)
+    {
+        var opts = options ?? new SecureHeadersOptions();
+
+        return app.Use(async (ctx, next) =>
+        {
+            var h = ctx.Response.Headers;
+
+            // Prevent MIME sniffing
+            h["X-Content-Type-Options"] = "nosniff";
+
+            // Clickjacking defense
+            if (!string.IsNullOrWhiteSpace(opts.FrameOptions))
+                h["X-Frame-Options"] = opts.FrameOptions;
+
+            // Referrer policy
+            if (!string.IsNullOrWhiteSpace(opts.ReferrerPolicy))
+                h["Referrer-Policy"] = opts.ReferrerPolicy;
+
+            // Minimal CSP suitable for APIs; override via options if serving HTML
+            var csp = opts.ContentSecurityPolicy
+                      ?? "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+            h["Content-Security-Policy"] = csp;
+
+            // Permissions-Policy
+            if (!string.IsNullOrWhiteSpace(opts.PermissionsPolicy))
+                h["Permissions-Policy"] = opts.PermissionsPolicy;
+
+            // CORP (helps some scanners; safe for APIs)
+            if (!string.IsNullOrWhiteSpace(opts.CrossOriginResourcePolicy))
+                h["Cross-Origin-Resource-Policy"] = opts.CrossOriginResourcePolicy;
+
+            // HSTS (HTTPS + non-dev)
+            if (opts.EnableHsts && !env.IsDevelopment() && ctx.Request.IsHttps)
+            {
+                var hsts =
+                    $"max-age={(int)opts.HstsMaxAge.TotalSeconds}"
+                    + (opts.HstsIncludeSubdomains ? "; includeSubDomains" : "")
+                    + (opts.HstsPreload ? "; preload" : "");
+                h["Strict-Transport-Security"] = hsts;
+            }
+
+            // No-store (avoid caching API responses in intermediaries/browsers)
+            if (opts.AddNoStoreCacheControl)
+            {
+                h["Cache-Control"] = "no-store, no-cache, must-revalidate, proxy-revalidate";
+                h["Pragma"] = "no-cache";
+                h["Expires"] = "0";
+            }
+
+            await next();
+        });
+    }

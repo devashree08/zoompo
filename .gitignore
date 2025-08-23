@@ -1,10 +1,21 @@
-import { toast } from "react-toastify";
+import { useCallback } from "react";
+import { toastForbidden } from "../utils/toast";
 
-export const toastForbidden = (msg = "You don’t have permission to perform this action.") =>
-  toast.error(msg, { toastId: "forbidden" }); // toastId dedupes if spam-clicked
-
-export const toastInfo = (msg) => toast.info(msg);
-export const toastSuccess = (msg) => toast.success(msg);
-export const toastWarn = (msg) => toast.warn(msg);
-export const toastError = (msg) => toast.error(msg);
-
+/**
+ * Returns a callable that either executes `fn` or shows a forbidden toast.
+ * Usage:
+ *   const run = useGuardedAction(canEdit, "Only Admins can edit.");
+ *   <button onClick={() => run(() => save(payload))}>Save</button>
+ */
+export function useGuardedAction(isAllowed, message = "Not allowed.") {
+  return useCallback(
+    async (fn, ...args) => {
+      if (!isAllowed) {
+        toastForbidden(message);
+        return;
+      }
+      return await fn(...args);
+    },
+    [isAllowed, message]
+  );
+}

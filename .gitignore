@@ -1,89 +1,108 @@
-public sealed class SecureHeadersOptions
-{
-    /// <summary>Set HSTS for HTTPS responses in non-Development environments.</summary>
-    public bool EnableHsts { get; init; } = true;
-    /// <summary>HSTS max-age (defaults 365 days).</summary>
-    public TimeSpan HstsMaxAge { get; init; } = TimeSpan.FromDays(365);
-    public bool HstsIncludeSubdomains { get; init; } = true;
-    public bool HstsPreload { get; init; } = true;
+// src/api/axios.js
+import axios from "axios";
+import { config } from "../Config/URLs";
 
-    /// <summary>Content-Security-Policy value; null uses a safe API default.</summary>
-    public string? ContentSecurityPolicy { get; init; } = null;
-
-    /// <summary>Referrer-Policy header value.</summary>
-    public string ReferrerPolicy { get; init; } = "no-referrer";
-
-    /// <summary>X-Frame-Options value ("DENY" or "SAMEORIGIN").</summary>
-    public string FrameOptions { get; init; } = "DENY";
-
-    /// <summary>Permissions-Policy: disable powerful features by default.</summary>
-    public string PermissionsPolicy { get; init; } = "geolocation=(), camera=(), microphone=()";
-
-    /// <summary>Add Cross-Origin-Resource-Policy? (empty to skip)</summary>
-    public string? CrossOriginResourcePolicy { get; init; } = "same-site";
-
-    /// <summary>Add Cache-Control/Pragma/Expires no-store to responses (APIs often want this).</summary>
-    public bool AddNoStoreCacheControl { get; init; } = true;
+function pickBaseUrl() {
+  const u = config?.url ?? {};
+  // tolerate API_URL vs api_url and optional trailing slash
+  const raw = u.api_url || u.API_URL || "";
+  return raw.replace(/\/+$/, "");
 }
 
-public static class SecureHeadersExtensions
-{
-    /// <summary>
-    /// Adds common hardened headers for APIs. Call after HSTS/HTTPS, before CORS/auth.
-    /// </summary>
-    public static IApplicationBuilder UseSecureHeaders(
-        this IApplicationBuilder app,
-        IWebHostEnvironment env,
-        SecureHeadersOptions? options = null)
-    {
-        var opts = options ?? new SecureHeadersOptions();
+function correlationId() {
+  try {
+    return `cid-${crypto.randomUUID()}`;
+  } catch {
+    return `cid-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+  }
+}
 
-        return app.Use(async (ctx, next) =>
-        {
-            var h = ctx.Response.Headers;
+const api = axios.create({
+  baseURL: pickBaseUrl(),       // e.g., http://localhost:5000/api
+  withCredentials: true,        // carry SSO cookies if present
+  timeout: 30000,
+  headers: {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+  },
+});
 
-            // Prevent MIME sniffing
-            h["X-Content-Type-Options"] = "nosniff";
+api.interceptors.request.use((req) => {
+  req.headers = req.headers || {};
+  if (!req.headers["X-Correlation-ID"]) {
+    req.headers["X-Correlation-ID"] = correlationId();
+  }
+  return req;
+});
 
-            // Clickjacking defense
-            if (!string.IsNullOrWhiteSpace(opts.FrameOptions))
-                h["X-Frame-Options"] = opts.FrameOptions;
-
-            // Referrer policy
-            if (!string.IsNullOrWhiteSpace(opts.ReferrerPolicy))
-                h["Referrer-Policy"] = opts.ReferrerPolicy;
-
-            // Minimal CSP suitable for APIs; override via options if serving HTML
-            var csp = opts.ContentSecurityPolicy
-                      ?? "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
-            h["Content-Security-Policy"] = csp;
-
-            // Permissions-Policy
-            if (!string.IsNullOrWhiteSpace(opts.PermissionsPolicy))
-                h["Permissions-Policy"] = opts.PermissionsPolicy;
-
-            // CORP (helps some scanners; safe for APIs)
-            if (!string.IsNullOrWhiteSpace(opts.CrossOriginResourcePolicy))
-                h["Cross-Origin-Resource-Policy"] = opts.CrossOriginResourcePolicy;
-
-            // HSTS (HTTPS + non-dev)
-            if (opts.EnableHsts && !env.IsDevelopment() && ctx.Request.IsHttps)
-            {
-                var hsts =
-                    $"max-age={(int)opts.HstsMaxAge.TotalSeconds}"
-                    + (opts.HstsIncludeSubdomains ? "; includeSubDomains" : "")
-                    + (opts.HstsPreload ? "; preload" : "");
-                h["Strict-Transport-Security"] = hsts;
-            }
-
-            // No-store (avoid caching API responses in intermediaries/browsers)
-            if (opts.AddNoStoreCacheControl)
-            {
-                h["Cache-Control"] = "no-store, no-cache, must-revalidate, proxy-revalidate";
-                h["Pragma"] = "no-cache";
-                h["Expires"] = "0";
-            }
-
-            await next();
-        });
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    // Normalize RFC 7807 ProblemDetails to a friendly message
+    const pd = err?.response?.data;
+    if (pd && (pd.title || pd.detail)) {
+      err.message = pd.title + (pd.detail ? `: ${pd.detail}` : "");
     }
+    return Promise.reject(err);
+  }
+);
+
+export default api;
+
+
+
+// src/contexts/AuthzContext.jsx
+import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import api from "../api/axios";
+
+const AuthzContext = createContext(null);
+
+export function AuthzProvider({ children }) {
+  const [loading, setLoading] = useState(true);
+  const [perms, setPerms] = useState(null);
+  const [error, setError] = useState(null);
+
+  async function load(signal) {
+    try {
+      const { data } = await api.get("/auth/user-permissions", { signal });
+      setPerms(data || {});
+      setError(null);
+    } catch (e) {
+      setPerms(null);
+      setError(e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    load(ctrl.signal);
+    return () => ctrl.abort();
+  }, []);
+
+  const value = useMemo(() => {
+    const p = perms || {};
+    return {
+      loading,
+      error,
+      isAdmin: !!p.isAdmin,
+      canEditOTDP: !!p.canEditOTDP,
+      canEditTDM: !!p.canEditTDM,
+      canEditAccess: !!p.canEditAccess,
+      canEditGSAM: !!p.canEditGSAM,
+      canCustomerUpdate: !!p.canCustomerUpdate,
+      raw: p,
+      refresh: async () => { setLoading(true); await load(); },
+    };
+  }, [loading, perms, error]);
+
+  return <AuthzContext.Provider value={value}>{children}</AuthzContext.Provider>;
+}
+
+export function useAuthz() {
+  const ctx = useContext(AuthzContext);
+  if (!ctx) throw new Error("useAuthz must be used within <AuthzProvider>");
+  return ctx;
+}
+

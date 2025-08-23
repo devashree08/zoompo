@@ -1,108 +1,21 @@
-// src/api/axios.js
-import axios from "axios";
-import { config } from "../Config/URLs";
+import React from "react";
+import { ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 
-function pickBaseUrl() {
-  const u = config?.url ?? {};
-  // tolerate API_URL vs api_url and optional trailing slash
-  const raw = u.api_url || u.API_URL || "";
-  return raw.replace(/\/+$/, "");
+/** Mount once in App so any component can toast. */
+export default function Toaster() {
+  return (
+    <ToastContainer
+      position="top-right"
+      autoClose={4000}
+      hideProgressBar
+      newestOnTop
+      closeOnClick
+      pauseOnFocusLoss
+      draggable
+      pauseOnHover
+      theme="colored"
+      limit={3}
+    />
+  );
 }
-
-function correlationId() {
-  try {
-    return `cid-${crypto.randomUUID()}`;
-  } catch {
-    return `cid-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-  }
-}
-
-const api = axios.create({
-  baseURL: pickBaseUrl(),       // e.g., http://localhost:5000/api
-  withCredentials: true,        // carry SSO cookies if present
-  timeout: 30000,
-  headers: {
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-  },
-});
-
-api.interceptors.request.use((req) => {
-  req.headers = req.headers || {};
-  if (!req.headers["X-Correlation-ID"]) {
-    req.headers["X-Correlation-ID"] = correlationId();
-  }
-  return req;
-});
-
-api.interceptors.response.use(
-  (res) => res,
-  (err) => {
-    // Normalize RFC 7807 ProblemDetails to a friendly message
-    const pd = err?.response?.data;
-    if (pd && (pd.title || pd.detail)) {
-      err.message = pd.title + (pd.detail ? `: ${pd.detail}` : "");
-    }
-    return Promise.reject(err);
-  }
-);
-
-export default api;
-
-
-
-// src/contexts/AuthzContext.jsx
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import api from "../api/axios";
-
-const AuthzContext = createContext(null);
-
-export function AuthzProvider({ children }) {
-  const [loading, setLoading] = useState(true);
-  const [perms, setPerms] = useState(null);
-  const [error, setError] = useState(null);
-
-  async function load(signal) {
-    try {
-      const { data } = await api.get("/auth/user-permissions", { signal });
-      setPerms(data || {});
-      setError(null);
-    } catch (e) {
-      setPerms(null);
-      setError(e);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    const ctrl = new AbortController();
-    load(ctrl.signal);
-    return () => ctrl.abort();
-  }, []);
-
-  const value = useMemo(() => {
-    const p = perms || {};
-    return {
-      loading,
-      error,
-      isAdmin: !!p.isAdmin,
-      canEditOTDP: !!p.canEditOTDP,
-      canEditTDM: !!p.canEditTDM,
-      canEditAccess: !!p.canEditAccess,
-      canEditGSAM: !!p.canEditGSAM,
-      canCustomerUpdate: !!p.canCustomerUpdate,
-      raw: p,
-      refresh: async () => { setLoading(true); await load(); },
-    };
-  }, [loading, perms, error]);
-
-  return <AuthzContext.Provider value={value}>{children}</AuthzContext.Provider>;
-}
-
-export function useAuthz() {
-  const ctx = useContext(AuthzContext);
-  if (!ctx) throw new Error("useAuthz must be used within <AuthzProvider>");
-  return ctx;
-}
-

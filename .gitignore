@@ -1,21 +1,38 @@
-import { useCallback } from "react";
-import { toastForbidden } from "../utils/toast";
+import React from "react";
+import { toastForbidden } from "../../utils/toast";
 
 /**
- * Returns a callable that either executes `fn` or shows a forbidden toast.
- * Usage:
- *   const run = useGuardedAction(canEdit, "Only Admins can edit.");
- *   <button onClick={() => run(() => save(payload))}>Save</button>
+ * A button that blocks clicks when not allowed and shows a toast instead.
+ * By default it is *not* disabled so users get feedback; set `disableWhenBlocked` to true if you
+ * prefer the native disabled state (no click).
  */
-export function useGuardedAction(isAllowed, message = "Not allowed.") {
-  return useCallback(
-    async (fn, ...args) => {
-      if (!isAllowed) {
-        toastForbidden(message);
-        return;
-      }
-      return await fn(...args);
-    },
-    [isAllowed, message]
+export default function GuardedButton({
+  allowed,
+  onClick,
+  blockMessage = "You don’t have permission to perform this action.",
+  disableWhenBlocked = false,
+  children,
+  ...rest
+}) {
+  const handleClick = (e) => {
+    if (!allowed) {
+      e.preventDefault();
+      toastForbidden(blockMessage);
+      return;
+    }
+    onClick?.(e);
+  };
+
+  return (
+    <button
+      {...rest}
+      onClick={handleClick}
+      aria-disabled={!allowed}
+      disabled={disableWhenBlocked && !allowed}
+      style={!allowed && !disableWhenBlocked ? { opacity: 0.9, cursor: "not-allowed" } : undefined}
+      title={!allowed ? blockMessage : rest.title}
+    >
+      {children}
+    </button>
   );
 }

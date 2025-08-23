@@ -1,38 +1,20 @@
-import React from "react";
-import { toastForbidden } from "../../utils/toast";
+// Store a dev-only "current user" in localStorage
+const KEY = "dev_impersonate_v1";
 
-/**
- * A button that blocks clicks when not allowed and shows a toast instead.
- * By default it is *not* disabled so users get feedback; set `disableWhenBlocked` to true if you
- * prefer the native disabled state (no click).
- */
-export default function GuardedButton({
-  allowed,
-  onClick,
-  blockMessage = "You don’t have permission to perform this action.",
-  disableWhenBlocked = false,
-  children,
-  ...rest
-}) {
-  const handleClick = (e) => {
-    if (!allowed) {
-      e.preventDefault();
-      toastForbidden(blockMessage);
-      return;
-    }
-    onClick?.(e);
-  };
-
-  return (
-    <button
-      {...rest}
-      onClick={handleClick}
-      aria-disabled={!allowed}
-      disabled={disableWhenBlocked && !allowed}
-      style={!allowed && !disableWhenBlocked ? { opacity: 0.9, cursor: "not-allowed" } : undefined}
-      title={!allowed ? blockMessage : rest.title}
-    >
-      {children}
-    </button>
-  );
+export function getImpersonation() {
+  try { return JSON.parse(localStorage.getItem(KEY) || "null"); }
+  catch { return null; }
 }
+export function setImpersonation(user) {
+  if (!user) localStorage.removeItem(KEY);
+  else localStorage.setItem(KEY, JSON.stringify(user));
+}
+export function clearImpersonation() { localStorage.removeItem(KEY); }
+
+// Optional: a few test users (adjust to your pzids/eids)
+export const DEV_TEST_USERS = [
+  { label: "Admin (Jane A.)",     pzid: "jadmin", eid: "E000001", firstName:"Jane", lastName:"Admin", email:"jane.admin@acme.com" },
+  { label: "Account Manager (Max)", pzid: "maxam",  eid: "E000002", firstName:"Max",  lastName:"AM",    email:"max.am@acme.com" },
+  { label: "TDM Editor (Tom)",    pzid: "tomtdm",  eid: "E000003", firstName:"Tom",  lastName:"TDM",   email:"tom.tdm@acme.com" },
+  { label: "ReadOnly (Rita)",     pzid: "rita",    eid: "E000004", firstName:"Rita", lastName:"View",  email:"rita.view@acme.com" },
+];

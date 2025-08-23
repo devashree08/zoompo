@@ -16,3 +16,39 @@ if (import.meta.env.MODE === "development" || process.env.NODE_ENV === "developm
     });
   });
 }
+
+
+
+import React, { useMemo } from "react";
+import { getImpersonation, setImpersonation, clearImpersonation, DEV_TEST_USERS } from "./impersonation";
+import { toastSuccess } from "../utils/toast";
+
+export default function DevUserSwitcher() {
+  const current = useMemo(getImpersonation, []);
+
+  const onChange = (e) => {
+    const idx = e.target.value;
+    if (idx === "") { clearImpersonation(); toastSuccess("Cleared dev user"); window.location.reload(); return; }
+    const user = DEV_TEST_USERS[Number(idx)];
+    setImpersonation(user);
+    toastSuccess(`Impersonating: ${user.label}`);
+    window.location.reload(); // reload to refetch /auth/user-permissions under new identity
+  };
+
+  return (
+    <div style={{ marginLeft: "auto", padding: "0 8px" }}>
+      <select onChange={onChange} defaultValue="">
+        <option value="">(dev) pick user…</option>
+        {DEV_TEST_USERS.map((u, i) => (
+          <option key={u.eid} value={i}>{u.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+
+// in Header.jsx
+{(import.meta.env.MODE === "development" || process.env.NODE_ENV === "development") && (
+  <DevUserSwitcher />
+)}

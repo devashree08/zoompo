@@ -1,20 +1,18 @@
-// Store a dev-only "current user" in localStorage
-const KEY = "dev_impersonate_v1";
-
-export function getImpersonation() {
-  try { return JSON.parse(localStorage.getItem(KEY) || "null"); }
-  catch { return null; }
+// DEV-ONLY impersonation header injector
+if (import.meta.env.MODE === "development" || process.env.NODE_ENV === "development") {
+  // Lazy import to avoid bundling dev helpers into prod chunks
+  import("../dev/impersonation").then(({ getImpersonation }) => {
+    api.interceptors.request.use((req) => {
+      const u = getImpersonation();
+      if (u) {
+        // Header names must match your SsoIdentityOptions.Header* keys
+        req.headers["pzid"] = u.pzid;
+        req.headers["eid"] = u.eid;
+        req.headers["firstName"] = u.firstName || "";
+        req.headers["lastName"]  = u.lastName  || "";
+        req.headers["email"]     = u.email     || "";
+      }
+      return req;
+    });
+  });
 }
-export function setImpersonation(user) {
-  if (!user) localStorage.removeItem(KEY);
-  else localStorage.setItem(KEY, JSON.stringify(user));
-}
-export function clearImpersonation() { localStorage.removeItem(KEY); }
-
-// Optional: a few test users (adjust to your pzids/eids)
-export const DEV_TEST_USERS = [
-  { label: "Admin (Jane A.)",     pzid: "jadmin", eid: "E000001", firstName:"Jane", lastName:"Admin", email:"jane.admin@acme.com" },
-  { label: "Account Manager (Max)", pzid: "maxam",  eid: "E000002", firstName:"Max",  lastName:"AM",    email:"max.am@acme.com" },
-  { label: "TDM Editor (Tom)",    pzid: "tomtdm",  eid: "E000003", firstName:"Tom",  lastName:"TDM",   email:"tom.tdm@acme.com" },
-  { label: "ReadOnly (Rita)",     pzid: "rita",    eid: "E000004", firstName:"Rita", lastName:"View",  email:"rita.view@acme.com" },
-];

@@ -1,134 +1,23 @@
-/* Who/when marked a CSF 2.0 subcategory “Completed” for a given Org */
-CREATE TABLE dbo.Org_SubcategoryCompletion (
-  OrgID               INT           NOT NULL,
-  CSF2SubcategoryID   INT           NOT NULL,
-  Completed           BIT           NOT NULL DEFAULT(1),     -- 1 = Completed, 0 = Reopened
-  CompletedByName     NVARCHAR(200) NULL,                    -- store display name; easy & low-effort
-  CompletedAtUtc      DATETIME2(3)  NULL,
-  ReopenedByName      NVARCHAR(200) NULL,
-  ReopenedAtUtc       DATETIME2(3)  NULL,
-  Note                NVARCHAR(500) NULL,                    -- optional short note
-  RowVersion          ROWVERSION    NOT NULL,                -- optimistic concurrency (optional)
-  CONSTRAINT PK_Org_SubcategoryCompletion PRIMARY KEY (OrgID, CSF2SubcategoryID)
-);
-GO
+import api from '../../../lib/axiosClient';
 
-CREATE INDEX IX_Org_SubcategoryCompletion_Subcat
-  ON dbo.Org_SubcategoryCompletion (CSF2SubcategoryID);
-GO
-
-/* Simple audit trail (optional but recommended) */
-CREATE TABLE dbo.Org_SubcategoryCompletion_Audit (
-  AuditID             BIGINT        IDENTITY(1,1) PRIMARY KEY,
-  OrgID               INT           NOT NULL,
-  CSF2SubcategoryID   INT           NOT NULL,
-  Action              NVARCHAR(20)  NOT NULL,   -- 'Complete' | 'Reopen'
-  ActorName           NVARCHAR(200) NOT NULL,
-  ActionAtUtc         DATETIME2(3)  NOT NULL DEFAULT (SYSUTCDATETIME()),
-  SnapshotCompleted   BIT           NOT NULL,   -- state after the action
-  Note                NVARCHAR(500) NULL
-);
-GO
-
-
-
-CREATE OR ALTER PROCEDURE dbo.sp_SetOrgSubcatCompletion
-  @OrgID             INT,
-  @CSF2SubcategoryID INT,
-  @Action            NVARCHAR(20),      -- 'Complete' | 'Reopen'
-  @ActorName         NVARCHAR(200),
-  @Note              NVARCHAR(500) = NULL
-AS
-BEGIN
-  SET NOCOUNT ON;
-
-  IF @Action NOT IN ('Complete','Reopen')
-  BEGIN
-    RAISERROR('Invalid @Action. Use Complete | Reopen.', 16, 1);
-    RETURN;
-  END
-
-  DECLARE @isComplete BIT = CASE WHEN @Action = 'Complete' THEN 1 ELSE 0 END;
-
-  MERGE dbo.Org_SubcategoryCompletion AS tgt
-  USING (SELECT @OrgID AS OrgID, @CSF2SubcategoryID AS CSF2SubcategoryID) AS src
-  ON (tgt.OrgID = src.OrgID AND tgt.CSF2SubcategoryID = src.CSF2SubcategoryID)
-  WHEN MATCHED THEN
-    UPDATE SET
-      Completed        = @isComplete,
-      CompletedByName  = CASE WHEN @isComplete = 1 THEN @ActorName ELSE tgt.CompletedByName END,
-      CompletedAtUtc   = CASE WHEN @isComplete = 1 THEN SYSUTCDATETIME() ELSE tgt.CompletedAtUtc END,
-      ReopenedByName   = CASE WHEN @isComplete = 0 THEN @ActorName ELSE NULL END,
-      ReopenedAtUtc    = CASE WHEN @isComplete = 0 THEN SYSUTCDATETIME() ELSE NULL END,
-      Note             = @Note
-  WHEN NOT MATCHED THEN
-    INSERT (OrgID, CSF2SubcategoryID, Completed, CompletedByName, CompletedAtUtc, Note)
-    VALUES (@OrgID, @CSF2SubcategoryID, 1, @ActorName, SYSUTCDATETIME(), @Note)
-  ;
-
-  INSERT dbo.Org_SubcategoryCompletion_Audit
-    (OrgID, CSF2SubcategoryID, Action, ActorName, SnapshotCompleted, Note)
-  VALUES
-    (@OrgID, @CSF2SubcategoryID, @Action, @ActorName, @isComplete, @Note);
-
-  /* Return the current state for the caller (handy for UI) */
-  SELECT
-    OrgID, CSF2SubcategoryID, Completed,
-    CompletedByName, CompletedAtUtc, ReopenedByName, ReopenedAtUtc, Note
-  FROM dbo.Org_SubcategoryCompletion
-  WHERE OrgID = @OrgID AND CSF2SubcategoryID = @CSF2SubcategoryID;
-END
-GO
-
-
-
--- … existing CTEs …
-
-/* ===================== Result A: Headers (accordion) ===================== */
-;WITH OrgList AS ( /* unchanged */ ),
-     Csf2Tree AS ( /* unchanged */ ),
-     Counts   AS ( /* unchanged */ )
-
-SELECT
-  o.OrgID, o.OrgName,
-  t.FunctionID, t.FunctionName, t.FunctionLanguage,
-  t.CategoryID, t.CategoryName, t.CategoryLanguage,
-  t.CSF2SubcategoryID, t.CSF2SubcategoryName, t.CSF2SubcategoryLanguage,
-  t.ChangeSummary, t.ImplementationExamples,
-
-  -- existing owner/custodian (unchanged)
-  Owner = /* … */,
-  Custodian = /* … */,
-
-  ISNULL(c.KeptCount,0)    AS KeptCount,
-  ISNULL(c.RemovedCount,0) AS RemovedCount,
-  ISNULL(c.CustomCount,0)  AS CustomCount,
-
-  -- NEW: completion surface for header card
-  CASE WHEN oc.Completed = 1 THEN 1 ELSE 0 END AS CompletedFlag,
-  oc.CompletedByName,
-  oc.CompletedAtUtc,
-  oc.ReopenedByName,
-  oc.ReopenedAtUtc
-
-FROM OrgList o
-CROSS JOIN Csf2Tree t
-LEFT JOIN Counts c
-  ON c.OrgID = o.OrgID
- AND c.CSF2SubcategoryID = t.CSF2SubcategoryID
-LEFT JOIN dbo.Org_SubcategoryCompletion oc
-  ON oc.OrgID = o.OrgID
- AND oc.CSF2SubcategoryID = t.CSF2SubcategoryID
-WHERE
-  /* … same filters as before … */
-ORDER BY o.OrgID, t.FunctionID, t.CategoryID, t.CSF2SubcategoryID;
-
-
-POST /api/v1/CSFAttributeMap/subcat/completion/save
-{
-  "action": "Complete" | "Reopen",
-  "orgId": 123,
-  "csf2SubcategoryId": 456,
-  "actorName": "First Last",     // from your header/userInfo
-  "note": "optional"
+/**
+ * Save completion state for an org + CSF2 subcategory.
+ * action: 'Complete' | 'Reopen'
+ * note: optional string
+ * Returns the updated header fields so UI can patch immediately.
+ */
+export async function saveSubcatCompletion({ orgID, csF2SubcategoryID, action, note }) {
+  const { data } = await api.post('/api/v1/CSFAttributeMap/subcat/completion/save', {
+    orgID,
+    csF2SubcategoryID,
+    action,
+    note: note ?? null,
+  });
+  // Expecting server to return these fields. Fallbacks keep UI responsive.
+  return {
+    completedByName:  data?.completedByName  ?? null,
+    completedAt:      data?.completedAt      ?? (action === 'Complete' ? new Date().toISOString() : null),
+    reopenedByName:   data?.reopenedByName   ?? (action === 'Reopen' ? (data?.actorName || null) : null),
+    reopenedAt:       data?.reopenedAt       ?? (action === 'Reopen'   ? new Date().toISOString() : null),
+  };
 }

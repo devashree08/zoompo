@@ -1,23 +1,132 @@
-import api from '../../../lib/axiosClient';
+import * as React from 'react';
+import {
+  Box, Stack, Chip, Button, Tooltip, Dialog, DialogTitle,
+  DialogContent, DialogActions, TextField
+} from '@mui/material';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import ReplayIcon from '@mui/icons-material/Replay';
+import { saveSubcatCompletion } from '../../api/completionApi';
+import useToast from '../../../../ui/feedback/useToast';
 
 /**
- * Save completion state for an org + CSF2 subcategory.
- * action: 'Complete' | 'Reopen'
- * note: optional string
- * Returns the updated header fields so UI can patch immediately.
+ * Props:
+ *  - orgID: number
+ *  - csf2SubcategoryID: number
+ *  - header: { completedByName, completedAt, reopenedByName, reopenedAt, ... }  // camelCase as you added
+ *  - onPatchHeader: (orgID, csf2SubcategoryID, patch) => void   // to update headers[] in parent
+ *  - size: 'small' | 'medium'  (optional, defaults to 'small')
+ *  - disableActions: boolean   (optional, e.g., for view-only roles)
  */
-export async function saveSubcatCompletion({ orgID, csF2SubcategoryID, action, note }) {
-  const { data } = await api.post('/api/v1/CSFAttributeMap/subcat/completion/save', {
-    orgID,
-    csF2SubcategoryID,
-    action,
-    note: note ?? null,
-  });
-  // Expecting server to return these fields. Fallbacks keep UI responsive.
-  return {
-    completedByName:  data?.completedByName  ?? null,
-    completedAt:      data?.completedAt      ?? (action === 'Complete' ? new Date().toISOString() : null),
-    reopenedByName:   data?.reopenedByName   ?? (action === 'Reopen' ? (data?.actorName || null) : null),
-    reopenedAt:       data?.reopenedAt       ?? (action === 'Reopen'   ? new Date().toISOString() : null),
+export default function SubcatCompletionControls({
+  orgID,
+  csf2SubcategoryID,
+  header,
+  onPatchHeader,
+  size = 'small',
+  disableActions = false,
+}) {
+  const { success, error } = useToast();
+  const [dlg, setDlg] = React.useState({ open: false, mode: null, note: '' });
+  const [saving, setSaving] = React.useState(false);
+
+  const computeState = React.useCallback(() => {
+    const cAt = header?.completedAt ? new Date(header.completedAt) : null;
+    const rAt = header?.reopenedAt  ? new Date(header.reopenedAt)  : null;
+    if (cAt && (!rAt || cAt >= rAt)) {
+      return { state: 'Completed', by: header?.completedByName || null, at: cAt, tone: 'success' };
+    }
+    if (rAt) {
+      return { state: 'Reopened', by: header?.reopenedByName || null, at: rAt, tone: 'warning' };
+    }
+    return { state: 'Not complete', by: null, at: null, tone: 'default' };
+  }, [header]);
+
+  const comp = computeState();
+
+  const openDlg = (mode) => setDlg({ open: true, mode, note: '' });
+  const closeDlg = () => setDlg({ open: false, mode: null, note: '' });
+
+  const doAction = async () => {
+    if (!orgID || !csf2SubcategoryID) return;
+    setSaving(true);
+    try {
+      const patch = await saveSubcatCompletion({
+        orgID,
+        csF2SubcategoryID: csf2SubcategoryID,
+        action: dlg.mode === 'complete' ? 'Complete' : 'Reopen',
+        note: dlg.note || null,
+      });
+      onPatchHeader?.(orgID, csf2SubcategoryID, patch);
+      success(dlg.mode === 'complete' ? 'Marked complete' : 'Reopened');
+      closeDlg();
+    } catch {
+      error('Failed to save status');
+    } finally {
+      setSaving(false);
+    }
   };
+
+  const chipTooltip =
+    comp.state === 'Completed'
+      ? `${comp.by ? `Completed by ${comp.by}` : 'Completed'}${comp.at ? ` on ${comp.at.toLocaleString()}` : ''}`
+      : comp.state === 'Reopened'
+      ? `${comp.by ? `Reopened by ${comp.by}` : 'Reopened'}${comp.at ? ` on ${comp.at.toLocaleString()}` : ''}`
+      : 'Not complete';
+
+  return (
+    <>
+      <Stack direction="row" spacing={1} alignItems="center" onClick={(e) => e.stopPropagation()}>
+        <Tooltip title={chipTooltip}>
+          <Chip
+            size={size}
+            label={comp.state}
+            color={comp.tone === 'success' ? 'success' : comp.tone === 'warning' ? 'warning' : 'default'}
+            variant={comp.tone === 'default' ? 'outlined' : 'filled'}
+            sx={{ fontWeight: 700 }}
+          />
+        </Tooltip>
+
+        <Button
+          size={size}
+          variant="outlined"
+          startIcon={<CheckCircleIcon />}
+          onClick={() => openDlg('complete')}
+          disabled={disableActions || saving}
+        >
+          Complete
+        </Button>
+
+        <Button
+          size={size}
+          variant="text"
+          startIcon={<ReplayIcon />}
+          onClick={() => openDlg('reopen')}
+          disabled={disableActions || saving}
+        >
+          Reopen
+        </Button>
+      </Stack>
+
+      <Dialog open={dlg.open} onClose={saving ? undefined : closeDlg} fullWidth maxWidth="sm">
+        <DialogTitle>{dlg.mode === 'complete' ? 'Mark subcategory complete' : 'Reopen subcategory'}</DialogTitle>
+        <DialogContent>
+          <TextField
+            label="Optional note"
+            value={dlg.note}
+            onChange={(e)=>setDlg(s=>({ ...s, note: e.target.value }))}
+            fullWidth
+            multiline
+            minRows={3}
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeDlg} disabled={saving}>Cancel</Button>
+          <Button onClick={doAction} variant="contained" disabled={saving}>
+            {dlg.mode === 'complete' ? 'Complete' : 'Reopen'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </>
+  );
 }

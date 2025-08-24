@@ -11,29 +11,17 @@ export default function CsfTree({
   onSelectSubcat,
   selectedSubcatID = null,
   maxHeight = 'calc(100vh - 200px)',
-  activeOrgID = null,            // NEW: lets us scope counts when in compact mode
+  activeOrgID = null,                  // which org’s counts to show
+  liveCountsOverride = null,           // { [subcatId]: { kept, removed, custom } } for instant updates
 }) {
   const compactMode = !!selectedSubcatID;
 
-  // --- Counts (two maps): all-orgs (always), and active-org (when provided) ---
-  const countsAll = React.useMemo(() => {
-    const m = new Map();
-    headers.forEach(h => {
-      const id = h.csF2SubcategoryID;
-      const acc = m.get(id) || { kept: 0, removed: 0, custom: 0 };
-      acc.kept    += Number(h.keptCount    || 0);
-      acc.removed += Number(h.removedCount || 0);
-      acc.custom  += Number(h.customCount  || 0);
-      m.set(id, acc);
-    });
-    return m;
-  }, [headers]);
-
-  const countsActive = React.useMemo(() => {
-    if (!activeOrgID) return null;
+  // --- Per-org counts (no global aggregate) ---
+  // Your SP returns counts per (org, subcat) row in headers, so just group those.
+  const countsBySub = React.useMemo(() => {
     const m = new Map();
     headers
-      .filter(h => String(h.orgID) === String(activeOrgID))
+      .filter(h => String(h.orgID) === String(activeOrgID))  // NOTE: orgID (lowercase g)
       .forEach(h => {
         const id = h.csF2SubcategoryID;
         const acc = m.get(id) || { kept: 0, removed: 0, custom: 0 };
@@ -45,56 +33,53 @@ export default function CsfTree({
     return m;
   }, [headers, activeOrgID]);
 
-  // Prefer per-org counts in compact mode; fall back to aggregate if missing.
+  // Prefer live override for the selected subcat (instant updates),
+  // otherwise use the SP-backed per-org counts.
   const getCounts = React.useCallback((subId) => {
-    if (compactMode && countsActive) {
-      const perOrg = countsActive.get(subId);
-      if (perOrg && (perOrg.kept || perOrg.removed || perOrg.custom)) return perOrg;
+    const idStr = String(subId);
+    if (liveCountsOverride && selectedSubcatID && String(selectedSubcatID) === idStr) {
+      const o = liveCountsOverride[idStr];
+      if (o) return o;
     }
-    return countsAll.get(subId) || { kept: 0, removed: 0, custom: 0 };
-  }, [compactMode, countsActive, countsAll]);
+    return countsBySub.get(subId) || { kept: 0, removed: 0, custom: 0 };
+  }, [countsBySub, liveCountsOverride, selectedSubcatID]);
 
-  // --- Build Function -> Category -> Subcategory tree (structure uses ALL headers) ---
+  // --- Build Function -> Category -> Subcategory tree (structure from headers) ---
   const tree = React.useMemo(() => {
     const fM = new Map();
     headers.forEach(h => {
       if (!fM.has(h.functionID)) {
         fM.set(h.functionID, {
-          id: h.functionID,
-          name: h.functionName,
-          desc: h.functionLanguage || '',
-          cats: new Map(),
+          id: h.functionID, name: h.functionName, desc: h.functionLanguage || '', cats: new Map()
         });
       }
       const f = fM.get(h.functionID);
 
       if (!f.cats.has(h.categoryID)) {
         f.cats.set(h.categoryID, {
-          id: h.categoryID,
-          name: h.categoryName,
-          desc: h.categoryLanguage || '',
-          subs: [],
+          id: h.categoryID, name: h.categoryName, desc: h.categoryLanguage || '', subs: []
         });
       }
       const c = f.cats.get(h.categoryID);
 
+      // one sub entry per subcat
       if (!c.subs.some(s => s.id === h.csF2SubcategoryID)) {
         c.subs.push({
           id: h.csF2SubcategoryID,
           name: h.csF2SubcategoryName,
           desc: h.csF2SubcategoryLanguage || '',
-          counts: getCounts(h.csF2SubcategoryID),   // <-- scoped w/ fallback
+          counts: getCounts(h.csF2SubcategoryID),
         });
       }
     });
 
     return Array.from(fM.values()).map(f => ({
       ...f,
-      cats: Array.from(f.cats.values()),
+      cats: Array.from(f.cats.values())
     }));
   }, [headers, getCounts]);
 
-  // Auto-expand owner func/cat for the selected subcat (compact mode)
+  // --- Auto-expand func/cat for selected subcat in compact mode ---
   const ownerIds = React.useMemo(() => {
     if (!selectedSubcatID) return { funcId: null, catId: null };
     for (const f of tree) {
@@ -136,22 +121,14 @@ export default function CsfTree({
   const twoCol = {
     display: 'grid',
     columnGap: 16,
-    gridTemplateColumns: { xs: '1fr', sm: 'minmax(260px, 40%) 1fr' },
+    gridTemplateColumns: { xs: '1fr', sm: 'minmax(260px, 40%) 1fr' }
   };
 
   const BlackHeader = ({ left, right }) => (
-    <Box
-      sx={{
-        bgcolor: '#111',
-        color: '#fff',
-        borderRadius: 1,
-        px: 1.25,
-        py: 0.75,
-        mb: 0.75,
-        fontWeight: 800,
-        letterSpacing: 0.3,
-      }}
-    >
+    <Box sx={{
+      bgcolor: '#111', color: '#fff', borderRadius: 1,
+      px: 1.25, py: 0.75, mb: 0.75, fontWeight: 800, letterSpacing: .3
+    }}>
       <Box sx={{ ...twoCol }}>
         <Typography variant="body2">{left}</Typography>
         <Typography variant="body2">{right}</Typography>
@@ -170,39 +147,26 @@ export default function CsfTree({
           sx={{
             cursor: 'pointer',
             borderRadius: 1,
-            px: 1.25,
-            py: 1,
-            '&:hover': { bgcolor: 'action.hover' },
+            px: 1.25, py: 1,
+            '&:hover': { bgcolor: 'action.hover' }
           }}
         >
           <Box sx={compactMode ? {} : twoCol}>
-            <Typography variant="body1" fontWeight={700}>
-              {cat.name}
-            </Typography>
+            <Typography variant="body1" fontWeight={700}>{cat.name}</Typography>
             {!compactMode && (
-              <Typography variant="body2" color="text.secondary">
-                {cat.desc}
-              </Typography>
+              <Typography variant="body2" color="text.secondary">{cat.desc}</Typography>
             )}
           </Box>
           <Box sx={{ textAlign: 'right' }}>
-            <IconButton
-              size="small"
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleCat(fId, cat.id);
-              }}
-            >
-              {open ? <ExpandLess /> : <ExpandMore />}
+            <IconButton size="small" onClick={(e) => { e.stopPropagation(); toggleCat(fId, cat.id); }}>
+              {open ? <ExpandLess/> : <ExpandMore/>}
             </IconButton>
           </Box>
         </Box>
 
         <Collapse in={open} unmountOnExit>
           <Divider sx={{ mb: 1 }} />
-          {!compactMode && (
-            <BlackHeader left="Subcategory Name" right="Subcategory Language" />
-          )}
+          {!compactMode && <BlackHeader left="Subcategory Name" right="Subcategory Language" />}
 
           <Box sx={{ pl: 1 }}>
             {cat.subs.map(s => {
@@ -214,53 +178,27 @@ export default function CsfTree({
                   sx={{
                     cursor: 'pointer',
                     borderRadius: 1,
-                    px: 1.25,
-                    py: 0.8,
+                    // + a little extra padding in expanded mode per your ask
+                    px: 1.25, py: compactMode ? 0.8 : 1.0,
                     mb: 0.5,
                     bgcolor: selected ? 'action.selected' : 'transparent',
-                    '&:hover': {
-                      bgcolor: selected ? 'action.selected' : 'action.hover',
-                    },
+                    '&:hover': { bgcolor: selected ? 'action.selected' : 'action.hover' }
                   }}
                 >
-                  {/* Expanded view: NO chips. Compact view: show chips. */}
+                  {/* Expanded view: NO chips (just name|language). Compact: show chips. */}
                   {!compactMode ? (
                     <Box sx={twoCol}>
-                      <Typography variant="body2" fontWeight={700}>
-                        {s.name}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        {s.desc}
-                      </Typography>
+                      <Typography variant="body2" fontWeight={700}>{s.name}</Typography>
+                      <Typography variant="body2" color="text.secondary">{s.desc}</Typography>
                     </Box>
                   ) : (
                     <Box>
-                      <Typography variant="body2" fontWeight={700}>
-                        {s.name}
-                      </Typography>
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
-                        display="block"
-                      >
-                        {s.desc}
-                      </Typography>
+                      <Typography variant="body2" fontWeight={700}>{s.name}</Typography>
+                      <Typography variant="caption" color="text.secondary" display="block">{s.desc}</Typography>
                       <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
-                        <Chip
-                          size="small"
-                          label={`${s.counts.kept} Kept`}
-                          sx={{ bgcolor: '#e8f5e9', color: '#1b5e20' }}
-                        />
-                        <Chip
-                          size="small"
-                          label={`${s.counts.removed} Removed`}
-                          sx={{ bgcolor: '#ffebee', color: '#b71c1c' }}
-                        />
-                        <Chip
-                          size="small"
-                          label={`${s.counts.custom} Custom`}
-                          sx={{ bgcolor: '#e3f2fd', color: '#0d47a1' }}
-                        />
+                        <Chip size="small" label={`${s.counts.kept} Kept`}    sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }}/>
+                        <Chip size="small" label={`${s.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }}/>
+                        <Chip size="small" label={`${s.counts.custom} Custom`}  sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }}/>
                       </Stack>
                     </Box>
                   )}
@@ -278,56 +216,53 @@ export default function CsfTree({
       {tree.map((f) => {
         const open = openFuncs.has(f.id);
         return (
-          <Paper key={f.id} variant="outlined" sx={{ mb: 2, borderRadius: 2 }}>
-            {/* Function tile */}
+          <Paper key={f.id} variant="outlined" sx={{ mb: 2, borderRadius: .5 }}>
+            {/* Function tile: Name | Language on one row */}
             <Box
               onClick={() => toggleFunc(f.id)}
               sx={{
                 cursor: 'pointer',
-                p: 1.25,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
+                py: 2.25,
+                px: 1.25,
+                '&:hover': { bgcolor: 'action.hover' },
+                borderBottom: '1px solid',
+                borderColor: 'divider'
               }}
             >
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Box sx={{ ...twoCol, alignItems: 'center' }}>
-                  <Stack direction="row" spacing={1.25} alignItems="center">
-                    <FunctionBadge functionName={f.name} />
-                    <Typography variant="subtitle1" fontWeight={800}>
-                      {f.name}
-                    </Typography>
-                  </Stack>
-                  {!compactMode && (
-                    <Typography variant="body2" color="text.secondary">
-                      {f.desc}
-                    </Typography>
-                  )}
-                </Box>
-              </Box>
-              <IconButton
-                size="small"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleFunc(f.id);
+              <Box
+                sx={{
+                  display: 'grid',
+                  alignItems: 'center',
+                  columnGap: 2,
+                  gridTemplateColumns: { xs: '1fr', sm: 'minmax(240px, 33%) 1fr' },
                 }}
               >
-                {open ? <ExpandLess /> : <ExpandMore />}
-              </IconButton>
+                <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0 }}>
+                  <FunctionBadge functionName={f.name} />
+                  <Typography variant="subtitle1" fontWeight={800} noWrap>{f.name}</Typography>
+                </Stack>
+                {!compactMode && (
+                  <Typography
+                    variant="body2"
+                    color="text.secondary"
+                    sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                    title={f.desc}
+                  >
+                    {f.desc}
+                  </Typography>
+                )}
+              </Box>
             </Box>
 
             <Collapse in={open} unmountOnExit>
               <Divider sx={{ mb: 1 }} />
               {!compactMode && (
                 <Box sx={{ px: 1.25 }}>
-                  <BlackHeader
-                    left="Category Name"
-                    right="Category Language"
-                  />
+                  <BlackHeader left="Category Name" right="Category Language" />
                 </Box>
               )}
               <Box sx={{ p: 1.25, pt: 0.5 }}>
-                {f.cats.map(cat => (
+                {f.cats.map((cat) => (
                   <CategoryRow key={cat.id} fId={f.id} cat={cat} />
                 ))}
               </Box>

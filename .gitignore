@@ -1,25 +1,29 @@
-, Csf11Map AS (
-  /* Canonical mapping of CSF 1.1 subcategories to each CSF 2.0 subcategory.
-     NOTE: If you have a dedicated crosswalk table, replace this with that table.
-  */
-  SELECT
-      v.CSF2SubcategoryID,
-      v.CSF1SubcategoryID,
-      CSF1SubcategoryName     = MAX(v.CSF1SubcategoryName),
-      CSF1SubcategoryLanguage = MAX(v.CSF1SubcategoryLanguage)
-  FROM dbo.UI_CsfAttributeFeed v
-  WHERE v.CSF1SubcategoryID <> 0
-  GROUP BY v.CSF2SubcategoryID, v.CSF1SubcategoryID
-)
+// add near the top of normalizeFeed.js
+function parseCsf11(jsonStr) {
+  if (!jsonStr) return [];
+  try {
+    const arr = JSON.parse(jsonStr);
+    return (Array.isArray(arr) ? arr : []).map((x) => ({
+      id:
+        x.csf1SubcategoryID ??
+        x.CSF1SubcategoryID ??
+        x.csF1SubcategoryID ?? // your sample casing
+        x.id,
+      name:
+        x.csf1SubcategoryName ??
+        x.CSF1SubcategoryName ??
+        x.csF1SubcategoryName ??
+        x.name,
+      lang:
+        x.csf1SubcategoryLanguage ??
+        x.CSF1SubcategoryLanguage ??
+        x.csF1SubcategoryLanguage ??
+        x.lang,
+    })).filter((y) => y?.id != null);
+  } catch {
+    return [];
+  }
+}
 
-, Csf11MappedJson =
-    (
-      SELECT
-        m.CSF1SubcategoryID AS id,
-        m.CSF1SubcategoryName AS name,
-        m.CSF1SubcategoryLanguage AS lang
-      FROM Csf11Map m
-      WHERE m.CSF2SubcategoryID = t.CSF2SubcategoryID
-      ORDER BY m.CSF1SubcategoryID
-      FOR JSON PATH
-    )
+
+    csf11Mapped: parseCsf11(h.csf11MappedJson ?? h.CSF11MappedJson),

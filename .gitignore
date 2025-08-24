@@ -1,378 +1,340 @@
-// src/features/attributeMapping/components/molecules/AddCustomAttributePanel.jsx
+// src/features/attributeMapping/components/organisms/CsfTree.jsx
 import * as React from 'react';
 import {
-  Box, Paper, Stack, Select, MenuItem, TextField, Button, Chip,
-  IconButton, Tooltip, Divider, Typography
+  Box, Paper, Stack, Typography, IconButton, Collapse, Divider, Chip
 } from '@mui/material';
-import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
-import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
-import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
-import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined';
-import { saveCustomAttribute } from '../../api/customApi';
-import useToast from '../../../../ui/feedback/useToast';
+import { ExpandMore, ExpandLess } from '@mui/icons-material';
+import FunctionBadge from '../atoms/FunctionBadge';
 
-const ATTEST_OPTIONS = ['Meet', 'Partially Meet', 'Does Not Meet'];
-
-/**
- * Props:
- *  orgID, orgName
- *  csF2SubcategoryID (canonical)  // NOTE: prefer this one
- *  csf2SubcategoryID (legacy alias; tolerated)
- *  subcatName
- *  existingRows: all rows (baseline+custom) for this org/subcat
- *  onAdded(newRow), onPatched(key, patch), onDeleted(key)
- */
-export default function AddCustomAttributePanel({
-  orgID,
-  orgName,
-  csF2SubcategoryID,
-  csf2SubcategoryID,   // legacy alias
-  subcatName,
-  existingRows = [],
-  onAdded,
-  onPatched,
-  onDeleted,
+export default function CsfTree({
+  headers = [],
+  onSelectSubcat,
+  selectedSubcatID = null,
+  maxHeight = 'calc(100vh - 200px)',
+  activeOrgID = null,            // NEW: lets us scope counts when in compact mode
 }) {
-  const subcatId = csF2SubcategoryID ?? csf2SubcategoryID;
-  const { success, error } = useToast();
+  const compactMode = !!selectedSubcatID;
 
-  // ---------- derive current custom items from parent rows ----------
-  const seedList = React.useMemo(
-    () =>
-      (existingRows || []).filter(
-        r =>
-          (r.isCustom || r.customAttributeDefinition) &&
-          String(r.orgID) === String(orgID) &&
-          String(r.csF2SubcategoryID) === String(subcatId)
-      ),
-    [existingRows, orgID, subcatId]
-  );
-  const [items, setItems] = React.useState(seedList);
-  React.useEffect(() => setItems(seedList), [seedList]);
-
-  // ---------- add form ----------
-  const [ml, setMl]   = React.useState(3);
-  const [def, setDef] = React.useState('');
-  const [att, setAtt] = React.useState('');
-  const [adding, setAdding] = React.useState(false);
-
-  /** Canonical key for CUSTOM rows: org|sub|ml|C|0|customNum (matches table/page) */
-  const makeKey = React.useCallback((r) => {
-    const org = String(r.orgID ?? '0');
-    const sub = String(r.csF2SubcategoryID ?? '0');
-    const ml  = String(r.maturityLevel ?? '0');
-    const num = String(r.customAttributeNum ?? '0');
-    return `${org}|${sub}|${ml}|C|0|${num}`;
-  }, []);
-
-  // next custom # per ML (client-side fallback if API doesn’t echo one back)
-  const nextNum = React.useCallback((m) => {
-    const nums = items
-      .filter(x => Number(x.maturityLevel) === Number(m))
-      .map(x => Number(x.customAttributeNum || 0));
-    return (nums.length ? Math.max(...nums) : 0) + 1;
-  }, [items]);
-
-  // local mutations to keep panel responsive before parent diff arrives
-  const addItemLocal = React.useCallback((row) => {
-    setItems(prev => {
-      const list = [...prev, row];
-      // ML3 → ML4, then by custom num
-      return list.sort((a, b) => {
-        const ar = Number(a.maturityLevel) === 4 ? 2 : 1;
-        const br = Number(b.maturityLevel) === 4 ? 2 : 1;
-        if (ar !== br) return ar - br;
-        return (a.customAttributeNum ?? 0) - (b.customAttributeNum ?? 0);
-      });
+  // --- Counts (two maps): all-orgs (always), and active-org (when provided) ---
+  const countsAll = React.useMemo(() => {
+    const m = new Map();
+    headers.forEach(h => {
+      const id = h.csF2SubcategoryID;
+      const acc = m.get(id) || { kept: 0, removed: 0, custom: 0 };
+      acc.kept    += Number(h.keptCount    || 0);
+      acc.removed += Number(h.removedCount || 0);
+      acc.custom  += Number(h.customCount  || 0);
+      m.set(id, acc);
     });
-  }, []);
+    return m;
+  }, [headers]);
 
-  const patchLocal = React.useCallback((key, patch) => {
-    setItems(prev => prev.map(x => (makeKey(x) === key ? { ...x, ...patch } : x)));
-  }, [makeKey]);
-
-  const deleteLocal = React.useCallback((key) => {
-    setItems(prev => prev.filter(x => makeKey(x) !== key));
-  }, [makeKey]);
-
-  const handleAdd = async () => {
-    if (!def.trim()) return;
-    setAdding(true);
-
-    const localNum = nextNum(ml);
-    try {
-      const resp = await saveCustomAttribute({
-        action: 'Add',
-        orgId: orgID,
-        csf2SubcategoryId: subcatId,
-        maturityLevel: ml,
-        attributeNum: localNum,        // fallback number if API doesn’t echo
-        attrDefinition: def.trim(),    // server expects attrDefinition
-        attestation: att || null,
+  const countsActive = React.useMemo(() => {
+    if (!activeOrgID) return null;
+    const m = new Map();
+    headers
+      .filter(h => String(h.orgID) === String(activeOrgID))
+      .forEach(h => {
+        const id = h.csF2SubcategoryID;
+        const acc = m.get(id) || { kept: 0, removed: 0, custom: 0 };
+        acc.kept    += Number(h.keptCount    || 0);
+        acc.removed += Number(h.removedCount || 0);
+        acc.custom  += Number(h.customCount  || 0);
+        m.set(id, acc);
       });
+    return m;
+  }, [headers, activeOrgID]);
 
-      const serverNum = resp?.customAttributeNum ?? resp?.attributeNum ?? localNum;
-      const serverDef = resp?.customAttributeDefinition ?? resp?.attrDefinition ?? def.trim();
-      const serverAtt = resp?.attestation ?? (att || null);
-
-      const newRow = {
-        isCustom: true,
-        orgID,
-        csF2SubcategoryID: subcatId,
-        maturityLevel: ml,
-        customAttributeNum: serverNum,
-        customAttributeDefinition: serverDef,
-        customAttributeAttestation: serverAtt,
-        attributeNum: null, // not baseline
-      };
-
-      // immediate local + bubble up
-      addItemLocal(newRow);
-      onAdded?.(newRow);
-
-      success('Custom attribute added');
-      setDef('');
-      setAtt('');
-    } catch {
-      error('Add failed');
-    } finally {
-      setAdding(false);
+  // Prefer per-org counts in compact mode; fall back to aggregate if missing.
+  const getCounts = React.useCallback((subId) => {
+    if (compactMode && countsActive) {
+      const perOrg = countsActive.get(subId);
+      if (perOrg && (perOrg.kept || perOrg.removed || perOrg.custom)) return perOrg;
     }
+    return countsAll.get(subId) || { kept: 0, removed: 0, custom: 0 };
+  }, [compactMode, countsActive, countsAll]);
+
+  // --- Build Function -> Category -> Subcategory tree (structure uses ALL headers) ---
+  const tree = React.useMemo(() => {
+    const fM = new Map();
+    headers.forEach(h => {
+      if (!fM.has(h.functionID)) {
+        fM.set(h.functionID, {
+          id: h.functionID,
+          name: h.functionName,
+          desc: h.functionLanguage || '',
+          cats: new Map(),
+        });
+      }
+      const f = fM.get(h.functionID);
+
+      if (!f.cats.has(h.categoryID)) {
+        f.cats.set(h.categoryID, {
+          id: h.categoryID,
+          name: h.categoryName,
+          desc: h.categoryLanguage || '',
+          subs: [],
+        });
+      }
+      const c = f.cats.get(h.categoryID);
+
+      if (!c.subs.some(s => s.id === h.csF2SubcategoryID)) {
+        c.subs.push({
+          id: h.csF2SubcategoryID,
+          name: h.csF2SubcategoryName,
+          desc: h.csF2SubcategoryLanguage || '',
+          counts: getCounts(h.csF2SubcategoryID),   // <-- scoped w/ fallback
+        });
+      }
+    });
+
+    return Array.from(fM.values()).map(f => ({
+      ...f,
+      cats: Array.from(f.cats.values()),
+    }));
+  }, [headers, getCounts]);
+
+  // Auto-expand owner func/cat for the selected subcat (compact mode)
+  const ownerIds = React.useMemo(() => {
+    if (!selectedSubcatID) return { funcId: null, catId: null };
+    for (const f of tree) {
+      for (const c of f.cats) {
+        if (c.subs.some(s => String(s.id) === String(selectedSubcatID))) {
+          return { funcId: f.id, catId: c.id };
+        }
+      }
+    }
+    return { funcId: null, catId: null };
+  }, [tree, selectedSubcatID]);
+
+  const [openFuncs, setOpenFuncs] = React.useState(new Set());
+  const [openCats, setOpenCats]   = React.useState(new Set());
+
+  React.useEffect(() => {
+    if (!compactMode || !ownerIds.funcId) return;
+    setOpenFuncs(new Set([ownerIds.funcId]));
+    setOpenCats(new Set([`${ownerIds.funcId}:${ownerIds.catId}`]));
+  }, [compactMode, ownerIds.funcId, ownerIds.catId]);
+
+  const toggleFunc = (fid) => {
+    setOpenFuncs(prev => {
+      const n = new Set(prev);
+      n.has(fid) ? n.delete(fid) : n.add(fid);
+      return n;
+    });
+  };
+  const toggleCat = (fid, cid) => {
+    const key = `${fid}:${cid}`;
+    setOpenCats(prev => {
+      const n = new Set(prev);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n;
+    });
   };
 
-  // ---------- item row (inline edit/delete) ----------
-  const RowItem = ({ row }) => {
-    const [edit, setEdit] = React.useState(false);
-    const [edef, setEdef] = React.useState(row.customAttributeDefinition || '');
-    const [eatt, setEatt] = React.useState(row.customAttributeAttestation || '');
-    const [saving, setSaving] = React.useState(false);
+  // Shared two-column grid (Name | Language) for expanded mode
+  const twoCol = {
+    display: 'grid',
+    columnGap: 16,
+    gridTemplateColumns: { xs: '1fr', sm: 'minmax(260px, 40%) 1fr' },
+  };
 
-    React.useEffect(() => {
-      if (!edit) {
-        setEdef(row.customAttributeDefinition || '');
-        setEatt(row.customAttributeAttestation || '');
-      }
-    }, [edit, row.customAttributeDefinition, row.customAttributeAttestation]);
+  const BlackHeader = ({ left, right }) => (
+    <Box
+      sx={{
+        bgcolor: '#111',
+        color: '#fff',
+        borderRadius: 1,
+        px: 1.25,
+        py: 0.75,
+        mb: 0.75,
+        fontWeight: 800,
+        letterSpacing: 0.3,
+      }}
+    >
+      <Box sx={{ ...twoCol }}>
+        <Typography variant="body2">{left}</Typography>
+        <Typography variant="body2">{right}</Typography>
+      </Box>
+    </Box>
+  );
 
-    const key = makeKey(row);
-
-    const save = async () => {
-      if (!edef.trim()) return;
-      setSaving(true);
-      try {
-        await saveCustomAttribute({
-          action: 'Update', // keep casing you’re using here
-          orgId: row.orgID,
-          csf2SubcategoryId: row.csF2SubcategoryID,
-          maturityLevel: row.maturityLevel,
-          attributeNum: row.customAttributeNum,
-          attrDefinition: edef.trim(),
-          attestation: eatt || null,
-        });
-        const patch = {
-          customAttributeDefinition: edef.trim(),
-          customAttributeAttestation: eatt || null,
-        };
-        patchLocal(key, patch);     // instant in-panel
-        onPatched?.(key, patch);    // update parent/table
-        success('Updated');
-        setEdit(false);
-      } catch {
-        error('Update failed');
-      } finally {
-        setSaving(false);
-      }
-    };
-
-    const remove = async () => {
-      try {
-        await saveCustomAttribute({
-          action: 'Delete',
-          orgId: row.orgID,
-          csf2SubcategoryId: row.csF2SubcategoryID,
-          maturityLevel: row.maturityLevel,
-          attributeNum: row.customAttributeNum,
-        });
-        deleteLocal(key);        // instant in-panel
-        onDeleted?.(key);        // remove from parent/table
-        success('Deleted');
-      } catch {
-        error('Delete failed');
-      }
-    };
-
+  const CategoryRow = ({ fId, cat }) => {
+    const key  = `${fId}:${cat.id}`;
+    const open = openCats.has(key);
     return (
-      <Paper variant="outlined" sx={{ p: 1 }}>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Chip size="small" label={`ML ${row.maturityLevel}`} />
+      <Box sx={{ mb: 1.25 }}>
+        {/* Entire row toggles */}
+        <Box
+          onClick={() => toggleCat(fId, cat.id)}
+          sx={{
+            cursor: 'pointer',
+            borderRadius: 1,
+            px: 1.25,
+            py: 1,
+            '&:hover': { bgcolor: 'action.hover' },
+          }}
+        >
+          <Box sx={compactMode ? {} : twoCol}>
+            <Typography variant="body1" fontWeight={700}>
+              {cat.name}
+            </Typography>
+            {!compactMode && (
+              <Typography variant="body2" color="text.secondary">
+                {cat.desc}
+              </Typography>
+            )}
+          </Box>
+          <Box sx={{ textAlign: 'right' }}>
+            <IconButton
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleCat(fId, cat.id);
+              }}
+            >
+              {open ? <ExpandLess /> : <ExpandMore />}
+            </IconButton>
+          </Box>
+        </Box>
 
-          {edit ? (
-            <>
-              <TextField
-                size="small"
-                fullWidth
-                value={edef}
-                onChange={(e) => setEdef(e.target.value)}
-              />
-              <Select
-                size="small"
-                displayEmpty
-                value={eatt || ''}
-                onChange={(e) => setEatt(e.target.value || '')}
-                renderValue={(v) => (v ? v : '2025 Attestation')}
-                sx={{ minWidth: 220 }}
-              >
-                <MenuItem value=""><em>—</em></MenuItem>
-                {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-              </Select>
-              <Tooltip title="Save">
-                <span>
-                  <IconButton size="small" onClick={save} disabled={saving || !edef.trim()}>
-                    <SaveOutlinedIcon fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title="Cancel">
-                <IconButton
-                  size="small"
-                  onClick={() => {
-                    setEdit(false);
-                    setEdef(row.customAttributeDefinition || '');
-                    setEatt(row.customAttributeAttestation || '');
+        <Collapse in={open} unmountOnExit>
+          <Divider sx={{ mb: 1 }} />
+          {!compactMode && (
+            <BlackHeader left="Subcategory Name" right="Subcategory Language" />
+          )}
+
+          <Box sx={{ pl: 1 }}>
+            {cat.subs.map(s => {
+              const selected = String(s.id) === String(selectedSubcatID);
+              return (
+                <Box
+                  key={s.id}
+                  onClick={() => onSelectSubcat?.(s.id)}
+                  sx={{
+                    cursor: 'pointer',
+                    borderRadius: 1,
+                    px: 1.25,
+                    py: 0.8,
+                    mb: 0.5,
+                    bgcolor: selected ? 'action.selected' : 'transparent',
+                    '&:hover': {
+                      bgcolor: selected ? 'action.selected' : 'action.hover',
+                    },
                   }}
                 >
-                  <CloseOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </>
-          ) : (
-            <>
-              <Typography variant="body2" sx={{ flex: 1 }}>{row.customAttributeDefinition}</Typography>
-
-              {row.customAttributeAttestation ? (
-                <Chip
-                  size="small"
-                  label={row.customAttributeAttestation}
-                  sx={(t) => ({
-                    bgcolor:
-                      row.customAttributeAttestation === 'Meet' ? t.palette.success.main :
-                      row.customAttributeAttestation === 'Partially Meet' ? t.palette.warning.main :
-                      t.palette.error.main,
-                    color: row.customAttributeAttestation === 'Partially Meet'
-                      ? t.palette.common.black
-                      : t.palette.common.white,
-                    fontWeight: 600
-                  })}
-                />
-              ) : (
-                <Typography variant="body2" color="text.secondary">—</Typography>
-              )}
-
-              <Tooltip title="Edit">
-                <IconButton size="small" onClick={() => setEdit(true)}>
-                  <EditOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Delete">
-                <IconButton size="small" onClick={remove}>
-                  <DeleteOutlineOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </>
-          )}
-        </Stack>
-      </Paper>
+                  {/* Expanded view: NO chips. Compact view: show chips. */}
+                  {!compactMode ? (
+                    <Box sx={twoCol}>
+                      <Typography variant="body2" fontWeight={700}>
+                        {s.name}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {s.desc}
+                      </Typography>
+                    </Box>
+                  ) : (
+                    <Box>
+                      <Typography variant="body2" fontWeight={700}>
+                        {s.name}
+                      </Typography>
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        display="block"
+                      >
+                        {s.desc}
+                      </Typography>
+                      <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
+                        <Chip
+                          size="small"
+                          label={`${s.counts.kept} Kept`}
+                          sx={{ bgcolor: '#e8f5e9', color: '#1b5e20' }}
+                        />
+                        <Chip
+                          size="small"
+                          label={`${s.counts.removed} Removed`}
+                          sx={{ bgcolor: '#ffebee', color: '#b71c1c' }}
+                        />
+                        <Chip
+                          size="small"
+                          label={`${s.counts.custom} Custom`}
+                          sx={{ bgcolor: '#e3f2fd', color: '#0d47a1' }}
+                        />
+                      </Stack>
+                    </Box>
+                  )}
+                </Box>
+              );
+            })}
+          </Box>
+        </Collapse>
+      </Box>
     );
   };
 
-  // ---------- UI ----------
   return (
-    <Paper variant="outlined" sx={{ mt: 2, p: 1.5 }}>
-      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" sx={{ mb: 1 }}>
-        <Typography variant="subtitle2">
-          Custom Attributes — {orgName || 'Org'} / {subcatName}
-        </Typography>
-      </Stack>
+    <Box sx={{ maxHeight, overflow: 'auto' }}>
+      {tree.map((f) => {
+        const open = openFuncs.has(f.id);
+        return (
+          <Paper key={f.id} variant="outlined" sx={{ mb: 2, borderRadius: 2 }}>
+            {/* Function tile */}
+            <Box
+              onClick={() => toggleFunc(f.id)}
+              sx={{
+                cursor: 'pointer',
+                p: 1.25,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Box sx={{ ...twoCol, alignItems: 'center' }}>
+                  <Stack direction="row" spacing={1.25} alignItems="center">
+                    <FunctionBadge functionName={f.name} />
+                    <Typography variant="subtitle1" fontWeight={800}>
+                      {f.name}
+                    </Typography>
+                  </Stack>
+                  {!compactMode && (
+                    <Typography variant="body2" color="text.secondary">
+                      {f.desc}
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
+              <IconButton
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleFunc(f.id);
+                }}
+              >
+                {open ? <ExpandLess /> : <ExpandMore />}
+              </IconButton>
+            </Box>
 
-      {/* Add row */}
-      <Stack
-        direction={{ xs: 'column', md: 'row' }}
-        spacing={1}
-        alignItems={{ md: 'center' }}
-        sx={{ mb: 1.25 }}
-      >
-        <Select
-          size="small"
-          value={ml}
-          onChange={(e) => setMl(Number(e.target.value))}
-          sx={{ width: 180 }}
-          renderValue={(v) => (v === 4 ? 'Maturity Level 4' : 'Maturity Level 3')}
-        >
-          <MenuItem value={3}>Maturity Level 3</MenuItem>
-          <MenuItem value={4}>Maturity Level 4</MenuItem>
-        </Select>
-
-        <TextField
-          size="small"
-          fullWidth
-          placeholder="Attribute definition…"
-          value={def}
-          onChange={(e) => setDef(e.target.value)}
-        />
-
-        <Select
-          size="small"
-          displayEmpty
-          value={att || ''}
-          onChange={(e) => setAtt(e.target.value || '')}
-          renderValue={(v) => (v ? v : '2025 Attestation')}
-          sx={{ width: { xs: '100%', md: 220 } }}
-        >
-          <MenuItem value=""><em>—</em></MenuItem>
-          {ATTEST_OPTIONS.map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
-        </Select>
-
-        <Button
-          variant="contained"
-          onClick={handleAdd}
-          disabled={adding || !def.trim()}
-          sx={{ minWidth: 88 }}
-        >
-          {adding ? 'Adding…' : 'Add'}
-        </Button>
-      </Stack>
-
-      <Divider sx={{ my: 1 }} />
-
-      {/* Grouped display */}
-      <GroupBlock
-        title="Maturity Level 3"
-        items={items.filter(x => Number(x.maturityLevel) === 3)}
-        RowItem={RowItem}
-      />
-      <Box sx={{ height: 8 }} />
-      <GroupBlock
-        title="Maturity Level 4"
-        items={items.filter(x => Number(x.maturityLevel) === 4)}
-        RowItem={RowItem}
-      />
-    </Paper>
-  );
-}
-
-function GroupBlock({ title, items, RowItem }) {
-  return (
-    <Box>
-      <Typography variant="overline" sx={{ color: 'text.secondary' }}>{title}</Typography>
-      <Stack spacing={0.75} sx={{ mt: 0.5 }}>
-        {items.length === 0 ? (
-          <Typography variant="body2" color="text.secondary">No custom attributes.</Typography>
-        ) : (
-          items.map(r => (
-            <RowItem key={`ml${r.maturityLevel}-c${r.customAttributeNum}`} row={r} />
-          ))
-        )}
-      </Stack>
+            <Collapse in={open} unmountOnExit>
+              <Divider sx={{ mb: 1 }} />
+              {!compactMode && (
+                <Box sx={{ px: 1.25 }}>
+                  <BlackHeader
+                    left="Category Name"
+                    right="Category Language"
+                  />
+                </Box>
+              )}
+              <Box sx={{ p: 1.25, pt: 0.5 }}>
+                {f.cats.map(cat => (
+                  <CategoryRow key={cat.id} fId={f.id} cat={cat} />
+                ))}
+              </Box>
+            </Collapse>
+          </Paper>
+        );
+      })}
     </Box>
   );
 }

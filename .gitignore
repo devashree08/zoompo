@@ -1,16 +1,19 @@
-// Unique across multiple CSF1 subcats + customs.
-// Baseline: ...|B|<csf1Id>|<attrNum>
-// Custom:   ...|C|0|<customNum>
-export const rowKey = (r) => {
-  const org = r.orgID ?? '0';
-  const sub = r.csF2SubcategoryID ?? '0';
-  const ml  = r.maturityLevel ?? '0';
-  const isCustom = !!(r.isCustom || r.customAttributeDefinition || r.customAttributeNum != null);
-
-  if (isCustom) {
-    return `${org}|${sub}|${ml}|C|0|${r.customAttributeNum ?? '0'}`;
-  }
-  // baseline
-  const csf1 = r.csF1SubcategoryID ?? '0';
-  return `${org}|${sub}|${ml}|B|${csf1}|${r.attributeNum ?? '0'}`;
-};
++  // Distinct + stable order (alpha by name, fallback by id)
++  const assoc = React.useMemo(() => {
++    const m = new Map();
++    (associatedRows || []).forEach(r => {
++      const id = r?.csF1SubcategoryID;
++      if (!id || Number(id) === 0) return;
++      if (!m.has(id)) {
++        m.set(id, {
++          id,
++          name: r?.csF1SubcategoryName || `CSF1 #${id}`,
++          lang: r?.csF1SubcategoryLanguage || '',
++        });
++      }
++    });
++    return Array.from(m.values())
++      .sort((a, b) =>
++        (a.name || '').localeCompare(b.name || '') || (Number(a.id) - Number(b.id))
++      );
++  }, [associatedRows]);

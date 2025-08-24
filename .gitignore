@@ -1,4 +1,9 @@
-const handleCompletionUpdated = React.useCallback((patch) => {
-  // patch only the active org + selected subcat header
-  patchHeaderForActiveOrg(selectedSubcatID, activeOrgID, patch);
-}, [selectedSubcatID, activeOrgID, patchHeaderForActiveOrg]);
+const patchHeaderForActiveOrg = React.useCallback((subcatID, orgID, patch) => {
+  setHeaders(prev =>
+    prev.map(h =>
+      String(h.csF2SubcategoryID) === String(subcatID) && h.orgID === orgID
+        ? { ...h, ...patch }
+        : h
+    )
+  );
+}, []);

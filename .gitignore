@@ -1,9 +1,6 @@
-const patchHeaderForActiveOrg = React.useCallback((subcatID, orgID, patch) => {
-  setHeaders(prev =>
-    prev.map(h =>
-      String(h.csF2SubcategoryID) === String(subcatID) && h.orgID === orgID
-        ? { ...h, ...patch }
-        : h
-    )
-  );
-}, []);
+<SubcatCompletionControls
+  orgID={header.orgID}
+  csf2SubcategoryID={header.csF2SubcategoryID}   // <-- lowercase f matches child prop
+  header={header}                               // <-- child expects a header object
+  onPatchHeader={(_, __, patch) => onCompletionUpdated?.(patch)} // bridge to your parent
+/>

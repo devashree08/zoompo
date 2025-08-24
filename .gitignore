@@ -1,32 +1,21 @@
-const renderStatusChip = (status) => {
-  if (!status) return null;
-  const { state } = status;
-  const color =
-    state === 'Completed' ? 'success' :
-    state === 'Reopened'  ? 'warning' : 'default';
-  const variant = state === 'Not complete' ? 'outlined' : 'filled';
-  return <Chip size="small" label={state} color={color} variant={variant} sx={{ fontWeight: 700 }} />;
-};
-
-
-{compactMode && (
-  <Box sx={{ position: 'absolute', top: 6, right: 6, pointerEvents: 'none' }}>
-    <Tooltip
-      title={() => {
-        const st = statusBySub.get(s.id);
-        if (!st) return '';
-        const when = st.at ? new Date(st.at).toLocaleString() : '';
-        return st.state === 'Completed'
-          ? `Completed${st.by ? ' by ' + st.by : ''}${when ? ' on ' + when : ''}`
-          : st.state === 'Reopened'
-          ? `Reopened${st.by ? ' by ' + st.by : ''}${when ? ' on ' + when : ''}`
-          : 'Not complete';
-      }}
-      placement="top"
-    >
-      <span style={{ pointerEvents: 'auto' }}>
-        {renderStatusChip(statusBySub.get(s.id))}
-      </span>
-    </Tooltip>
-  </Box>
-)}
+ {compactMode && (() => {
+       const st = statusBySub.get(s.id);
+       const when = st?.at ? new Date(st.at).toLocaleString() : '';
+       const tip =
+         st?.state === 'Completed'
+           ? `Completed${st.by ? ' by ' + st.by : ''}${when ? ' on ' + when : ''}`
+           : st?.state === 'Reopened'
+           ? `Reopened${st.by ? ' by ' + st.by : ''}${when ? ' on ' + when : ''}`
+           : 'Not complete';
+       return (
+         <Box
+           sx={{ position: 'absolute', top: 6, right: 6 }}
+           onClick={(e) => e.stopPropagation()}
+           onMouseDown={(e) => e.stopPropagation()}
+         >
+           <Tooltip title={tip} placement="top" arrow enterDelay={200}>
+             <span>{renderStatusChip(st)}</span>
+           </Tooltip>
+         </Box>
+       );
+     })()}

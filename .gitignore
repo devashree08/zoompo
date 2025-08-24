@@ -1,14 +1,8 @@
-{/* Right column */}
-          <Box sx={{ display: 'grid', gap: 2 }}>
-            {/* ⬇️ SIGN-OFF CONTROLS live here */}
-            <Card title="SIGN-OFF">
-              <SubcatCompletionControls
-                orgID={header.orgID}
-                csF2SubcategoryID={header.csF2SubcategoryID}
-                completedByName={header.completedByName}
-                completedAt={header.completedAt}
-                reopenedByName={header.reopenedByName}
-                reopenedAt={header.reopenedAt}
-                onUpdated={onCompletionUpdated /* optional callback from parent */}
-              />
-            </Card>
+// AttributeMappingPage.js
+const patchHeaderForActiveOrg = React.useCallback((orgID, csf2SubcatID, patch) => {
+  setHeaders(prev => prev.map(h =>
+    String(h.orgID) === String(orgID) && String(h.csF2SubcategoryID) === String(csf2SubcatID)
+      ? { ...h, ...patch }
+      : h
+  ));
+}, []);

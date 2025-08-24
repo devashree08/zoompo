@@ -1,228 +1,134 @@
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<title>Completion Card – Interactive Preview</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<style>
-  :root{
-    --primary:#0561FF; --primary-dark:#0540C5;
-    --success:#12B76A; --warning:#F79009; --error:#D92D20;
-    --bg:#FFFFFF; --page:#F7F8FB;
-    --text:#101828; --text-2:#475467; --muted:#667085;
-    --divider:#E4E7EC; --chip-bg:#EEF1F6; --chip-br:#CDD5DF;
-  }
-  * { box-sizing: border-box; }
-  body{
-    margin:24px; background:var(--page); color:var(--text);
-    font-family: Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-  }
-  .container{ max-width: 1100px; margin:0 auto; }
+/* Who/when marked a CSF 2.0 subcategory “Completed” for a given Org */
+CREATE TABLE dbo.Org_SubcategoryCompletion (
+  OrgID               INT           NOT NULL,
+  CSF2SubcategoryID   INT           NOT NULL,
+  Completed           BIT           NOT NULL DEFAULT(1),     -- 1 = Completed, 0 = Reopened
+  CompletedByName     NVARCHAR(200) NULL,                    -- store display name; easy & low-effort
+  CompletedAtUtc      DATETIME2(3)  NULL,
+  ReopenedByName      NVARCHAR(200) NULL,
+  ReopenedAtUtc       DATETIME2(3)  NULL,
+  Note                NVARCHAR(500) NULL,                    -- optional short note
+  RowVersion          ROWVERSION    NOT NULL,                -- optimistic concurrency (optional)
+  CONSTRAINT PK_Org_SubcategoryCompletion PRIMARY KEY (OrgID, CSF2SubcategoryID)
+);
+GO
 
-  /* Fake placement markers to show where this sits in your right pane */
-  .mock{ background:#fff; border:1px dashed #D0D5DD; color:#667085; border-radius:6px; padding:10px 12px; font-size:12px; }
+CREATE INDEX IX_Org_SubcategoryCompletion_Subcat
+  ON dbo.Org_SubcategoryCompletion (CSF2SubcategoryID);
+GO
 
-  /* Controls (simulate Org tabs + subcat selection) */
-  .controls{
-    display:flex; gap:12px; align-items:center; flex-wrap:wrap;
-    background:#fff; border:1px solid var(--divider); border-radius:6px; padding:10px 12px; margin:12px 0;
-  }
-  .controls label{ font-size:12px; color:var(--muted); font-weight:700; margin-right:6px; }
-  .controls select{
-    height:32px; border:1px solid var(--divider); border-radius:6px; padding:0 10px; background:#fff; min-width: 200px;
-  }
+/* Simple audit trail (optional but recommended) */
+CREATE TABLE dbo.Org_SubcategoryCompletion_Audit (
+  AuditID             BIGINT        IDENTITY(1,1) PRIMARY KEY,
+  OrgID               INT           NOT NULL,
+  CSF2SubcategoryID   INT           NOT NULL,
+  Action              NVARCHAR(20)  NOT NULL,   -- 'Complete' | 'Reopen'
+  ActorName           NVARCHAR(200) NOT NULL,
+  ActionAtUtc         DATETIME2(3)  NOT NULL DEFAULT (SYSUTCDATETIME()),
+  SnapshotCompleted   BIT           NOT NULL,   -- state after the action
+  Note                NVARCHAR(500) NULL
+);
+GO
 
-  /* Card shell */
-  .completion-card{
-    background:var(--bg);
-    border:1px solid var(--divider);
-    border-radius:6px;
-    padding:12px 16px;
-    margin:16px 0;
-  }
-  .completion-header{
-    display:flex; align-items:center; gap:12px; margin-bottom:6px;
-  }
-  .overline{
-    font-size:11px; letter-spacing:.6px; text-transform:uppercase;
-    color:#667085; font-weight:700;
-  }
-  .meta{
-    margin-left:auto; font-size:12px; color:#667085; white-space:nowrap;
-  }
-  .completion-inner{
-    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
-  }
-  .spacer{ flex:1; }
 
-  /* Chips */
-  .chip{
-    display:inline-flex; align-items:center;
-    border-radius:12px; height:24px; padding:0 10px;
-    font-size:12px; font-weight:600; border:1px solid transparent;
-  }
-  .chip.not-started{ background:var(--chip-bg); color:#475467; border-color:var(--chip-br); }
-  .chip.completed{ background:var(--success); color:#fff; }
 
-  /* Buttons */
-  .btn{
-    appearance:none; border:0; height:32px; padding:0 14px; font-weight:700; border-radius:6px; cursor:pointer;
-  }
-  .btn.primary{ background:var(--primary); color:#fff; }
-  .btn.primary:hover{ background:var(--primary-dark); }
-  .btn.outlined{ background:#fff; color:#344054; border:1px solid var(--divider); }
-  .btn.outlined:hover{ background:#F9FAFB; }
+CREATE OR ALTER PROCEDURE dbo.sp_SetOrgSubcatCompletion
+  @OrgID             INT,
+  @CSF2SubcategoryID INT,
+  @Action            NVARCHAR(20),      -- 'Complete' | 'Reopen'
+  @ActorName         NVARCHAR(200),
+  @Note              NVARCHAR(500) = NULL
+AS
+BEGIN
+  SET NOCOUNT ON;
 
-  /* Tiny toast */
-  .toast{
-    position:fixed; bottom:20px; right:20px; background:#111; color:#fff;
-    padding:10px 14px; border-radius:6px; opacity:0; transform:translateY(8px);
-    transition:.2s ease; pointer-events:none; font-size:13px;
-  }
-  .toast.show{ opacity:1; transform:translateY(0); }
-</style>
-</head>
-<body>
-  <div class="container">
-    <div class="mock">RightHeaderComposite (above)</div>
+  IF @Action NOT IN ('Complete','Reopen')
+  BEGIN
+    RAISERROR('Invalid @Action. Use Complete | Reopen.', 16, 1);
+    RETURN;
+  END
 
-    <!-- Simulated "Org tabs" + "Selected Subcategory" controls -->
-    <div class="controls" role="group" aria-label="Context">
-      <div>
-        <label for="orgSel">Org</label>
-        <select id="orgSel">
-          <option value="VDS">VDS</option>
-          <option value="TPD">TPD</option>
-          <option value="FSD">FSD</option>
-          <option value="KMC">KMC</option>
-        </select>
-      </div>
-      <div>
-        <label for="subcatSel">CSF 2.0 Subcategory</label>
-        <select id="subcatSel">
-          <option value="ID.AM-03">ID.AM-03</option>
-          <option value="PR.AC-01">PR.AC-01</option>
-          <option value="DE.AE-02">DE.AE-02</option>
-        </select>
-      </div>
-    </div>
+  DECLARE @isComplete BIT = CASE WHEN @Action = 'Complete' THEN 1 ELSE 0 END;
 
-    <!-- The completion card -->
-    <div class="completion-card" aria-live="polite">
-      <div class="completion-header">
-        <div class="overline">Completion</div>
-        <div id="meta" class="meta">—</div>
-      </div>
-      <div class="completion-inner">
-        <span id="statusChip" class="chip not-started">Not Started</span>
-        <div class="spacer"></div>
-        <button id="completeBtn" class="btn primary">Mark Completed</button>
-        <button id="reopenBtn" class="btn outlined" style="display:none">Reopen</button>
-      </div>
-    </div>
+  MERGE dbo.Org_SubcategoryCompletion AS tgt
+  USING (SELECT @OrgID AS OrgID, @CSF2SubcategoryID AS CSF2SubcategoryID) AS src
+  ON (tgt.OrgID = src.OrgID AND tgt.CSF2SubcategoryID = src.CSF2SubcategoryID)
+  WHEN MATCHED THEN
+    UPDATE SET
+      Completed        = @isComplete,
+      CompletedByName  = CASE WHEN @isComplete = 1 THEN @ActorName ELSE tgt.CompletedByName END,
+      CompletedAtUtc   = CASE WHEN @isComplete = 1 THEN SYSUTCDATETIME() ELSE tgt.CompletedAtUtc END,
+      ReopenedByName   = CASE WHEN @isComplete = 0 THEN @ActorName ELSE NULL END,
+      ReopenedAtUtc    = CASE WHEN @isComplete = 0 THEN SYSUTCDATETIME() ELSE NULL END,
+      Note             = @Note
+  WHEN NOT MATCHED THEN
+    INSERT (OrgID, CSF2SubcategoryID, Completed, CompletedByName, CompletedAtUtc, Note)
+    VALUES (@OrgID, @CSF2SubcategoryID, 1, @ActorName, SYSUTCDATETIME(), @Note)
+  ;
 
-    <div class="mock">OrgTabs (below)</div>
-    <div class="mock">AttributeGroupTable</div>
-    <div class="mock">AddCustomAttributePanel</div>
-  </div>
+  INSERT dbo.Org_SubcategoryCompletion_Audit
+    (OrgID, CSF2SubcategoryID, Action, ActorName, SnapshotCompleted, Note)
+  VALUES
+    (@OrgID, @CSF2SubcategoryID, @Action, @ActorName, @isComplete, @Note);
 
-  <div id="toast" class="toast">Saved</div>
+  /* Return the current state for the caller (handy for UI) */
+  SELECT
+    OrgID, CSF2SubcategoryID, Completed,
+    CompletedByName, CompletedAtUtc, ReopenedByName, ReopenedAtUtc, Note
+  FROM dbo.Org_SubcategoryCompletion
+  WHERE OrgID = @OrgID AND CSF2SubcategoryID = @CSF2SubcategoryID;
+END
+GO
 
-<script>
-  // --- Mock "current user" ---
-  const currentUser = { firstName: 'Jane', lastName: 'Doe' };
 
-  // --- Simple state persisted per (org|subcat) in localStorage ---
-  const key = (org, subcat) => `completion:${org}|${subcat}`;
-  const get = (org, subcat) => {
-    try { return JSON.parse(localStorage.getItem(key(org, subcat))) || null; }
-    catch { return null; }
-  };
-  const set = (org, subcat, val) => localStorage.setItem(key(org, subcat), JSON.stringify(val));
-  const del = (org, subcat) => localStorage.removeItem(key(org, subcat));
 
-  // --- DOM refs ---
-  const orgSel = document.getElementById('orgSel');
-  const subcatSel = document.getElementById('subcatSel');
-  const meta = document.getElementById('meta');
-  const statusChip = document.getElementById('statusChip');
-  const completeBtn = document.getElementById('completeBtn');
-  const reopenBtn = document.getElementById('reopenBtn');
-  const toast = document.getElementById('toast');
+-- … existing CTEs …
 
-  // --- Helpers ---
-  const fmt = (d) => {
-    const dt = (typeof d === 'string') ? new Date(d) : d;
-    return dt.toLocaleString(undefined, { dateStyle:'medium', timeStyle:'short' });
-  };
-  const showToast = (msg='Saved') => {
-    toast.textContent = msg;
-    toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), 1500);
-  };
+/* ===================== Result A: Headers (accordion) ===================== */
+;WITH OrgList AS ( /* unchanged */ ),
+     Csf2Tree AS ( /* unchanged */ ),
+     Counts   AS ( /* unchanged */ )
 
-  function render(){
-    const org = orgSel.value;
-    const sub = subcatSel.value;
-    const record = get(org, sub);
+SELECT
+  o.OrgID, o.OrgName,
+  t.FunctionID, t.FunctionName, t.FunctionLanguage,
+  t.CategoryID, t.CategoryName, t.CategoryLanguage,
+  t.CSF2SubcategoryID, t.CSF2SubcategoryName, t.CSF2SubcategoryLanguage,
+  t.ChangeSummary, t.ImplementationExamples,
 
-    if (!record){
-      statusChip.className = 'chip not-started';
-      statusChip.textContent = 'Not Started';
-      meta.textContent = '—';
-      completeBtn.style.display = '';
-      reopenBtn.style.display = 'none';
-      return;
-    }
+  -- existing owner/custodian (unchanged)
+  Owner = /* … */,
+  Custodian = /* … */,
 
-    statusChip.className = 'chip completed';
-    statusChip.textContent = 'Completed';
-    meta.textContent = `Completed by ${record.completedBy} on ${fmt(record.completedAt)}`;
-    completeBtn.style.display = 'none';
-    reopenBtn.style.display = '';
-  }
+  ISNULL(c.KeptCount,0)    AS KeptCount,
+  ISNULL(c.RemovedCount,0) AS RemovedCount,
+  ISNULL(c.CustomCount,0)  AS CustomCount,
 
-  function markCompleted(){
-    const org = orgSel.value;
-    const sub = subcatSel.value;
-    const now = new Date();
+  -- NEW: completion surface for header card
+  CASE WHEN oc.Completed = 1 THEN 1 ELSE 0 END AS CompletedFlag,
+  oc.CompletedByName,
+  oc.CompletedAtUtc,
+  oc.ReopenedByName,
+  oc.ReopenedAtUtc
 
-    set(org, sub, {
-      status: 'Completed',
-      completedBy: `${currentUser.firstName} ${currentUser.lastName}`,
-      completedAt: now.toISOString()
-    });
-    render();
-    showToast('Marked completed');
-  }
+FROM OrgList o
+CROSS JOIN Csf2Tree t
+LEFT JOIN Counts c
+  ON c.OrgID = o.OrgID
+ AND c.CSF2SubcategoryID = t.CSF2SubcategoryID
+LEFT JOIN dbo.Org_SubcategoryCompletion oc
+  ON oc.OrgID = o.OrgID
+ AND oc.CSF2SubcategoryID = t.CSF2SubcategoryID
+WHERE
+  /* … same filters as before … */
+ORDER BY o.OrgID, t.FunctionID, t.CategoryID, t.CSF2SubcategoryID;
 
-  function reopen(){
-    const org = orgSel.value;
-    const sub = subcatSel.value;
-    del(org, sub);
-    render();
-    showToast('Reopened');
-  }
 
-  // --- Wire up ---
-  orgSel.addEventListener('change', render);
-  subcatSel.addEventListener('change', render);
-  completeBtn.addEventListener('click', markCompleted);
-  reopenBtn.addEventListener('click', reopen);
-
-  // seed a little demo data so you can see both states
-  (function seed(){
-    const demoKey = get('VDS','ID.AM-03');
-    if (!demoKey){
-      set('VDS','ID.AM-03',{
-        status:'Completed',
-        completedBy:'Alex Rivera',
-        completedAt: new Date(Date.now() - 86400000).toISOString() // yesterday
-      });
-    }
-  })();
-
-  render();
-</script>
-</body>
-</html>
+POST /api/v1/CSFAttributeMap/subcat/completion/save
+{
+  "action": "Complete" | "Reopen",
+  "orgId": 123,
+  "csf2SubcategoryId": 456,
+  "actorName": "First Last",     // from your header/userInfo
+  "note": "optional"
+}

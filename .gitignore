@@ -1,6 +1,10 @@
-<SubcatCompletionControls
-  orgID={header.orgID}
-  csf2SubcategoryID={header.csF2SubcategoryID}   // <-- lowercase f matches child prop
-  header={header}                               // <-- child expects a header object
-  onPatchHeader={(_, __, patch) => onCompletionUpdated?.(patch)} // bridge to your parent
-/>
+{/* Inline status line under the controls */}
+<Box sx={{ mt: 1 }}>
+  <Typography variant="caption" color="text.secondary">
+    {comp.state === 'Completed' && comp.at
+      ? `Completed by ${comp.by || '—'} on ${comp.at.toLocaleString()}`
+      : comp.state === 'Reopened' && comp.at
+      ? `Reopened by ${comp.by || '—'} on ${comp.at.toLocaleString()}`
+      : 'Not complete'}
+  </Typography>
+</Box>

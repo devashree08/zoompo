@@ -1,8 +1,4 @@
-// AttributeMappingPage.js
-const patchHeaderForActiveOrg = React.useCallback((orgID, csf2SubcatID, patch) => {
-  setHeaders(prev => prev.map(h =>
-    String(h.orgID) === String(orgID) && String(h.csF2SubcategoryID) === String(csf2SubcatID)
-      ? { ...h, ...patch }
-      : h
-  ));
-}, []);
+const handleCompletionUpdated = React.useCallback((patch) => {
+  // patch only the active org + selected subcat header
+  patchHeaderForActiveOrg(selectedSubcatID, activeOrgID, patch);
+}, [selectedSubcatID, activeOrgID, patchHeaderForActiveOrg]);

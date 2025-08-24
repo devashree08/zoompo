@@ -1,29 +1,18 @@
-// add near the top of normalizeFeed.js
-function parseCsf11(jsonStr) {
-  if (!jsonStr) return [];
-  try {
-    const arr = JSON.parse(jsonStr);
-    return (Array.isArray(arr) ? arr : []).map((x) => ({
-      id:
-        x.csf1SubcategoryID ??
-        x.CSF1SubcategoryID ??
-        x.csF1SubcategoryID ?? // your sample casing
-        x.id,
-      name:
-        x.csf1SubcategoryName ??
-        x.CSF1SubcategoryName ??
-        x.csF1SubcategoryName ??
-        x.name,
-      lang:
-        x.csf1SubcategoryLanguage ??
-        x.CSF1SubcategoryLanguage ??
-        x.csF1SubcategoryLanguage ??
-        x.lang,
-    })).filter((y) => y?.id != null);
-  } catch {
-    return [];
-  }
-}
-
-
-    csf11Mapped: parseCsf11(h.csf11MappedJson ?? h.CSF11MappedJson),
+<Card title="ASSOCIATED 1.1 SUBCATEGORIES">
+  {assoc.length === 0 ? (
+    <Typography variant="body2" color="text.disabled">None.</Typography>
+  ) : (
+    <Box component="ul" sx={{ pl: 3, m: 0 }}>
+      {assoc.map(a => (
+        <li key={a.id}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: .25 }}>
+            {a.name}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {a.lang}
+          </Typography>
+        </li>
+      ))}
+    </Box>
+  )}
+</Card>

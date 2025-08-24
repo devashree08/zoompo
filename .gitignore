@@ -273,3 +273,24 @@ export default function CsfTree({
     </Box>
   );
 }
+
+// inside AttributeMappingPage
+const liveCountsOverride = React.useMemo(() => {
+  if (!selectedSubcatID) return null;
+  const kept = rows.reduce((n, r) =>
+    String(r.csF2SubcategoryID) === String(selectedSubcatID) &&
+    !r.customAttributeDefinition &&
+    (r.selectionStatus || '') === 'Keep' ? n + 1 : n, 0);
+
+  const removed = rows.reduce((n, r) =>
+    String(r.csF2SubcategoryID) === String(selectedSubcatID) &&
+    !r.customAttributeDefinition &&
+    (r.selectionStatus || '') === 'Remove' ? n + 1 : n, 0);
+
+  const custom = rows.reduce((n, r) =>
+    String(r.csF2SubcategoryID) === String(selectedSubcatID) &&
+    !!r.customAttributeDefinition ? n + 1 : n, 0);
+
+  return { [String(selectedSubcatID)]: { kept, removed, custom } };
+}, [rows, selectedSubcatID]);
+

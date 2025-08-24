@@ -1,47 +1,6 @@
-// Per-org completion state (Completed / Reopened / Not complete), by subcat
- const statusBySub = React.useMemo(() => {
-  const m = new Map();
-  headers
-    .filter(h => String(h.orgID) === String(activeOrgID))
-    .forEach(h => {
-      const cAt = h.completedAt ? new Date(h.completedAt) : null;
-      const rAt = h.reopenedAt  ? new Date(h.reopenedAt)  : null;
-      let state = 'Not complete';
-      let by: string | null = null;
-      let at: Date | null = null;
-      if (cAt && (!rAt || cAt >= rAt)) {
-        state = 'Completed'; by = h.completedByName || null; at = cAt;
-      } else if (rAt) {
-        state = 'Reopened';  by = h.reopenedByName  || null; at = rAt;
-      }
-      // one row per (org, subcat) in headers, so last write wins is fine
-      m.set(h.csF2SubcategoryID, { state, by, at });
-    });
-  return m;
-}, [headers, activeOrgID]);
-
-
-
-  
-  const renderStatusChip = (status) => {
-   const tone =
-     status?.state === 'Completed' ? 'success' :
-     status?.state === 'Reopened'  ? 'warning' : 'default';
-   const tooltip =
-     status?.state === 'Completed'
-       ? `Completed${status.by ? ` by ${status.by}` : ''}${status.at ? ` on ${status.at.toLocaleString()}` : ''}`
-       : status?.state === 'Reopened'
-       ? `Reopened${status.by ? ` by ${status.by}` : ''}${status.at ? ` on ${status.at.toLocaleString()}` : ''}`
-       : 'Not complete';
-   return (
-     <Tooltip title={tooltip}>
-       <Chip
-         size="small"
-         label={status?.state ?? 'Not complete'}
-         color={tone}
-         variant={tone === 'default' ? 'outlined' : 'filled'}
-         sx={{ fontWeight: 700 }}
-       />
-     </Tooltip>
-   );
- };
+<Stack direction="row" spacing={1} sx={{ mt: 0.5, flexWrap: 'wrap' }}>
+  {renderStatusChip(statusBySub.get(s.id))}
+  <Chip size="small" label={`${s.counts.kept} Kept`}    sx={{ bgcolor:'#e8f5e9', color:'#1b5e20' }}/>
+  <Chip size="small" label={`${s.counts.removed} Removed`} sx={{ bgcolor:'#ffebee', color:'#b71c1c' }}/>
+  <Chip size="small" label={`${s.counts.custom} Custom`}  sx={{ bgcolor:'#e3f2fd', color:'#0d47a1' }}/>
+</Stack>

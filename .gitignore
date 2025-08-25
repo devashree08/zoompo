@@ -1,21 +1,379 @@
- {compactMode && (() => {
-       const st = statusBySub.get(s.id);
-       const when = st?.at ? new Date(st.at).toLocaleString() : '';
-       const tip =
-         st?.state === 'Completed'
-           ? `Completed${st.by ? ' by ' + st.by : ''}${when ? ' on ' + when : ''}`
-           : st?.state === 'Reopened'
-           ? `Reopened${st.by ? ' by ' + st.by : ''}${when ? ' on ' + when : ''}`
-           : 'Not complete';
-       return (
-         <Box
-           sx={{ position: 'absolute', top: 6, right: 6 }}
-           onClick={(e) => e.stopPropagation()}
-           onMouseDown={(e) => e.stopPropagation()}
-         >
-           <Tooltip title={tip} placement="top" arrow enterDelay={200}>
-             <span>{renderStatusChip(st)}</span>
-           </Tooltip>
-         </Box>
-       );
-     })()}
+CREATE OR ALTER PROCEDURE dbo.spReadinessFilterLookups
+  @OrgAbbrCsv              NVARCHAR(MAX) = NULL,  -- maps to OrgAbbr
+  @SubcategoryNamesCsv     NVARCHAR(MAX) = NULL,  -- maps to SubcategoryName
+  @OwnerNamesCsv           NVARCHAR(MAX) = NULL,  -- maps to SubcatOwner (comma-delimited in rows)
+  @CustodianNamesCsv       NVARCHAR(MAX) = NULL,  -- maps to SubcatCustodian (comma-delimited in rows)
+  @ScopeCsv                NVARCHAR(MAX) = NULL,  -- maps to Scope
+  @ProfileTypesCsv         NVARCHAR(MAX) = NULL   -- maps to ProfileType
+AS
+BEGIN
+  SET NOCOUNT ON;
+
+  /* ---------------- Parse CSVs -> temp tables (all trimmed, case-insensitive) ---------------- */
+  CREATE TABLE #SelOrg    (val NVARCHAR(200) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@OrgAbbrCsv)),'') IS NOT NULL
+    INSERT #SelOrg
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@OrgAbbrCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  CREATE TABLE #SelSubcat (val NVARCHAR(400) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@SubcategoryNamesCsv)),'') IS NOT NULL
+    INSERT #SelSubcat
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@SubcategoryNamesCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  CREATE TABLE #SelOwner  (val NVARCHAR(400) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@OwnerNamesCsv)),'') IS NOT NULL
+    INSERT #SelOwner
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@OwnerNamesCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  CREATE TABLE #SelCust   (val NVARCHAR(400) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@CustodianNamesCsv)),'') IS NOT NULL
+    INSERT #SelCust
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@CustodianNamesCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  CREATE TABLE #SelScope  (val NVARCHAR(100) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@ScopeCsv)),'') IS NOT NULL
+    INSERT #SelScope
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@ScopeCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  CREATE TABLE #SelProf   (val NVARCHAR(100) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@ProfileTypesCsv)),'') IS NOT NULL
+    INSERT #SelProf
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@ProfileTypesCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  /* ---------------- Base rows (one table) ---------------- */
+  -- Keep only the columns we need for filtering/lookups (faster temp tables)
+  SELECT
+      rf.OrgAbbr,
+      rf.OrgFullName,
+      rf.SubcategoryID,
+      rf.SubcategoryName,
+      rf.SubcatOwner,
+      rf.SubcatCustodian,
+      rf.Scope,
+      rf.ProfileType
+  INTO #Base
+  FROM dbo.ReadinessFact rf;
+
+  /* ---------------- Helper predicates ---------------- */
+  -- EXISTS against comma-separated owner/custodian columns
+  -- Matches ANY of the selected values (OR logic)
+  -- Note: split each row's list, trim, UPPER for case-insensitive compare
+  /* Apply "all" slice (all filters respected) */
+  SELECT *
+  INTO #Filtered_All
+  FROM #Base b
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)    OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))       IN (SELECT val FROM #SelOrg))
+    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat) OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
+    AND (NOT EXISTS (SELECT 1 FROM #SelScope)  OR UPPER(LTRIM(RTRIM(b.Scope)))         IN (SELECT val FROM #SelScope))
+    AND (NOT EXISTS (SELECT 1 FROM #SelProf)   OR UPPER(LTRIM(RTRIM(b.ProfileType)))   IN (SELECT val FROM #SelProf))
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelOwner)
+         OR EXISTS (
+              SELECT 1
+              FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
+         )
+    )
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelCust)
+         OR EXISTS (
+              SELECT 1
+              FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
+         )
+    );
+
+  /* ---------------- Self-excluding slices (omit just the one being populated) ---------------- */
+  -- Ignore Org
+  SELECT *
+  INTO #Filtered_NoOrg
+  FROM #Base b
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelSubcat) OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
+    AND (NOT EXISTS (SELECT 1 FROM #SelScope)  OR UPPER(LTRIM(RTRIM(b.Scope)))           IN (SELECT val FROM #SelScope))
+    AND (NOT EXISTS (SELECT 1 FROM #SelProf)   OR UPPER(LTRIM(RTRIM(b.ProfileType)))     IN (SELECT val FROM #SelProf))
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelOwner)
+         OR EXISTS (
+              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
+         )
+    )
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelCust)
+         OR EXISTS (
+              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
+         )
+    );
+
+  -- Ignore Subcategory
+  SELECT *
+  INTO #Filtered_NoSubcat
+  FROM #Base b
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)   OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))   IN (SELECT val FROM #SelOrg))
+    AND (NOT EXISTS (SELECT 1 FROM #SelScope) OR UPPER(LTRIM(RTRIM(b.Scope)))     IN (SELECT val FROM #SelScope))
+    AND (NOT EXISTS (SELECT 1 FROM #SelProf)  OR UPPER(LTRIM(RTRIM(b.ProfileType))) IN (SELECT val FROM #SelProf))
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelOwner)
+         OR EXISTS (
+              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
+         )
+    )
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelCust)
+         OR EXISTS (
+              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
+         )
+    );
+
+  -- Ignore Owner (owners list comes from the "all" slice; keep symmetry and also give a self-excluding slice for the rest)
+  SELECT *
+  INTO #Filtered_NoOwner
+  FROM #Base b
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)     OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))       IN (SELECT val FROM #SelOrg))
+    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat)  OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
+    AND (NOT EXISTS (SELECT 1 FROM #SelScope)   OR UPPER(LTRIM(RTRIM(b.Scope)))         IN (SELECT val FROM #SelScope))
+    AND (NOT EXISTS (SELECT 1 FROM #SelProf)    OR UPPER(LTRIM(RTRIM(b.ProfileType)))   IN (SELECT val FROM #SelProf))
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelCust)
+         OR EXISTS (
+              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
+         )
+    );
+
+  -- Ignore Custodian
+  SELECT *
+  INTO #Filtered_NoCust
+  FROM #Base b
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)     OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))       IN (SELECT val FROM #SelOrg))
+    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat)  OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
+    AND (NOT EXISTS (SELECT 1 FROM #SelScope)   OR UPPER(LTRIM(RTRIM(b.Scope)))         IN (SELECT val FROM #SelScope))
+    AND (NOT EXISTS (SELECT 1 FROM #SelProf)    OR UPPER(LTRIM(RTRIM(b.ProfileType)))   IN (SELECT val FROM #SelProf))
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelOwner)
+         OR EXISTS (
+              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
+         )
+    );
+
+  -- Ignore Scope
+  SELECT *
+  INTO #Filtered_NoScope
+  FROM #Base b
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)     OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))       IN (SELECT val FROM #SelOrg))
+    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat)  OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
+    AND (NOT EXISTS (SELECT 1 FROM #SelProf)    OR UPPER(LTRIM(RTRIM(b.ProfileType)))   IN (SELECT val FROM #SelProf))
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelOwner)
+         OR EXISTS (
+              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
+         )
+    )
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelCust)
+         OR EXISTS (
+              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
+         )
+    );
+
+  -- Ignore ProfileType
+  SELECT *
+  INTO #Filtered_NoProf
+  FROM #Base b
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)     OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))       IN (SELECT val FROM #SelOrg))
+    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat)  OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
+    AND (NOT EXISTS (SELECT 1 FROM #SelScope)   OR UPPER(LTRIM(RTRIM(b.Scope)))         IN (SELECT val FROM #SelScope))
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelOwner)
+         OR EXISTS (
+              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
+         )
+    )
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelCust)
+         OR EXISTS (
+              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
+         )
+    );
+
+  /* ---------------- Result sets: each drives a multiselect control ---------------- */
+  -- 1) Orgs (self-excluding)
+  SELECT DISTINCT
+         b.OrgAbbr     AS orgAbbr,
+         b.OrgFullName AS orgFullName
+  FROM #Filtered_NoOrg b
+  WHERE NULLIF(LTRIM(RTRIM(b.OrgAbbr)),'') IS NOT NULL
+  ORDER BY b.OrgFullName, b.OrgAbbr;
+
+  -- 2) Subcategory Names (self-excluding)
+  SELECT DISTINCT
+         b.SubcategoryID   AS subcategoryID,
+         b.SubcategoryName AS subcategoryName
+  FROM #Filtered_NoSubcat b
+  WHERE NULLIF(LTRIM(RTRIM(b.SubcategoryName)),'') IS NOT NULL
+  ORDER BY b.SubcategoryName;
+
+  -- 3) Owners (from full-slice, explode CSV, distinct)
+  WITH Owners AS (
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(s.value))) AS ownerUpper,
+                    LTRIM(RTRIM(s.value))        AS ownerDisplay
+    FROM #Filtered_All f
+    CROSS APPLY STRING_SPLIT(COALESCE(f.SubcatOwner,''), ',') s
+    WHERE LTRIM(RTRIM(s.value)) <> ''
+  )
+  SELECT DISTINCT ownerDisplay AS fullName
+  FROM Owners
+  ORDER BY ownerDisplay;
+
+  -- 4) Custodians (from full-slice, explode CSV, distinct)
+  WITH Custodians AS (
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(s.value))) AS custUpper,
+                    LTRIM(RTRIM(s.value))        AS custDisplay
+    FROM #Filtered_All f
+    CROSS APPLY STRING_SPLIT(COALESCE(f.SubcatCustodian,''), ',') s
+    WHERE LTRIM(RTRIM(s.value)) <> ''
+  )
+  SELECT DISTINCT custDisplay AS fullName
+  FROM Custodians
+  ORDER BY custDisplay;
+
+  -- 5) Scope (self-excluding)
+  SELECT DISTINCT b.Scope AS scope
+  FROM #Filtered_NoScope b
+  WHERE NULLIF(LTRIM(RTRIM(b.Scope)),'') IS NOT NULL
+  ORDER BY b.Scope;
+
+  -- 6) Profile Types (self-excluding)
+  SELECT DISTINCT b.ProfileType AS profileType
+  FROM #Filtered_NoProf b
+  WHERE NULLIF(LTRIM(RTRIM(b.ProfileType)),'') IS NOT NULL
+  ORDER BY b.ProfileType;
+END
+GO
+
+
+
+
+
+-----
+
+CREATE OR ALTER PROCEDURE dbo.spGetReadinessFact
+  @OrgAbbrCsv              NVARCHAR(MAX) = NULL,
+  @SubcategoryNamesCsv     NVARCHAR(MAX) = NULL,
+  @OwnerNamesCsv           NVARCHAR(MAX) = NULL,
+  @CustodianNamesCsv       NVARCHAR(MAX) = NULL,
+  @ScopeCsv                NVARCHAR(MAX) = NULL,
+  @ProfileTypesCsv         NVARCHAR(MAX) = NULL
+AS
+BEGIN
+  SET NOCOUNT ON;
+
+  /* Parse CSVs to temp tables (trim + uppercase for insensitive matching) */
+  CREATE TABLE #SelOrg    (val NVARCHAR(200) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@OrgAbbrCsv)),'') IS NOT NULL
+    INSERT #SelOrg
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@OrgAbbrCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  CREATE TABLE #SelSubcat (val NVARCHAR(400) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@SubcategoryNamesCsv)),'') IS NOT NULL
+    INSERT #SelSubcat
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@SubcategoryNamesCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  CREATE TABLE #SelOwner  (val NVARCHAR(400) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@OwnerNamesCsv)),'') IS NOT NULL
+    INSERT #SelOwner
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@OwnerNamesCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  CREATE TABLE #SelCust   (val NVARCHAR(400) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@CustodianNamesCsv)),'') IS NOT NULL
+    INSERT #SelCust
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@CustodianNamesCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  CREATE TABLE #SelScope  (val NVARCHAR(100) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@ScopeCsv)),'') IS NOT NULL
+    INSERT #SelScope
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@ScopeCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  CREATE TABLE #SelProf   (val NVARCHAR(100) PRIMARY KEY);
+  IF NULLIF(LTRIM(RTRIM(@ProfileTypesCsv)),'') IS NOT NULL
+    INSERT #SelProf
+    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
+    FROM STRING_SPLIT(@ProfileTypesCsv, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+
+  /* Filter and return */
+  SELECT
+      rf.ScopeID,
+      rf.OrgID,
+      rf.OrgFullName,
+      rf.OrgAbbr,
+      rf.SubcatOwner,
+      rf.SubcatCustodian,
+      rf.SubcategoryID,
+      rf.SubcategoryName,
+      rf.SubcategoryDescription,
+      rf.RelatedCSF1_1Subcategories,
+      rf.Scope,
+      rf.[Maturity Projection],
+      rf.ProfileType,
+      rf.ConsumingFromOrg,
+      rf.Department,
+      rf.LastUpdatedBy,
+      rf.LastUpdatedData
+  FROM dbo.ReadinessFact rf
+  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)    OR UPPER(LTRIM(RTRIM(rf.OrgAbbr)))        IN (SELECT val FROM #SelOrg))
+    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat) OR UPPER(LTRIM(RTRIM(rf.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
+    AND (NOT EXISTS (SELECT 1 FROM #SelScope)  OR UPPER(LTRIM(RTRIM(rf.Scope)))          IN (SELECT val FROM #SelScope))
+    AND (NOT EXISTS (SELECT 1 FROM #SelProf)   OR UPPER(LTRIM(RTRIM(rf.ProfileType)))    IN (SELECT val FROM #SelProf))
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelOwner)
+         OR EXISTS (
+              SELECT 1
+              FROM STRING_SPLIT(COALESCE(rf.SubcatOwner,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
+         )
+    )
+    AND (
+         NOT EXISTS (SELECT 1 FROM #SelCust)
+         OR EXISTS (
+              SELECT 1
+              FROM STRING_SPLIT(COALESCE(rf.SubcatCustodian,''), ',') s
+              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
+         )
+    )
+  ORDER BY rf.OrgFullName, rf.SubcategoryName;
+END
+GO
+
+
+

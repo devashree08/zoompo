@@ -1,181 +1,386 @@
-CREATE OR ALTER PROCEDURE dbo.spUpsertReadinessFact
-  @OrgID               INT,
-  @SubcategoryID       INT,
+// Models/ReadinessDtos.cs
+using System;
+using System.Collections.Generic;
 
-  -- Editable fields (NULL means "leave as-is" on UPDATE)
-  @SubcatOwner         NVARCHAR(MAX)   = NULL,
-  @SubcatCustodian     NVARCHAR(MAX)   = NULL,
-  @Scope               NVARCHAR(10)    = NULL,  -- Yes / No (varchar)
-  @MaturityProjection  NVARCHAR(20)    = NULL,  -- Increase / Decrease / Maintain
-  @ProfileType         NVARCHAR(20)    = NULL,  -- Provider / Consumer / Inheritor
+namespace YourApp.Models
+{
+    // =========================================================
+    // 1) spReadinessFilterLookups
+    // =========================================================
 
-  -- Future use (keep commented for now)
-  -- @ConsumingFromOrg    NVARCHAR(50)    = NULL,  -- which OrgAbbr are they consuming from (if Consumer)
-  -- @Department          NVARCHAR(200)   = NULL,  -- optional department detail
+    /// <summary>
+    /// Request filters for spReadinessFilterLookups. Each list is OR-ed inside the filter.
+    /// If a list is empty or null, that filter is ignored.
+    /// </summary>
+    public sealed class ReadinessFilterLookupsRequest
+    {
+        public List<string>? OrgAbbr { get; init; }                 // maps to OrgAbbr
+        public List<string>? SubcategoryNames { get; init; }        // maps to SubcategoryName
+        public List<string>? OwnerNames { get; init; }              // maps to SubcatOwner (comma-delimited in rows)
+        public List<string>? CustodianNames { get; init; }          // maps to SubcatCustodian (comma-delimited in rows)
+        public List<string>? Scope { get; init; }                   // "Yes" / "No"
+        public List<string>? ProfileTypes { get; init; }            // "Provider" / "Consumer" / "Inheritor"
+    }
 
-  -- Audit
-  @LastUpdatedBy       NVARCHAR(100)   -- pass userID from middleware header
-AS
-BEGIN
-  SET NOCOUNT ON;
+    /// <summary>
+    /// Response container for the six result sets returned by spReadinessFilterLookups.
+    /// </summary>
+    public sealed class ReadinessFilterLookupsResponse
+    {
+        public List<OrgLookupDto> Orgs { get; init; } = new();
+        public List<SubcategoryLookupDto> Subcategories { get; init; } = new();
+        public List<PersonNameDto> Owners { get; init; } = new();
+        public List<PersonNameDto> Custodians { get; init; } = new();
+        public List<SimpleValueDto> Scopes { get; init; } = new();
+        public List<SimpleValueDto> ProfileTypes { get; init; } = new();
+    }
 
-  BEGIN TRY
-    /* ================= Normalize & Validate ================= */
-    DECLARE
-      @ScopeNorm              NVARCHAR(10),
-      @MaturityProjectionNorm NVARCHAR(20),
-      @ProfileTypeNorm        NVARCHAR(20);
+    public sealed class OrgLookupDto
+    {
+        // SQL aliases: orgAbbr, orgFullName
+        public string OrgAbbr { get; init; } = default!;
+        public string OrgFullName { get; init; } = default!;
+    }
 
-    -- Scope: Yes/No (accept common variants; store canonical)
-    IF @Scope IS NULL
-      SET @ScopeNorm = NULL;
-    ELSE
-      SET @ScopeNorm =
-        CASE UPPER(LTRIM(RTRIM(@Scope)))
-          WHEN 'YES' THEN 'Yes'
-          WHEN 'Y'   THEN 'Yes'
-          WHEN 'TRUE' THEN 'Yes'
-          WHEN '1'   THEN 'Yes'
-          WHEN 'NO'  THEN 'No'
-          WHEN 'N'   THEN 'No'
-          WHEN 'FALSE' THEN 'No'
-          WHEN '0'   THEN 'No'
-          ELSE NULL
-        END;
+    public sealed class SubcategoryLookupDto
+    {
+        // SQL aliases: subcategoryID, subcategoryName
+        public int SubcategoryId { get; init; }
+        public string SubcategoryName { get; init; } = default!;
+    }
 
-    IF @Scope IS NOT NULL AND @ScopeNorm IS NULL
-      THROW 50001, 'Invalid Scope. Allowed: Yes/No.', 1;
+    public sealed class PersonNameDto
+    {
+        // SQL alias: fullName
+        public string FullName { get; init; } = default!;
+    }
 
-    -- MaturityProjection: Increase/Decrease/Maintain
-    IF @MaturityProjection IS NULL
-      SET @MaturityProjectionNorm = NULL;
-    ELSE
-      SET @MaturityProjectionNorm =
-        CASE UPPER(LTRIM(RTRIM(@MaturityProjection)))
-          WHEN 'INCREASE'  THEN 'Increase'
-          WHEN 'DECREASE'  THEN 'Decrease'
-          WHEN 'MAINTAIN'  THEN 'Maintain'
-          ELSE NULL
-        END;
+    public sealed class SimpleValueDto
+    {
+        // SQL aliases: scope, profileType
+        public string Value { get; init; } = default!;
+    }
 
-    IF @MaturityProjection IS NOT NULL AND @MaturityProjectionNorm IS NULL
-      THROW 50002, 'Invalid MaturityProjection. Allowed: Increase/Decrease/Maintain.', 1;
+    // =========================================================
+    // 2) spGetReadinessFact
+    // =========================================================
 
-    -- ProfileType: Provider/Consumer/Inheritor
-    IF @ProfileType IS NULL
-      SET @ProfileTypeNorm = NULL;
-    ELSE
-      SET @ProfileTypeNorm =
-        CASE UPPER(LTRIM(RTRIM(@ProfileType)))
-          WHEN 'PROVIDER'   THEN 'Provider'
-          WHEN 'CONSUMER'   THEN 'Consumer'
-          WHEN 'INHERITOR'  THEN 'Inheritor'
-          ELSE NULL
-        END;
+    /// <summary>
+    /// Request filters for spGetReadinessFact. Any null/empty list is ignored.
+    /// </summary>
+    public sealed class GetReadinessFactRequest
+    {
+        public List<string>? OrgAbbr { get; init; }
+        public List<string>? SubcategoryNames { get; init; }
+        public List<string>? OwnerNames { get; init; }
+        public List<string>? CustodianNames { get; init; }
+        public List<string>? Scope { get; init; }                   // "Yes" / "No"
+        public List<string>? ProfileTypes { get; init; }            // "Provider" / "Consumer" / "Inheritor"
+    }
 
-    IF @ProfileType IS NOT NULL AND @ProfileTypeNorm IS NULL
-      THROW 50003, 'Invalid ProfileType. Allowed: Provider/Consumer/Inheritor.', 1;
+    /// <summary>
+    /// Row returned by spGetReadinessFact (matches your adjusted SELECT:
+    /// no ScopeID / LastUpdatedBy / LastUpdatedDate; MaturityProjection spelled without space).
+    /// </summary>
+    public sealed class ReadinessFactRowDto
+    {
+        public int OrgId { get; init; }
+        public string OrgFullName { get; init; } = default!;
+        public string OrgAbbr { get; init; } = default!;
+        public string? SubcatOwner { get; init; }                   // comma-delimited names
+        public string? SubcatCustodian { get; init; }               // comma-delimited names
+        public int SubcategoryId { get; init; }
+        public string SubcategoryName { get; init; } = default!;
+        public string? SubcategoryDescription { get; init; }
+        public string? RelatedCSF1_1Subcategories { get; init; }
+        public string? Scope { get; init; }                         // "Yes" / "No"
+        public string? MaturityProjection { get; init; }            // "Increase" / "Decrease" / "Maintain"
+        public string? ProfileType { get; init; }                   // "Provider" / "Consumer" / "Inheritor"
+        public string? ConsumingFromOrg { get; init; }              // optional / future use
+        public string? Department { get; init; }                    // optional / future use
+        // If you decide to include audit later, add:
+        // public string? LastUpdatedBy { get; init; }
+        // public DateTime? LastUpdatedDate { get; init; }
+    }
 
-    /* Simple cosmetic normalization of owner/custodian strings */
-    DECLARE
-      @OwnerNorm NVARCHAR(MAX) =
-        CASE WHEN @SubcatOwner IS NULL THEN NULL
-             ELSE LTRIM(RTRIM(REPLACE(REPLACE(@SubcatOwner, ' ,', ','), ', ', ', ')))
-        END,
-      @CustNorm NVARCHAR(MAX) =
-        CASE WHEN @SubcatCustodian IS NULL THEN NULL
-             ELSE LTRIM(RTRIM(REPLACE(REPLACE(@SubcatCustodian, ' ,', ','), ', ', ', ')))
-        END;
+    // =========================================================
+    // 3) spUpsertReadinessFact
+    // =========================================================
 
-    /* ================= Authorization (future) =================
-       -- Example skeleton:
-       -- IF NOT EXISTS (
-       --   SELECT 1
-       --   FROM dbo.UserOrgPermission p
-       --   WHERE p.UserID = @LastUpdatedBy
-       --     AND (p.IsAdmin = 1 OR (p.OrgID = @OrgID AND p.CanEdit = 1))
-       -- )
-       --   THROW 50010, 'You are not authorized to modify this Org.', 1;
-    */
+    /// <summary>
+    /// Request payload to upsert a single ReadinessFact row.
+    /// Supply only the fields you want to change; leave others null to preserve current values.
+    /// </summary>
+    public sealed class UpsertReadinessFactRequest
+    {
+        // Natural key
+        public required int OrgId { get; init; }
+        public required int SubcategoryId { get; init; }
 
-    /* ================= Upsert ================= */
-    BEGIN TRAN;
+        // Editable columns
+        public string? SubcatOwner { get; init; }                   // comma-delimited
+        public string? SubcatCustodian { get; init; }               // comma-delimited
+        public string? Scope { get; init; }                         // "Yes" / "No"
+        public string? MaturityProjection { get; init; }            // "Increase" / "Decrease" / "Maintain"
+        public string? ProfileType { get; init; }                   // "Provider" / "Consumer" / "Inheritor"
 
-    -- Lock target key to prevent race-y inserts
-    IF EXISTS (
-      SELECT 1
-      FROM dbo.ReadinessFact WITH (UPDLOCK, HOLDLOCK)
-      WHERE OrgID = @OrgID AND SubcategoryID = @SubcategoryID
-    )
-    BEGIN
-      UPDATE rf
-      SET
-        rf.SubcatOwner        = COALESCE(@OwnerNorm, rf.SubcatOwner),
-        rf.SubcatCustodian    = COALESCE(@CustNorm, rf.SubcatCustodian),
-        rf.Scope              = COALESCE(@ScopeNorm, rf.Scope),
-        rf.MaturityProjection = COALESCE(@MaturityProjectionNorm, rf.MaturityProjection),
-        rf.ProfileType        = COALESCE(@ProfileTypeNorm, rf.ProfileType),
-        -- rf.ConsumingFromOrg   = COALESCE(@ConsumingFromOrg, rf.ConsumingFromOrg), -- future
-        -- rf.Department         = COALESCE(@Department, rf.Department),             -- future
-        rf.LastUpdatedBy      = @LastUpdatedBy,
-        rf.LastUpdatedDate    = GETDATE()
-      FROM dbo.ReadinessFact rf
-      WHERE rf.OrgID = @OrgID AND rf.SubcategoryID = @SubcategoryID;
-    END
-    ELSE
-    BEGIN
-      -- Insert minimal row plus whatever values are provided.
-      INSERT INTO dbo.ReadinessFact (
-        OrgID,
-        SubcategoryID,
-        SubcatOwner,
-        SubcatCustodian,
-        Scope,
-        MaturityProjection,
-        ProfileType,
-        -- ConsumingFromOrg,  -- future
-        -- Department,        -- future
-        LastUpdatedBy,
-        LastUpdatedDate
-      )
-      VALUES (
-        @OrgID,
-        @SubcategoryID,
-        @OwnerNorm,
-        @CustNorm,
-        @ScopeNorm,
-        @MaturityProjectionNorm,
-        @ProfileTypeNorm,
-        -- @ConsumingFromOrg,  -- future
-        -- @Department,        -- future
-        @LastUpdatedBy,
-        GETDATE()
-      );
-    END
+        // Future (keep properties ready, even if proc params are commented right now)
+        public string? ConsumingFromOrg { get; init; }
+        public string? Department { get; init; }
 
-    COMMIT TRAN;
+        // Audit: userId from middleware/header
+        public required string LastUpdatedBy { get; init; }
+    }
 
-    /* ================= Return the final row ================= */
-    SELECT
-      rf.OrgID,
-      rf.SubcategoryID,
-      rf.SubcatOwner,
-      rf.SubcatCustodian,
-      rf.Scope,
-      rf.MaturityProjection,
-      rf.ProfileType,
-      -- rf.ConsumingFromOrg,   -- future
-      -- rf.Department,         -- future
-      rf.LastUpdatedBy,
-      rf.LastUpdatedDate
-    FROM dbo.ReadinessFact rf
-    WHERE rf.OrgID = @OrgID AND rf.SubcategoryID = @SubcategoryID;
-  END TRY
-  BEGIN CATCH
-    IF XACT_STATE() <> 0 ROLLBACK TRAN;
-    DECLARE @ErrMsg NVARCHAR(4000) = ERROR_MESSAGE(), @ErrNum INT = ERROR_NUMBER(), @ErrState INT = ERROR_STATE();
-    RAISERROR('spUpsertReadinessFact failed (%d): %s', 16, 1, @ErrNum, @ErrMsg) WITH NOWAIT;
-    RETURN;
-  END CATCH
-END
-GO
+    /// <summary>
+    /// Row echoed back by spUpsertReadinessFact after insert/update.
+    /// Matches the SELECT at the end of the proc (includes audit).
+    /// </summary>
+    public sealed class UpsertReadinessFactResultDto
+    {
+        public int OrgId { get; init; }
+        public int SubcategoryId { get; init; }
+
+        public string? SubcatOwner { get; init; }
+        public string? SubcatCustodian { get; init; }
+        public string? Scope { get; init; }
+        public string? MaturityProjection { get; init; }
+        public string? ProfileType { get; init; }
+
+        // Future-ready
+        public string? ConsumingFromOrg { get; init; }
+        public string? Department { get; init; }
+
+        // Audit
+        public string LastUpdatedBy { get; init; } = default!;
+        public DateTime LastUpdatedDate { get; init; }
+    }
+}
+
+
+
+
+
+// Utils/SqlParamHelpers.cs
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Dapper;
+
+namespace YourApp.Utils
+{
+    public static class SqlParamHelpers
+    {
+        /// <summary>
+        /// Joins a sequence into a CSV string (deduped, trimmed). Returns null if result is empty.
+        /// </summary>
+        public static string? ToCsvOrNull(this IEnumerable<string>? values)
+        {
+            if (values is null) return null;
+            var items = values
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .Select(v => v.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            return items.Length == 0 ? null : string.Join(",", items);
+        }
+
+        /// <summary>
+        /// Returns null if s is null/whitespace; otherwise trimmed.
+        /// </summary>
+        public static string? NullIfWhiteSpace(this string? s)
+            => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+        /// <summary>
+        /// Adds a CSV param from a list; ignores if list is null/empty.
+        /// </summary>
+        public static void AddCsv(this DynamicParameters p, string name, IEnumerable<string>? values)
+            => p.Add(name, values.ToCsvOrNull());
+
+        /// <summary>
+        /// Adds a string param; passes null if whitespace.
+        /// </summary>
+        public static void AddIfHasValue(this DynamicParameters p, string name, string? value)
+            => p.Add(name, value.NullIfWhiteSpace());
+    }
+}
+
+
+
+
+---
+
+// Controllers/ReadinessController.cs
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Threading.Tasks;
+using Dapper;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using YourApp.Models;      // DTOs you added earlier
+using YourApp.Utils;       // SqlParamHelpers
+
+namespace YourApp.Controllers
+{
+    [ApiController]
+    [Route("api/readiness")]
+    public sealed class ReadinessController : ControllerBase
+    {
+        private readonly DbContext _db;
+        public ReadinessController(DbContext db) => _db = db;
+
+        // sample accessor like yours
+        private string GetUserID() => User?.Identity?.Name ?? "Unknown";
+
+        // -----------------------------
+        // GET: api/readiness/filter-lookups
+        // -----------------------------
+        [HttpGet("filter-lookups")]
+        public async Task<IActionResult> GetFilterLookups([FromQuery] ReadinessFilterLookupsQuery q)
+        {
+            try
+            {
+                await using var conn = _db.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open) await conn.OpenAsync();
+
+                var p = new DynamicParameters();
+                // Accept either CSV in query OR array binding (both supported here)
+                p.AddIfHasValue("@OrgAbbrCsv",          q.OrgAbbrCsv ?? q.OrgAbbr?.ToCsvOrNull());
+                p.AddIfHasValue("@SubcategoryNamesCsv", q.SubcategoryNamesCsv ?? q.SubcategoryNames?.ToCsvOrNull());
+                p.AddIfHasValue("@OwnerNamesCsv",       q.OwnerNamesCsv ?? q.OwnerNames?.ToCsvOrNull());
+                p.AddIfHasValue("@CustodianNamesCsv",   q.CustodianNamesCsv ?? q.CustodianNames?.ToCsvOrNull());
+                p.AddIfHasValue("@ScopeCsv",            q.ScopeCsv ?? q.Scope?.ToCsvOrNull());
+                p.AddIfHasValue("@ProfileTypesCsv",     q.ProfileTypesCsv ?? q.ProfileTypes?.ToCsvOrNull());
+
+                using var multi = await conn.QueryMultipleAsync(
+                    "dbo.spReadinessFilterLookups", p, commandType: CommandType.StoredProcedure);
+
+                var resp = new ReadinessFilterLookupsResponse
+                {
+                    Orgs          = (await multi.ReadAsync<OrgLookupDto>()).AsList(),
+                    Subcategories = (await multi.ReadAsync<SubcategoryLookupDto>()).AsList(),
+                    Owners        = (await multi.ReadAsync<PersonNameDto>()).AsList(),
+                    Custodians    = (await multi.ReadAsync<PersonNameDto>()).AsList(),
+                    Scopes        = (await multi.ReadAsync<string>())
+                                       .Select(v => new SimpleValueDto { Value = v }).ToList(),
+                    ProfileTypes  = (await multi.ReadAsync<string>())
+                                       .Select(v => new SimpleValueDto { Value = v }).ToList()
+                };
+
+                return Ok(resp);
+            }
+            catch (Exception ex)
+            {
+                return Problem(ex.Message);
+            }
+        }
+
+        // -----------------------------
+        // GET: api/readiness/facts
+        // -----------------------------
+        [HttpGet("facts")]
+        public async Task<IActionResult> GetFacts([FromQuery] GetReadinessFactQuery q)
+        {
+            try
+            {
+                await using var conn = _db.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open) await conn.OpenAsync();
+
+                var p = new DynamicParameters();
+                p.AddIfHasValue("@OrgAbbrCsv",          q.OrgAbbrCsv ?? q.OrgAbbr?.ToCsvOrNull());
+                p.AddIfHasValue("@SubcategoryNamesCsv", q.SubcategoryNamesCsv ?? q.SubcategoryNames?.ToCsvOrNull());
+                p.AddIfHasValue("@OwnerNamesCsv",       q.OwnerNamesCsv ?? q.OwnerNames?.ToCsvOrNull());
+                p.AddIfHasValue("@CustodianNamesCsv",   q.CustodianNamesCsv ?? q.CustodianNames?.ToCsvOrNull());
+                p.AddIfHasValue("@ScopeCsv",            q.ScopeCsv ?? q.Scope?.ToCsvOrNull());
+                p.AddIfHasValue("@ProfileTypesCsv",     q.ProfileTypesCsv ?? q.ProfileTypes?.ToCsvOrNull());
+
+                var rows = (await conn.QueryAsync<ReadinessFactRowDto>(
+                    "dbo.spGetReadinessFact", p, commandType: CommandType.StoredProcedure)).AsList();
+
+                return Ok(rows);
+            }
+            catch (Exception ex)
+            {
+                return Problem(ex.Message);
+            }
+        }
+
+        // -----------------------------
+        // POST: api/readiness/upsert
+        // -----------------------------
+        [HttpPost("upsert")]
+        public async Task<IActionResult> Upsert([FromBody] UpsertReadinessFactRequest model)
+        {
+            var actor = GetUserID();
+
+            try
+            {
+                await using var conn = _db.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open) await conn.OpenAsync();
+
+                var p = new DynamicParameters();
+                p.Add("@OrgID",              model.OrgId);
+                p.Add("@SubcategoryID",      model.SubcategoryId);
+                p.Add("@SubcatOwner",        model.SubcatOwner.NullIfWhiteSpace());
+                p.Add("@SubcatCustodian",    model.SubcatCustodian.NullIfWhiteSpace());
+                p.Add("@Scope",              model.Scope.NullIfWhiteSpace());
+                p.Add("@MaturityProjection", model.MaturityProjection.NullIfWhiteSpace());
+                p.Add("@ProfileType",        model.ProfileType.NullIfWhiteSpace());
+                // Uncomment when your proc exposes these:
+                // p.Add("@ConsumingFromOrg",    model.ConsumingFromOrg.NullIfWhiteSpace());
+                // p.Add("@Department",          model.Department.NullIfWhiteSpace());
+                p.Add("@LastUpdatedBy",      actor);
+
+                var result = await conn.QueryFirstOrDefaultAsync<UpsertReadinessFactResultDto>(
+                    "dbo.spUpsertReadinessFact", p, commandType: CommandType.StoredProcedure);
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return Problem(ex.Message);
+            }
+        }
+    }
+
+    // -----------------------------
+    // Query models (for easy querystring binding)
+    // -----------------------------
+    public sealed class ReadinessFilterLookupsQuery
+    {
+        // Option A: CSV in querystring (e.g., ?OrgAbbrCsv=ACME,HR)
+        public string? OrgAbbrCsv { get; init; }
+        public string? SubcategoryNamesCsv { get; init; }
+        public string? OwnerNamesCsv { get; init; }
+        public string? CustodianNamesCsv { get; init; }
+        public string? ScopeCsv { get; init; }
+        public string? ProfileTypesCsv { get; init; }
+
+        // Option B: repeated keys (e.g., ?OrgAbbr=ACME&OrgAbbr=HR). We'll join them to CSV if provided.
+        public List<string>? OrgAbbr { get; init; }
+        public List<string>? SubcategoryNames { get; init; }
+        public List<string>? OwnerNames { get; init; }
+        public List<string>? CustodianNames { get; init; }
+        public List<string>? Scope { get; init; }
+        public List<string>? ProfileTypes { get; init; }
+    }
+
+    public sealed class GetReadinessFactQuery
+    {
+        public string? OrgAbbrCsv { get; init; }
+        public string? SubcategoryNamesCsv { get; init; }
+        public string? OwnerNamesCsv { get; init; }
+        public string? CustodianNamesCsv { get; init; }
+        public string? ScopeCsv { get; init; }
+        public string? ProfileTypesCsv { get; init; }
+
+        public List<string>? OrgAbbr { get; init; }
+        public List<string>? SubcategoryNames { get; init; }
+        public List<string>? OwnerNames { get; init; }
+        public List<string>? CustodianNames { get; init; }
+        public List<string>? Scope { get; init; }
+        public List<string>? ProfileTypes { get; init; }
+    }
+}

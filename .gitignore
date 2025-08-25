@@ -1,258 +1,42 @@
-// Models/ReadinessModels.cs
-using System;
-using System.Collections.Generic;
+@echo off
+setlocal ENABLEDELAYEDEXPANSION
 
-namespace YourApp.Models
-{
-    // ================================
-    // Requests
-    // ================================
+REM === CONFIG: edit these if your layout differs ===
+set "PROJECT_ROOT=%~dp0"
+set "PYTHON_EXE=%PROJECT_ROOT%venv\Scripts\python.exe"
+set "ENTRY_SCRIPT=%PROJECT_ROOT%run_etl.py"
+set "LOG_DIR=%PROJECT_ROOT%logs"
 
-    // For GET: spReadinessFilterLookups
-    public sealed class ReadinessFilterLookupsModel
-    {
-        public string? OrgAbbrCsv { get; init; }
-        public string? SubcategoryNamesCsv { get; init; }
-        public string? OwnerNamesCsv { get; init; }
-        public string? CustodianNamesCsv { get; init; }
-        public string? ScopeCsv { get; init; }           // Yes,No
-        public string? ProfileTypesCsv { get; init; }    // Provider,Consumer,Inheritor
-    }
+REM === Ensure log folder exists ===
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
-    // For GET: spGetReadinessFact
-    public sealed class GetReadinessFactModel
-    {
-        public string? OrgAbbrCsv { get; init; }
-        public string? SubcategoryNamesCsv { get; init; }
-        public string? OwnerNamesCsv { get; init; }
-        public string? CustodianNamesCsv { get; init; }
-        public string? ScopeCsv { get; init; }
-        public string? ProfileTypesCsv { get; init; }
-    }
+REM === Build a safe timestamp: YYYYMMDD_HHMMSS ===
+for /f "tokens=1-3 delims=/- " %%a in ("%date%") do (
+  set "YY=%%c" & set "MM=%%a" & set "DD=%%b"
+)
+REM Some locales have different date orders; if the above looks wrong, adjust tokens/order.
+set "HH=%time:~0,2%" & set "MI=%time:~3,2%" & set "SS=%time:~6,2%"
+REM Remove leading space in hour (e.g., " 7" -> "07")
+if "%HH:~0,1%"==" " set "HH=0%HH:~1,1%"
+set "STAMP=%YY%%MM%%DD%_%HH%%MI%%SS%"
 
-    // For POST: spUpsertReadinessFact
-    public sealed class UpsertReadinessFactModel
-    {
-        // Natural key
-        public int OrgID { get; init; }
-        public int SubcategoryID { get; init; }
+set "RUN_LOG=%LOG_DIR%\etl_%STAMP%.log"
 
-        // Editable fields
-        public string? SubcatOwner { get; init; }           // comma-delimited
-        public string? SubcatCustodian { get; init; }       // comma-delimited
-        public string? Scope { get; init; }                 // Yes / No
-        public string? MaturityProjection { get; init; }    // Increase / Decrease / Maintain
-        public string? ProfileType { get; init; }           // Provider / Consumer / Inheritor
+echo Starting ETL at %date% %time% > "%RUN_LOG%"
+echo PROJECT_ROOT=%PROJECT_ROOT% >> "%RUN_LOG%"
+echo PYTHON_EXE=%PYTHON_EXE% >> "%RUN_LOG%"
+echo ENTRY_SCRIPT=%ENTRY_SCRIPT% >> "%RUN_LOG%"
 
-        // Future use (uncomment when proc enables)
-        // public string? ConsumingFromOrg { get; init; }
-        // public string? Department { get; init; }
-    }
+REM === Switch to project directory (so .env & relative paths work) ===
+cd /d "%PROJECT_ROOT%"
 
-    // ================================
-    // Responses
-    // ================================
+REM === If your Python code uses python-dotenv, it will read .env automatically.
+REM === Otherwise, you could load .env here (left out for simplicity).
 
-    // Container for the 6 result sets from spReadinessFilterLookups
-    public sealed class ReadinessFilterLookupsResponseModel
-    {
-        public List<OrgLookupModel> Orgs { get; init; } = new();
-        public List<SubcategoryLookupModel> Subcategories { get; init; } = new();
-        public List<ContactLookupModel> Owners { get; init; } = new();
-        public List<ContactLookupModel> Custodians { get; init; } = new();
-        public List<string> Scopes { get; init; } = new();         // values like "Yes","No"
-        public List<string> ProfileTypes { get; init; } = new();   // values like "Provider",...
-    }
+REM === Run the ETL and capture stdout/stderr ===
+"%PYTHON_EXE%" "%ENTRY_SCRIPT%" 1>>"%RUN_LOG%" 2>>&1
+set "EXITCODE=%ERRORLEVEL%"
 
-    public sealed class OrgLookupModel
-    {
-        // SQL aliases: orgAbbr, orgFullName
-        public string OrgAbbr { get; init; } = default!;
-        public string OrgFullName { get; init; } = default!;
-    }
+echo Python exit code: %EXITCODE% >> "%RUN_LOG%"
 
-    public sealed class SubcategoryLookupModel
-    {
-        // SQL aliases: subcategoryID, subcategoryName
-        public int SubcategoryID { get; init; }
-        public string SubcategoryName { get; init; } = default!;
-    }
-
-    public sealed class ContactLookupModel
-    {
-        // SQL alias: fullName
-        public string FullName { get; init; } = default!;
-    }
-
-    // Row returned by spGetReadinessFact (no audit fields)
-    public sealed class ReadinessFactRowModel
-    {
-        public int OrgID { get; init; }
-        public string OrgFullName { get; init; } = default!;
-        public string OrgAbbr { get; init; } = default!;
-        public string? SubcatOwner { get; init; }
-        public string? SubcatCustodian { get; init; }
-        public int SubcategoryID { get; init; }
-        public string SubcategoryName { get; init; } = default!;
-        public string? SubcategoryDescription { get; init; }
-        public string? RelatedCSF1_1Subcategories { get; init; }
-        public string? Scope { get; init; }
-        public string? MaturityProjection { get; init; }
-        public string? ProfileType { get; init; }
-        public string? ConsumingFromOrg { get; init; }    // optional / future
-        public string? Department { get; init; }          // optional / future
-    }
-
-    // Row echoed by spUpsertReadinessFact after insert/update (includes audit)
-    public sealed class UpsertReadinessFactResultModel
-    {
-        public int OrgID { get; init; }
-        public int SubcategoryID { get; init; }
-        public string? SubcatOwner { get; init; }
-        public string? SubcatCustodian { get; init; }
-        public string? Scope { get; init; }
-        public string? MaturityProjection { get; init; }
-        public string? ProfileType { get; init; }
-        // Future-ready
-        public string? ConsumingFromOrg { get; init; }
-        public string? Department { get; init; }
-        // Audit
-        public string LastUpdatedBy { get; init; } = default!;
-        public DateTime LastUpdatedDate { get; init; }
-    }
-}
-
-
-
-
-// Controllers/ReadinessController.cs
-using System;
-using System.Data;
-using System.Linq;
-using System.Threading.Tasks;
-using Dapper;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using YourApp.Models;
-
-namespace YourApp.Controllers
-{
-    [ApiController]
-    [Route("api/readiness")]
-    public sealed class ReadinessController : ControllerBase
-    {
-        private readonly DbContext _db;
-        public ReadinessController(DbContext db) => _db = db;
-
-        // Your sample style (tidy)
-        private string GetUserID() => User?.Identity?.Name ?? "Unknown";
-
-        // -----------------------------
-        // GET: api/readiness/filter-lookups
-        // -----------------------------
-        [HttpGet("filter-lookups")]
-        public async Task<IActionResult> GetFilterLookups([FromQuery] ReadinessFilterLookupsModel model)
-        {
-            try
-            {
-                await using var conn = _db.Database.GetDbConnection();
-                if (conn.State != ConnectionState.Open) await conn.OpenAsync();
-
-                var p = new DynamicParameters();
-                p.Add("@OrgAbbrCsv",          string.IsNullOrWhiteSpace(model.OrgAbbrCsv) ? null : model.OrgAbbrCsv);
-                p.Add("@SubcategoryNamesCsv", string.IsNullOrWhiteSpace(model.SubcategoryNamesCsv) ? null : model.SubcategoryNamesCsv);
-                p.Add("@OwnerNamesCsv",       string.IsNullOrWhiteSpace(model.OwnerNamesCsv) ? null : model.OwnerNamesCsv);
-                p.Add("@CustodianNamesCsv",   string.IsNullOrWhiteSpace(model.CustodianNamesCsv) ? null : model.CustodianNamesCsv);
-                p.Add("@ScopeCsv",            string.IsNullOrWhiteSpace(model.ScopeCsv) ? null : model.ScopeCsv);
-                p.Add("@ProfileTypesCsv",     string.IsNullOrWhiteSpace(model.ProfileTypesCsv) ? null : model.ProfileTypesCsv);
-
-                using var multi = await conn.QueryMultipleAsync(
-                    "dbo.spReadinessFilterLookups", p, commandType: CommandType.StoredProcedure);
-
-                var resp = new ReadinessFilterLookupsResponseModel
-                {
-                    Orgs          = (await multi.ReadAsync<OrgLookupModel>()).AsList(),
-                    Subcategories = (await multi.ReadAsync<SubcategoryLookupModel>()).AsList(),
-                    Owners        = (await multi.ReadAsync<ContactLookupModel>()).AsList(),
-                    Custodians    = (await multi.ReadAsync<ContactLookupModel>()).AsList(),
-                    Scopes        = (await multi.ReadAsync<string>()).AsList(),
-                    ProfileTypes  = (await multi.ReadAsync<string>()).AsList()
-                };
-
-                return Ok(resp);
-            }
-            catch (Exception ex)
-            {
-                return Problem(ex.Message);
-            }
-        }
-
-        // -----------------------------
-        // GET: api/readiness/facts
-        // -----------------------------
-        [HttpGet("facts")]
-        public async Task<IActionResult> GetFacts([FromQuery] GetReadinessFactModel model)
-        {
-            try
-            {
-                await using var conn = _db.Database.GetDbConnection();
-                if (conn.State != ConnectionState.Open) await conn.OpenAsync();
-
-                var p = new DynamicParameters();
-                p.Add("@OrgAbbrCsv",          string.IsNullOrWhiteSpace(model.OrgAbbrCsv) ? null : model.OrgAbbrCsv);
-                p.Add("@SubcategoryNamesCsv", string.IsNullOrWhiteSpace(model.SubcategoryNamesCsv) ? null : model.SubcategoryNamesCsv);
-                p.Add("@OwnerNamesCsv",       string.IsNullOrWhiteSpace(model.OwnerNamesCsv) ? null : model.OwnerNamesCsv);
-                p.Add("@CustodianNamesCsv",   string.IsNullOrWhiteSpace(model.CustodianNamesCsv) ? null : model.CustodianNamesCsv);
-                p.Add("@ScopeCsv",            string.IsNullOrWhiteSpace(model.ScopeCsv) ? null : model.ScopeCsv);
-                p.Add("@ProfileTypesCsv",     string.IsNullOrWhiteSpace(model.ProfileTypesCsv) ? null : model.ProfileTypesCsv);
-
-                var rows = (await conn.QueryAsync<ReadinessFactRowModel>(
-                    "dbo.spGetReadinessFact", p, commandType: CommandType.StoredProcedure)).AsList();
-
-                return Ok(rows);
-            }
-            catch (Exception ex)
-            {
-                return Problem(ex.Message);
-            }
-        }
-
-        // -----------------------------
-        // POST: api/readiness/upsert
-        // -----------------------------
-        [HttpPost("upsert")]
-        public async Task<IActionResult> Upsert([FromBody] UpsertReadinessFactModel model)
-        {
-            var actor = GetUserID();
-
-            try
-            {
-                await using var conn = _db.Database.GetDbConnection();
-                if (conn.State != ConnectionState.Open) await conn.OpenAsync();
-
-                var p = new DynamicParameters();
-                p.Add("@OrgID",              model.OrgID);
-                p.Add("@SubcategoryID",      model.SubcategoryID);
-                p.Add("@SubcatOwner",        string.IsNullOrWhiteSpace(model.SubcatOwner) ? null : model.SubcatOwner);
-                p.Add("@SubcatCustodian",    string.IsNullOrWhiteSpace(model.SubcatCustodian) ? null : model.SubcatCustodian);
-                p.Add("@Scope",              string.IsNullOrWhiteSpace(model.Scope) ? null : model.Scope);
-                p.Add("@MaturityProjection", string.IsNullOrWhiteSpace(model.MaturityProjection) ? null : model.MaturityProjection);
-                p.Add("@ProfileType",        string.IsNullOrWhiteSpace(model.ProfileType) ? null : model.ProfileType);
-                // Uncomment when your proc enables these:
-                // p.Add("@ConsumingFromOrg",    string.IsNullOrWhiteSpace(model.ConsumingFromOrg) ? null : model.ConsumingFromOrg);
-                // p.Add("@Department",          string.IsNullOrWhiteSpace(model.Department) ? null : model.Department);
-                p.Add("@LastUpdatedBy",      actor);
-
-                var result = await conn.QueryFirstOrDefaultAsync<UpsertReadinessFactResultModel>(
-                    "dbo.spUpsertReadinessFact", p, commandType: CommandType.StoredProcedure);
-
-                return Ok(result);
-            }
-            catch (Exception ex)
-            {
-                return Problem(ex.Message);
-            }
-        }
-    }
-}
-
+endlocal & exit /b %EXITCODE%

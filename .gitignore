@@ -1,379 +1,181 @@
-CREATE OR ALTER PROCEDURE dbo.spReadinessFilterLookups
-  @OrgAbbrCsv              NVARCHAR(MAX) = NULL,  -- maps to OrgAbbr
-  @SubcategoryNamesCsv     NVARCHAR(MAX) = NULL,  -- maps to SubcategoryName
-  @OwnerNamesCsv           NVARCHAR(MAX) = NULL,  -- maps to SubcatOwner (comma-delimited in rows)
-  @CustodianNamesCsv       NVARCHAR(MAX) = NULL,  -- maps to SubcatCustodian (comma-delimited in rows)
-  @ScopeCsv                NVARCHAR(MAX) = NULL,  -- maps to Scope
-  @ProfileTypesCsv         NVARCHAR(MAX) = NULL   -- maps to ProfileType
+CREATE OR ALTER PROCEDURE dbo.spUpsertReadinessFact
+  @OrgID               INT,
+  @SubcategoryID       INT,
+
+  -- Editable fields (NULL means "leave as-is" on UPDATE)
+  @SubcatOwner         NVARCHAR(MAX)   = NULL,
+  @SubcatCustodian     NVARCHAR(MAX)   = NULL,
+  @Scope               NVARCHAR(10)    = NULL,  -- Yes / No (varchar)
+  @MaturityProjection  NVARCHAR(20)    = NULL,  -- Increase / Decrease / Maintain
+  @ProfileType         NVARCHAR(20)    = NULL,  -- Provider / Consumer / Inheritor
+
+  -- Future use (keep commented for now)
+  -- @ConsumingFromOrg    NVARCHAR(50)    = NULL,  -- which OrgAbbr are they consuming from (if Consumer)
+  -- @Department          NVARCHAR(200)   = NULL,  -- optional department detail
+
+  -- Audit
+  @LastUpdatedBy       NVARCHAR(100)   -- pass userID from middleware header
 AS
 BEGIN
   SET NOCOUNT ON;
 
-  /* ---------------- Parse CSVs -> temp tables (all trimmed, case-insensitive) ---------------- */
-  CREATE TABLE #SelOrg    (val NVARCHAR(200) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@OrgAbbrCsv)),'') IS NOT NULL
-    INSERT #SelOrg
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@OrgAbbrCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
+  BEGIN TRY
+    /* ================= Normalize & Validate ================= */
+    DECLARE
+      @ScopeNorm              NVARCHAR(10),
+      @MaturityProjectionNorm NVARCHAR(20),
+      @ProfileTypeNorm        NVARCHAR(20);
 
-  CREATE TABLE #SelSubcat (val NVARCHAR(400) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@SubcategoryNamesCsv)),'') IS NOT NULL
-    INSERT #SelSubcat
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@SubcategoryNamesCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
+    -- Scope: Yes/No (accept common variants; store canonical)
+    IF @Scope IS NULL
+      SET @ScopeNorm = NULL;
+    ELSE
+      SET @ScopeNorm =
+        CASE UPPER(LTRIM(RTRIM(@Scope)))
+          WHEN 'YES' THEN 'Yes'
+          WHEN 'Y'   THEN 'Yes'
+          WHEN 'TRUE' THEN 'Yes'
+          WHEN '1'   THEN 'Yes'
+          WHEN 'NO'  THEN 'No'
+          WHEN 'N'   THEN 'No'
+          WHEN 'FALSE' THEN 'No'
+          WHEN '0'   THEN 'No'
+          ELSE NULL
+        END;
 
-  CREATE TABLE #SelOwner  (val NVARCHAR(400) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@OwnerNamesCsv)),'') IS NOT NULL
-    INSERT #SelOwner
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@OwnerNamesCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
+    IF @Scope IS NOT NULL AND @ScopeNorm IS NULL
+      THROW 50001, 'Invalid Scope. Allowed: Yes/No.', 1;
 
-  CREATE TABLE #SelCust   (val NVARCHAR(400) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@CustodianNamesCsv)),'') IS NOT NULL
-    INSERT #SelCust
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@CustodianNamesCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
+    -- MaturityProjection: Increase/Decrease/Maintain
+    IF @MaturityProjection IS NULL
+      SET @MaturityProjectionNorm = NULL;
+    ELSE
+      SET @MaturityProjectionNorm =
+        CASE UPPER(LTRIM(RTRIM(@MaturityProjection)))
+          WHEN 'INCREASE'  THEN 'Increase'
+          WHEN 'DECREASE'  THEN 'Decrease'
+          WHEN 'MAINTAIN'  THEN 'Maintain'
+          ELSE NULL
+        END;
 
-  CREATE TABLE #SelScope  (val NVARCHAR(100) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@ScopeCsv)),'') IS NOT NULL
-    INSERT #SelScope
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@ScopeCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
+    IF @MaturityProjection IS NOT NULL AND @MaturityProjectionNorm IS NULL
+      THROW 50002, 'Invalid MaturityProjection. Allowed: Increase/Decrease/Maintain.', 1;
 
-  CREATE TABLE #SelProf   (val NVARCHAR(100) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@ProfileTypesCsv)),'') IS NOT NULL
-    INSERT #SelProf
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@ProfileTypesCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
+    -- ProfileType: Provider/Consumer/Inheritor
+    IF @ProfileType IS NULL
+      SET @ProfileTypeNorm = NULL;
+    ELSE
+      SET @ProfileTypeNorm =
+        CASE UPPER(LTRIM(RTRIM(@ProfileType)))
+          WHEN 'PROVIDER'   THEN 'Provider'
+          WHEN 'CONSUMER'   THEN 'Consumer'
+          WHEN 'INHERITOR'  THEN 'Inheritor'
+          ELSE NULL
+        END;
 
-  /* ---------------- Base rows (one table) ---------------- */
-  -- Keep only the columns we need for filtering/lookups (faster temp tables)
-  SELECT
-      rf.OrgAbbr,
-      rf.OrgFullName,
-      rf.SubcategoryID,
-      rf.SubcategoryName,
-      rf.SubcatOwner,
-      rf.SubcatCustodian,
-      rf.Scope,
-      rf.ProfileType
-  INTO #Base
-  FROM dbo.ReadinessFact rf;
+    IF @ProfileType IS NOT NULL AND @ProfileTypeNorm IS NULL
+      THROW 50003, 'Invalid ProfileType. Allowed: Provider/Consumer/Inheritor.', 1;
 
-  /* ---------------- Helper predicates ---------------- */
-  -- EXISTS against comma-separated owner/custodian columns
-  -- Matches ANY of the selected values (OR logic)
-  -- Note: split each row's list, trim, UPPER for case-insensitive compare
-  /* Apply "all" slice (all filters respected) */
-  SELECT *
-  INTO #Filtered_All
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)    OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))       IN (SELECT val FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat) OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelScope)  OR UPPER(LTRIM(RTRIM(b.Scope)))         IN (SELECT val FROM #SelScope))
-    AND (NOT EXISTS (SELECT 1 FROM #SelProf)   OR UPPER(LTRIM(RTRIM(b.ProfileType)))   IN (SELECT val FROM #SelProf))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1
-              FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
-         )
+    /* Simple cosmetic normalization of owner/custodian strings */
+    DECLARE
+      @OwnerNorm NVARCHAR(MAX) =
+        CASE WHEN @SubcatOwner IS NULL THEN NULL
+             ELSE LTRIM(RTRIM(REPLACE(REPLACE(@SubcatOwner, ' ,', ','), ', ', ', ')))
+        END,
+      @CustNorm NVARCHAR(MAX) =
+        CASE WHEN @SubcatCustodian IS NULL THEN NULL
+             ELSE LTRIM(RTRIM(REPLACE(REPLACE(@SubcatCustodian, ' ,', ','), ', ', ', ')))
+        END;
+
+    /* ================= Authorization (future) =================
+       -- Example skeleton:
+       -- IF NOT EXISTS (
+       --   SELECT 1
+       --   FROM dbo.UserOrgPermission p
+       --   WHERE p.UserID = @LastUpdatedBy
+       --     AND (p.IsAdmin = 1 OR (p.OrgID = @OrgID AND p.CanEdit = 1))
+       -- )
+       --   THROW 50010, 'You are not authorized to modify this Org.', 1;
+    */
+
+    /* ================= Upsert ================= */
+    BEGIN TRAN;
+
+    -- Lock target key to prevent race-y inserts
+    IF EXISTS (
+      SELECT 1
+      FROM dbo.ReadinessFact WITH (UPDLOCK, HOLDLOCK)
+      WHERE OrgID = @OrgID AND SubcategoryID = @SubcategoryID
     )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1
-              FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
-         )
-    );
+    BEGIN
+      UPDATE rf
+      SET
+        rf.SubcatOwner        = COALESCE(@OwnerNorm, rf.SubcatOwner),
+        rf.SubcatCustodian    = COALESCE(@CustNorm, rf.SubcatCustodian),
+        rf.Scope              = COALESCE(@ScopeNorm, rf.Scope),
+        rf.MaturityProjection = COALESCE(@MaturityProjectionNorm, rf.MaturityProjection),
+        rf.ProfileType        = COALESCE(@ProfileTypeNorm, rf.ProfileType),
+        -- rf.ConsumingFromOrg   = COALESCE(@ConsumingFromOrg, rf.ConsumingFromOrg), -- future
+        -- rf.Department         = COALESCE(@Department, rf.Department),             -- future
+        rf.LastUpdatedBy      = @LastUpdatedBy,
+        rf.LastUpdatedDate    = GETDATE()
+      FROM dbo.ReadinessFact rf
+      WHERE rf.OrgID = @OrgID AND rf.SubcategoryID = @SubcategoryID;
+    END
+    ELSE
+    BEGIN
+      -- Insert minimal row plus whatever values are provided.
+      INSERT INTO dbo.ReadinessFact (
+        OrgID,
+        SubcategoryID,
+        SubcatOwner,
+        SubcatCustodian,
+        Scope,
+        MaturityProjection,
+        ProfileType,
+        -- ConsumingFromOrg,  -- future
+        -- Department,        -- future
+        LastUpdatedBy,
+        LastUpdatedDate
+      )
+      VALUES (
+        @OrgID,
+        @SubcategoryID,
+        @OwnerNorm,
+        @CustNorm,
+        @ScopeNorm,
+        @MaturityProjectionNorm,
+        @ProfileTypeNorm,
+        -- @ConsumingFromOrg,  -- future
+        -- @Department,        -- future
+        @LastUpdatedBy,
+        GETDATE()
+      );
+    END
 
-  /* ---------------- Self-excluding slices (omit just the one being populated) ---------------- */
-  -- Ignore Org
-  SELECT *
-  INTO #Filtered_NoOrg
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelSubcat) OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelScope)  OR UPPER(LTRIM(RTRIM(b.Scope)))           IN (SELECT val FROM #SelScope))
-    AND (NOT EXISTS (SELECT 1 FROM #SelProf)   OR UPPER(LTRIM(RTRIM(b.ProfileType)))     IN (SELECT val FROM #SelProf))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
-         )
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
-         )
-    );
+    COMMIT TRAN;
 
-  -- Ignore Subcategory
-  SELECT *
-  INTO #Filtered_NoSubcat
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)   OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))   IN (SELECT val FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelScope) OR UPPER(LTRIM(RTRIM(b.Scope)))     IN (SELECT val FROM #SelScope))
-    AND (NOT EXISTS (SELECT 1 FROM #SelProf)  OR UPPER(LTRIM(RTRIM(b.ProfileType))) IN (SELECT val FROM #SelProf))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
-         )
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
-         )
-    );
-
-  -- Ignore Owner (owners list comes from the "all" slice; keep symmetry and also give a self-excluding slice for the rest)
-  SELECT *
-  INTO #Filtered_NoOwner
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)     OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))       IN (SELECT val FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat)  OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelScope)   OR UPPER(LTRIM(RTRIM(b.Scope)))         IN (SELECT val FROM #SelScope))
-    AND (NOT EXISTS (SELECT 1 FROM #SelProf)    OR UPPER(LTRIM(RTRIM(b.ProfileType)))   IN (SELECT val FROM #SelProf))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
-         )
-    );
-
-  -- Ignore Custodian
-  SELECT *
-  INTO #Filtered_NoCust
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)     OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))       IN (SELECT val FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat)  OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelScope)   OR UPPER(LTRIM(RTRIM(b.Scope)))         IN (SELECT val FROM #SelScope))
-    AND (NOT EXISTS (SELECT 1 FROM #SelProf)    OR UPPER(LTRIM(RTRIM(b.ProfileType)))   IN (SELECT val FROM #SelProf))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
-         )
-    );
-
-  -- Ignore Scope
-  SELECT *
-  INTO #Filtered_NoScope
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)     OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))       IN (SELECT val FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat)  OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelProf)    OR UPPER(LTRIM(RTRIM(b.ProfileType)))   IN (SELECT val FROM #SelProf))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
-         )
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
-         )
-    );
-
-  -- Ignore ProfileType
-  SELECT *
-  INTO #Filtered_NoProf
-  FROM #Base b
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)     OR UPPER(LTRIM(RTRIM(b.OrgAbbr)))       IN (SELECT val FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat)  OR UPPER(LTRIM(RTRIM(b.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelScope)   OR UPPER(LTRIM(RTRIM(b.Scope)))         IN (SELECT val FROM #SelScope))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatOwner,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
-         )
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1 FROM STRING_SPLIT(COALESCE(b.SubcatCustodian,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
-         )
-    );
-
-  /* ---------------- Result sets: each drives a multiselect control ---------------- */
-  -- 1) Orgs (self-excluding)
-  SELECT DISTINCT
-         b.OrgAbbr     AS orgAbbr,
-         b.OrgFullName AS orgFullName
-  FROM #Filtered_NoOrg b
-  WHERE NULLIF(LTRIM(RTRIM(b.OrgAbbr)),'') IS NOT NULL
-  ORDER BY b.OrgFullName, b.OrgAbbr;
-
-  -- 2) Subcategory Names (self-excluding)
-  SELECT DISTINCT
-         b.SubcategoryID   AS subcategoryID,
-         b.SubcategoryName AS subcategoryName
-  FROM #Filtered_NoSubcat b
-  WHERE NULLIF(LTRIM(RTRIM(b.SubcategoryName)),'') IS NOT NULL
-  ORDER BY b.SubcategoryName;
-
-  -- 3) Owners (from full-slice, explode CSV, distinct)
-  WITH Owners AS (
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(s.value))) AS ownerUpper,
-                    LTRIM(RTRIM(s.value))        AS ownerDisplay
-    FROM #Filtered_All f
-    CROSS APPLY STRING_SPLIT(COALESCE(f.SubcatOwner,''), ',') s
-    WHERE LTRIM(RTRIM(s.value)) <> ''
-  )
-  SELECT DISTINCT ownerDisplay AS fullName
-  FROM Owners
-  ORDER BY ownerDisplay;
-
-  -- 4) Custodians (from full-slice, explode CSV, distinct)
-  WITH Custodians AS (
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(s.value))) AS custUpper,
-                    LTRIM(RTRIM(s.value))        AS custDisplay
-    FROM #Filtered_All f
-    CROSS APPLY STRING_SPLIT(COALESCE(f.SubcatCustodian,''), ',') s
-    WHERE LTRIM(RTRIM(s.value)) <> ''
-  )
-  SELECT DISTINCT custDisplay AS fullName
-  FROM Custodians
-  ORDER BY custDisplay;
-
-  -- 5) Scope (self-excluding)
-  SELECT DISTINCT b.Scope AS scope
-  FROM #Filtered_NoScope b
-  WHERE NULLIF(LTRIM(RTRIM(b.Scope)),'') IS NOT NULL
-  ORDER BY b.Scope;
-
-  -- 6) Profile Types (self-excluding)
-  SELECT DISTINCT b.ProfileType AS profileType
-  FROM #Filtered_NoProf b
-  WHERE NULLIF(LTRIM(RTRIM(b.ProfileType)),'') IS NOT NULL
-  ORDER BY b.ProfileType;
-END
-GO
-
-
-
-
-
------
-
-CREATE OR ALTER PROCEDURE dbo.spGetReadinessFact
-  @OrgAbbrCsv              NVARCHAR(MAX) = NULL,
-  @SubcategoryNamesCsv     NVARCHAR(MAX) = NULL,
-  @OwnerNamesCsv           NVARCHAR(MAX) = NULL,
-  @CustodianNamesCsv       NVARCHAR(MAX) = NULL,
-  @ScopeCsv                NVARCHAR(MAX) = NULL,
-  @ProfileTypesCsv         NVARCHAR(MAX) = NULL
-AS
-BEGIN
-  SET NOCOUNT ON;
-
-  /* Parse CSVs to temp tables (trim + uppercase for insensitive matching) */
-  CREATE TABLE #SelOrg    (val NVARCHAR(200) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@OrgAbbrCsv)),'') IS NOT NULL
-    INSERT #SelOrg
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@OrgAbbrCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
-
-  CREATE TABLE #SelSubcat (val NVARCHAR(400) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@SubcategoryNamesCsv)),'') IS NOT NULL
-    INSERT #SelSubcat
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@SubcategoryNamesCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
-
-  CREATE TABLE #SelOwner  (val NVARCHAR(400) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@OwnerNamesCsv)),'') IS NOT NULL
-    INSERT #SelOwner
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@OwnerNamesCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
-
-  CREATE TABLE #SelCust   (val NVARCHAR(400) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@CustodianNamesCsv)),'') IS NOT NULL
-    INSERT #SelCust
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@CustodianNamesCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
-
-  CREATE TABLE #SelScope  (val NVARCHAR(100) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@ScopeCsv)),'') IS NOT NULL
-    INSERT #SelScope
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@ScopeCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
-
-  CREATE TABLE #SelProf   (val NVARCHAR(100) PRIMARY KEY);
-  IF NULLIF(LTRIM(RTRIM(@ProfileTypesCsv)),'') IS NOT NULL
-    INSERT #SelProf
-    SELECT DISTINCT UPPER(LTRIM(RTRIM(value)))
-    FROM STRING_SPLIT(@ProfileTypesCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
-
-  /* Filter and return */
-  SELECT
-      rf.ScopeID,
+    /* ================= Return the final row ================= */
+    SELECT
       rf.OrgID,
-      rf.OrgFullName,
-      rf.OrgAbbr,
+      rf.SubcategoryID,
       rf.SubcatOwner,
       rf.SubcatCustodian,
-      rf.SubcategoryID,
-      rf.SubcategoryName,
-      rf.SubcategoryDescription,
-      rf.RelatedCSF1_1Subcategories,
       rf.Scope,
-      rf.[Maturity Projection],
+      rf.MaturityProjection,
       rf.ProfileType,
-      rf.ConsumingFromOrg,
-      rf.Department,
+      -- rf.ConsumingFromOrg,   -- future
+      -- rf.Department,         -- future
       rf.LastUpdatedBy,
-      rf.LastUpdatedData
-  FROM dbo.ReadinessFact rf
-  WHERE (NOT EXISTS (SELECT 1 FROM #SelOrg)    OR UPPER(LTRIM(RTRIM(rf.OrgAbbr)))        IN (SELECT val FROM #SelOrg))
-    AND (NOT EXISTS (SELECT 1 FROM #SelSubcat) OR UPPER(LTRIM(RTRIM(rf.SubcategoryName))) IN (SELECT val FROM #SelSubcat))
-    AND (NOT EXISTS (SELECT 1 FROM #SelScope)  OR UPPER(LTRIM(RTRIM(rf.Scope)))          IN (SELECT val FROM #SelScope))
-    AND (NOT EXISTS (SELECT 1 FROM #SelProf)   OR UPPER(LTRIM(RTRIM(rf.ProfileType)))    IN (SELECT val FROM #SelProf))
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelOwner)
-         OR EXISTS (
-              SELECT 1
-              FROM STRING_SPLIT(COALESCE(rf.SubcatOwner,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelOwner)
-         )
-    )
-    AND (
-         NOT EXISTS (SELECT 1 FROM #SelCust)
-         OR EXISTS (
-              SELECT 1
-              FROM STRING_SPLIT(COALESCE(rf.SubcatCustodian,''), ',') s
-              WHERE UPPER(LTRIM(RTRIM(s.value))) IN (SELECT val FROM #SelCust)
-         )
-    )
-  ORDER BY rf.OrgFullName, rf.SubcategoryName;
+      rf.LastUpdatedDate
+    FROM dbo.ReadinessFact rf
+    WHERE rf.OrgID = @OrgID AND rf.SubcategoryID = @SubcategoryID;
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRAN;
+    DECLARE @ErrMsg NVARCHAR(4000) = ERROR_MESSAGE(), @ErrNum INT = ERROR_NUMBER(), @ErrState INT = ERROR_STATE();
+    RAISERROR('spUpsertReadinessFact failed (%d): %s', 16, 1, @ErrNum, @ErrMsg) WITH NOWAIT;
+    RETURN;
+  END CATCH
 END
 GO
-
-
-

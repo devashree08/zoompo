@@ -1,7 +1,7 @@
 @echo off
 setlocal ENABLEDELAYEDEXPANSION
 
-REM ========= CONFIG (edit) =========
+REM ========= CONFIG (edit as needed) =========
 set "PROJECT_ROOT=%~dp0"
 set "PYTHON_EXE=%PROJECT_ROOT%venv\Scripts\python.exe"
 set "PIP_EXE=%PROJECT_ROOT%venv\Scripts\pip.exe"
@@ -9,13 +9,16 @@ set "ENTRY_SCRIPT=%PROJECT_ROOT%run_etl.py"
 set "REQ_FILE=%PROJECT_ROOT%requirements.txt"
 set "APPLIED_REQ=%PROJECT_ROOT%venv\.requirements.applied.txt"
 set "LOG_DIR=%PROJECT_ROOT%logs"
-REM Optional args to your script:
 set "SCRIPT_ARGS="
-REM =================================
+set "LOG_RETENTION_DAYS=3"
+REM ===========================================
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
-REM Timestamp for log file
+REM --- Delete old logs (> N days) ---
+forfiles /p "%LOG_DIR%" /m *.log /d -%LOG_RETENTION_DAYS% /c "cmd /c del @file"
+
+REM --- Build timestamp for log file ---
 for /f "tokens=1-3 delims=/- " %%a in ("%date%") do ( set "YY=%%c" & set "MM=%%a" & set "DD=%%b" )
 set "HH=%time:~0,2%" & set "MI=%time:~3,2%" & set "SS=%time:~6,2%"
 if "%HH:~0,1%"==" " set "HH=0%HH:~1,1%"
@@ -29,7 +32,7 @@ if not exist "%PROJECT_ROOT%venv\" (
   echo Creating venv... >> "%RUN_LOG%"
   python -m venv "%PROJECT_ROOT%venv" >> "%RUN_LOG%" 2>>&1
   if errorlevel 1 (
-    echo [ERROR] Failed to create venv. See above output. >> "%RUN_LOG%"
+    echo [ERROR] Failed to create venv. >> "%RUN_LOG%"
     endlocal & exit /b 10
   )
 )
@@ -44,7 +47,7 @@ if exist "%REQ_FILE%" (
     if errorlevel 1 set "NEED_INSTALL=1"
   )
   if "%NEED_INSTALL%"=="1" (
-    echo Installing/updating packages from requirements.txt... >> "%RUN_LOG%"
+    echo Updating packages from requirements.txt... >> "%RUN_LOG%"
     "%PIP_EXE%" install --upgrade pip >> "%RUN_LOG%" 2>>&1
     if errorlevel 1 (
       echo [ERROR] pip self-upgrade failed. >> "%RUN_LOG%"
@@ -60,6 +63,10 @@ if exist "%REQ_FILE%" (
 ) else (
   echo requirements.txt not found; skipping package install. >> "%RUN_LOG%"
 )
+
+REM --- Health check: python & pip versions ---
+"%PYTHON_EXE%" --version >> "%RUN_LOG%" 2>>&1
+"%PIP_EXE%" --version >> "%RUN_LOG%" 2>>&1
 
 REM --- Run ETL ---
 cd /d "%PROJECT_ROOT%"

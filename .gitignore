@@ -1,42 +1,77 @@
 @echo off
 setlocal ENABLEDELAYEDEXPANSION
 
-REM === CONFIG: edit these if your layout differs ===
+REM ========= CONFIG (edit) =========
 set "PROJECT_ROOT=%~dp0"
 set "PYTHON_EXE=%PROJECT_ROOT%venv\Scripts\python.exe"
+set "PIP_EXE=%PROJECT_ROOT%venv\Scripts\pip.exe"
 set "ENTRY_SCRIPT=%PROJECT_ROOT%run_etl.py"
+set "REQ_FILE=%PROJECT_ROOT%requirements.txt"
+set "APPLIED_REQ=%PROJECT_ROOT%venv\.requirements.applied.txt"
 set "LOG_DIR=%PROJECT_ROOT%logs"
+REM Optional args to your script:
+set "SCRIPT_ARGS="
+REM =================================
 
-REM === Ensure log folder exists ===
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
-REM === Build a safe timestamp: YYYYMMDD_HHMMSS ===
-for /f "tokens=1-3 delims=/- " %%a in ("%date%") do (
-  set "YY=%%c" & set "MM=%%a" & set "DD=%%b"
-)
-REM Some locales have different date orders; if the above looks wrong, adjust tokens/order.
+REM Timestamp for log file
+for /f "tokens=1-3 delims=/- " %%a in ("%date%") do ( set "YY=%%c" & set "MM=%%a" & set "DD=%%b" )
 set "HH=%time:~0,2%" & set "MI=%time:~3,2%" & set "SS=%time:~6,2%"
-REM Remove leading space in hour (e.g., " 7" -> "07")
 if "%HH:~0,1%"==" " set "HH=0%HH:~1,1%"
 set "STAMP=%YY%%MM%%DD%_%HH%%MI%%SS%"
-
 set "RUN_LOG=%LOG_DIR%\etl_%STAMP%.log"
 
-echo Starting ETL at %date% %time% > "%RUN_LOG%"
-echo PROJECT_ROOT=%PROJECT_ROOT% >> "%RUN_LOG%"
-echo PYTHON_EXE=%PYTHON_EXE% >> "%RUN_LOG%"
-echo ENTRY_SCRIPT=%ENTRY_SCRIPT% >> "%RUN_LOG%"
+echo [START] %date% %time% > "%RUN_LOG%"
 
-REM === Switch to project directory (so .env & relative paths work) ===
+REM --- Ensure venv exists ---
+if not exist "%PROJECT_ROOT%venv\" (
+  echo Creating venv... >> "%RUN_LOG%"
+  python -m venv "%PROJECT_ROOT%venv" >> "%RUN_LOG%" 2>>&1
+  if errorlevel 1 (
+    echo [ERROR] Failed to create venv. See above output. >> "%RUN_LOG%"
+    endlocal & exit /b 10
+  )
+)
+
+REM --- Install/Update deps only if requirements changed ---
+set "NEED_INSTALL=0"
+if exist "%REQ_FILE%" (
+  if not exist "%APPLIED_REQ%" (
+    set "NEED_INSTALL=1"
+  ) else (
+    fc /b "%REQ_FILE%" "%APPLIED_REQ%" >nul
+    if errorlevel 1 set "NEED_INSTALL=1"
+  )
+  if "%NEED_INSTALL%"=="1" (
+    echo Installing/updating packages from requirements.txt... >> "%RUN_LOG%"
+    "%PIP_EXE%" install --upgrade pip >> "%RUN_LOG%" 2>>&1
+    if errorlevel 1 (
+      echo [ERROR] pip self-upgrade failed. >> "%RUN_LOG%"
+      endlocal & exit /b 11
+    )
+    "%PIP_EXE%" install -r "%REQ_FILE%" >> "%RUN_LOG%" 2>>&1
+    if errorlevel 1 (
+      echo [ERROR] pip install -r failed. >> "%RUN_LOG%"
+      endlocal & exit /b 12
+    )
+    copy /y "%REQ_FILE%" "%APPLIED_REQ%" >nul
+  )
+) else (
+  echo requirements.txt not found; skipping package install. >> "%RUN_LOG%"
+)
+
+REM --- Run ETL ---
 cd /d "%PROJECT_ROOT%"
-
-REM === If your Python code uses python-dotenv, it will read .env automatically.
-REM === Otherwise, you could load .env here (left out for simplicity).
-
-REM === Run the ETL and capture stdout/stderr ===
-"%PYTHON_EXE%" "%ENTRY_SCRIPT%" 1>>"%RUN_LOG%" 2>>&1
+echo Running: "%PYTHON_EXE%" "%ENTRY_SCRIPT%" %SCRIPT_ARGS% >> "%RUN_LOG%"
+"%PYTHON_EXE%" "%ENTRY_SCRIPT%" %SCRIPT_ARGS% 1>>"%RUN_LOG%" 2>>&1
 set "EXITCODE=%ERRORLEVEL%"
 
-echo Python exit code: %EXITCODE% >> "%RUN_LOG%"
+if "%EXITCODE%"=="0" (
+  echo [SUCCESS] Exit code 0 >> "%RUN_LOG%"
+) else (
+  echo [ERROR] Python exit code %EXITCODE% (see output above for why) >> "%RUN_LOG%"
+)
 
+echo [END] %date% %time% >> "%RUN_LOG%"
 endlocal & exit /b %EXITCODE%
